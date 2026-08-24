@@ -87,6 +87,18 @@
 '       -> 모델 기준으로 중복 도면을 걸러내고,
 '          실행에 필요한 경로 / 부품번호는 실행 전에 미리 붙잡아 둔다.
 '
+'   [M] [E] 를 고치면서 "선택한 것만 대치" 질문이 아예 뜨지 않게 된 문제
+'       [E] 에서 occ.Parent.Document 로 구성요소의 소속 조립도를 알아내
+'       비교했다. 그런데 선택한 개체와 열거한 개체가 이 값을 서로 다르게
+'       내놓으면 판정이 통째로 실패해 선택된 개수가 0 이 된다.
+'       그러면 mine > 0 조건에 걸려 질문이 뜨지 않고, 아무 말 없이
+'       전체 대치로 넘어가 버린다.
+'       -> 소속 문서를 구성요소에게 되묻지 않는다. 열거 중인 개체의 소속은
+'          지금 훑고 있는 조립도 문서이고, 선택한 개체의 소속은 실행 시점의
+'          활성 문서다. 둘 다 호출하는 쪽이 확실히 아는 값이다.
+'       -> 그래도 배치를 특정하지 못하면 조용히 넘어가지 않고 묻는다.
+'          되돌릴 수 없는 작업의 기본값은 "묻기" 여야 한다.
+'
 '   [K] 그 밖에
 '       - ActiveDocument 접근을 Try 로 감쌌다 (문서가 하나도 없을 때 대비)
 '       - 폼을 Try / Finally 로 확실히 Dispose 한다
@@ -133,8 +145,9 @@ Sub Main()
     '     [A] 선택 내용을 먼저 복사해 둔다.
     '         아래에서 도면을 여는 순간 활성 문서가 바뀌므로,
     '         SelectSet 을 열거하는 도중에 파일을 열면 안 된다.
-    Dim selOccs As New List(Of Inventor.ComponentOccurrence)
-    Dim oAct    As Inventor.Document = Nothing
+    Dim selOccs   As New List(Of Inventor.ComponentOccurrence)
+    Dim oAct      As Inventor.Document = Nothing
+    Dim selOwner  As String = ""          ' 선택이 이루어진 조립도의 경로  [M]
 
     Try
         oAct = ThisApplication.ActiveDocument
@@ -150,6 +163,14 @@ Sub Main()
                 If occ IsNot Nothing Then selOccs.Add(occ)
             Next
         Catch
+        End Try
+
+        ' 선택은 활성 문서에서만 이루어진다. 이 값은 확실히 알 수 있으므로
+        ' 구성요소에게 소속을 되묻지 않는다.  [M]
+        Try
+            selOwner = oAct.FullFileName
+        Catch
+            selOwner = ""
         End Try
     End If
 
@@ -366,15 +387,18 @@ Sub Main()
 
         Dim mode As Integer = 0     ' 기본은 전체 대치
 
-        If REPLACE_IN_ASM Then
+        ' 조립도에서 부품을 선택하고 실행했을 때만 대치 범위를 묻는다.
+        ' 도면 목록에서 고른 경우에는 선택이라는 개념이 없으므로 전체 대치다.
+        If REPLACE_IN_ASM AndAlso useSelection Then
 
             Dim oldP As String = models(ix).FullFileName
             Dim total As Integer = 0
             Dim mine  As Integer = 0
             Dim asmNm As String = ""
+            Dim pnm   As String = System.IO.Path.GetFileNameWithoutExtension(oldP)
 
             ' [H] 열려있는 모든 조립도를 합산한다 (하위 조립도 포함)
-            CountOccurrences(oldP, selOccs, total, mine, asmNm)
+            CountOccurrences(oldP, selOccs, selOwner, total, mine, asmNm)
 
             If total > 1 AndAlso mine > 0 AndAlso mine < total Then
 
@@ -400,6 +424,27 @@ Sub Main()
                     asmNote &= "   " & System.IO.Path.GetFileNameWithoutExtension(oldP) & _
                                " : 조립도 대치 안 함" & vbCrLf
                 End If
+
+            ElseIf total > 1 AndAlso mine = 0 Then
+
+                ' [M] 어느 배치를 고른 것인지 특정하지 못한 경우.
+                '     조용히 전부 대치해 버리면 되돌릴 수 없으므로 반드시 묻는다.
+                Dim q3 As System.Windows.Forms.DialogResult = MessageBox.Show( _
+                    pnm & " 부품이" & vbCrLf & _
+                    "조립도 [" & asmNm & "] 에 " & total & "개 배치되어 있습니다." & vbCrLf & _
+                    "선택하신 것이 그중 어느 배치인지는 특정하지 못했습니다." & vbCrLf & vbCrLf & _
+                    "[예]     " & total & "개 전부 대치" & vbCrLf & _
+                    "[아니오]  조립도 대치는 하지 않음 (파일만 생성)", _
+                    "조립도 대치 범위", MessageBoxButtons.YesNo)
+
+                If q3 = DialogResult.Yes Then
+                    mode = 0
+                    asmNote &= "   " & pnm & " : " & total & "개 전부 대치" & vbCrLf
+                Else
+                    mode = 2
+                    asmNote &= "   " & pnm & " : 조립도 대치 안 함" & vbCrLf
+                End If
+
             End If
         End If
 
@@ -765,7 +810,8 @@ Sub Main()
                 Else
                     Dim onlySel As Boolean = (asmPlan(n - 1) = 1)
                     Dim asmDetail As String = ""
-                    Dim asmHit As Integer = ReplaceInAssemblies(oldIpt, newIpt, selOccs, onlySel, asmDetail)
+                    Dim asmHit As Integer = ReplaceInAssemblies(oldIpt, newIpt, selOccs, selOwner, _
+                                                               onlySel, asmDetail)
 
                     If asmHit < 0 Then
                         logTxt &= "  7) 조립도 대치 : 오류 발생" & vbCrLf
@@ -839,6 +885,7 @@ End Sub
 ' ============================================================================
 Function ReplaceInAssemblies(oldPath As String, newPath As String, _
                              selOccs As List(Of Inventor.ComponentOccurrence), _
+                             selOwner As String, _
                              onlySelected As Boolean, _
                              ByRef detail As String) As Integer
 
@@ -854,6 +901,12 @@ Function ReplaceInAssemblies(oldPath As String, newPath As String, _
             Dim oAsm As Inventor.AssemblyDocument = TryCast(oDoc, Inventor.AssemblyDocument)
             If oAsm Is Nothing Then Continue For
 
+            Dim asmPath As String = ""
+            Try
+                asmPath = oDoc.FullFileName
+            Catch
+            End Try
+
             ' 대치 중 컬렉션이 변하므로 대상을 먼저 모아둔다
             Dim victims As New List(Of Inventor.ComponentOccurrence)
 
@@ -862,7 +915,7 @@ Function ReplaceInAssemblies(oldPath As String, newPath As String, _
                     Try
                         If String.Equals(occ.Definition.Document.FullFileName, oldPath, _
                                          StringComparison.OrdinalIgnoreCase) Then
-                            If (Not onlySelected) OrElse IsSelected(occ, selOccs) Then
+                            If (Not onlySelected) OrElse IsSelected(occ, selOccs, asmPath, selOwner) Then
                                 victims.Add(occ)
                             End If
                         End If
@@ -891,7 +944,7 @@ Function ReplaceInAssemblies(oldPath As String, newPath As String, _
 
             Dim asmNm As String = "(이름 없음)"
             Try
-                asmNm = System.IO.Path.GetFileName(oDoc.FullFileName)
+                asmNm = System.IO.Path.GetFileName(asmPath)
             Catch
             End Try
 
@@ -913,56 +966,58 @@ End Function
 ' ============================================================================
 '  해당 배치가 사용자가 선택한 것인지 판정
 '
-'  [E] 이름만 비교하면 서로 다른 조립도의 "Part1:1" 이 같은 것으로 판정된다.
-'      소속 문서 경로까지 묶어서 비교한다.
-'      COM 개체는 같은 대상이라도 래퍼가 달라 Is 비교가 실패할 수 있으므로
-'      키 비교를 주된 수단으로 쓴다.
+'  [E] 배치 이름(Part1:1)은 한 조립도 안에서만 고유하다. 이름만 비교하면
+'      다른 조립도에 있는 동명 배치까지 선택된 것으로 판정된다.
+'
+'  [M] 앞선 수정에서는 occ.Parent.Document 로 소속 조립도를 알아냈다.
+'      그런데 선택한 개체와 열거한 개체가 서로 다른 값을 내놓으면 판정이
+'      통째로 실패해 선택된 개수가 0 이 되고, 그 결과
+'      "선택한 것만 대치 / 전부 대치" 질문이 아예 뜨지 않은 채
+'      조용히 전부 대치로 넘어갔다.
+'
+'      이제 소속 문서를 구성요소에게 되묻지 않는다.
+'        · 열거 중인 개체의 소속 = 지금 훑고 있는 조립도 문서 (asmPath)
+'        · 선택한 개체의 소속     = 실행 시점의 활성 문서 (selOwner)
+'      둘 다 호출하는 쪽이 확실히 아는 값이므로 판정이 흔들리지 않는다.
 ' ============================================================================
 Function IsSelected(v As Inventor.ComponentOccurrence, _
-                    selOccs As List(Of Inventor.ComponentOccurrence)) As Boolean
+                    selOccs As List(Of Inventor.ComponentOccurrence), _
+                    asmPath As String, selOwner As String) As Boolean
 
-    If selOccs Is Nothing Then Return False
+    If selOccs Is Nothing OrElse selOccs.Count = 0 Then Return False
 
-    Dim vKey As String = OccKey(v)
-
+    ' 같은 개체를 가리키면 그것으로 끝.
+    ' COM 은 같은 대상이라도 래퍼가 달라 실패할 수 있어 이름 비교가 더 필요하다.
     For Each sel As Inventor.ComponentOccurrence In selOccs
         Try
             If v Is sel Then Return True
         Catch
         End Try
+    Next
 
-        If vKey <> "" AndAlso String.Equals(vKey, OccKey(sel), StringComparison.OrdinalIgnoreCase) Then
-            Return True
-        End If
+    ' 이름 비교는 선택이 이루어진 그 조립도 안에서만 유효하다.
+    ' 소속을 알 수 없을 때(selOwner 가 빈 값)는 예전처럼 이름만으로 판정한다.
+    If selOwner <> "" AndAlso asmPath <> "" AndAlso _
+       Not String.Equals(asmPath, selOwner, StringComparison.OrdinalIgnoreCase) Then
+        Return False
+    End If
+
+    Dim vn As String = ""
+    Try
+        vn = v.Name
+    Catch
+        Return False
+    End Try
+    If vn = "" Then Return False
+
+    For Each sel As Inventor.ComponentOccurrence In selOccs
+        Try
+            If String.Equals(vn, sel.Name, StringComparison.Ordinal) Then Return True
+        Catch
+        End Try
     Next
 
     Return False
-
-End Function
-
-
-' ============================================================================
-'  구성요소를 식별하는 키 : "소속 조립도 경로 || 배치 이름"
-'  배치 이름은 한 조립도 안에서만 고유하므로 소속 문서를 함께 묶어야 한다.
-' ============================================================================
-Function OccKey(occ As Inventor.ComponentOccurrence) As String
-
-    Dim owner As String = ""
-    Dim nm    As String = ""
-
-    Try
-        owner = occ.Parent.Document.FullFileName
-    Catch
-    End Try
-
-    Try
-        nm = occ.Name
-    Catch
-    End Try
-
-    If owner = "" AndAlso nm = "" Then Return ""
-
-    Return owner & "||" & nm
 
 End Function
 
@@ -976,6 +1031,7 @@ End Function
 ' ============================================================================
 Sub CountOccurrences(oldPath As String, _
                      selOccs As List(Of Inventor.ComponentOccurrence), _
+                     selOwner As String, _
                      ByRef total As Integer, ByRef mine As Integer, ByRef asmName As String)
 
     total = 0
@@ -992,6 +1048,12 @@ Sub CountOccurrences(oldPath As String, _
             Dim oAsm As Inventor.AssemblyDocument = TryCast(oDoc, Inventor.AssemblyDocument)
             If oAsm Is Nothing Then Continue For
 
+            Dim asmPath As String = ""
+            Try
+                asmPath = oDoc.FullFileName
+            Catch
+            End Try
+
             Dim t As Integer = 0
             Dim m As Integer = 0
 
@@ -1001,7 +1063,7 @@ Sub CountOccurrences(oldPath As String, _
                         If String.Equals(occ.Definition.Document.FullFileName, oldPath, _
                                          StringComparison.OrdinalIgnoreCase) Then
                             t += 1
-                            If IsSelected(occ, selOccs) Then m += 1
+                            If IsSelected(occ, selOccs, asmPath, selOwner) Then m += 1
                         End If
                     Catch
                     End Try
