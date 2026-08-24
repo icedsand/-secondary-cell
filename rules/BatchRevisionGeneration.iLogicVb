@@ -99,6 +99,18 @@
 '       -> 그래도 배치를 특정하지 못하면 조용히 넘어가지 않고 묻는다.
 '          되돌릴 수 없는 작업의 기본값은 "묻기" 여야 한다.
 '
+'   [N] 대치 범위 창에서 취소를 눌러도 파일이 만들어지던 문제  (요청)
+'       [취소] 가 "조립도 대치는 하지 않음 (파일만 생성)" 이었다.
+'       취소라고 적힌 버튼이 작업을 계속하는 것은 기대와 어긋난다.
+'       -> 취소는 규칙 실행 자체를 중단한다. 파일도 만들지 않는다.
+'          이 창은 파일을 만들기 전에 뜨므로 되돌릴 것이 없다.
+'       -> 규칙이 직접 연 도면은 도로 닫아 실행 전 상태로 돌린다.
+'          원래 열려있던 도면은 건드리지 않는다.
+'       -> "파일만 생성" 은 배치를 특정하지 못했을 때 뜨는 창에 남겨두었다.
+'          조립도 대치를 아예 끄려면 REPLACE_IN_ASM = False 로 둔다.
+'       -> 다른 취소 지점(도면 선택 / 현품수정 / 부품번호 편집 / 최종 확인)
+'          에서도 규칙이 연 도면을 똑같이 닫는다.
+'
 '   [K] 그 밖에
 '       - ActiveDocument 접근을 Try 로 감쌌다 (문서가 하나도 없을 때 대비)
 '       - 폼을 Try / Finally 로 확실히 Dispose 한다
@@ -183,6 +195,10 @@ Sub Main()
     Dim seenDwg    As New List(Of String)   ' 이미 처리한 도면 경로       [K]
     Dim seenMdl    As New List(Of String)   ' 이미 처리한 모델 경로       [K]
 
+    ' 규칙이 직접 연 도면. 중간에 취소하면 이것만 도로 닫는다.  [N]
+    ' 원래 열려있던 도면은 건드리지 않는다.
+    Dim openedByRule As New List(Of Inventor.DrawingDocument)
+
     If useSelection Then
 
         ' 선택한 구성요소 -> 모델 -> 같은 이름의 도면 파일을 찾아 연다
@@ -210,12 +226,14 @@ Sub Main()
             If ContainsPath(seenDwg, dwgPath) Then Continue For
             seenDwg.Add(dwgPath)
 
-            Dim opened As Inventor.DrawingDocument = OpenDrawingDoc(dwgPath)
+            Dim justOpened As Boolean = False
+            Dim opened As Inventor.DrawingDocument = OpenDrawingDoc(dwgPath, justOpened)
             If opened Is Nothing Then
                 skipped.Add(System.IO.Path.GetFileName(dwgPath) & "  (도면을 열지 못함)")
                 Continue For
             End If
 
+            If justOpened Then openedByRule.Add(opened)
             candidates.Add(opened)
 
         Next
@@ -336,6 +354,7 @@ Sub Main()
             nm &= vbCrLf & vbCrLf & "[그 밖의 제외 사유]" & vbCrLf & _
                   String.Join(vbCrLf, skipped.ToArray())
         End If
+        CloseOpenedDrawings(openedByRule)
         MessageBox.Show(nm, "리비전 생성")
         Return
     End If
@@ -368,11 +387,15 @@ Sub Main()
         ' 도면을 열어놓고 실행한 경우에만 어떤 도면을 처리할지 고른다
         picked = PickList(names, pickMsg, True, _
                           "리비전 생성 로그를 바탕화면에 남기기", writeLog)
-        If picked Is Nothing Then Return
+        If picked Is Nothing Then
+            CloseOpenedDrawings(openedByRule)
+            Return
+        End If
 
     End If
 
     If picked.Count = 0 Then
+        CloseOpenedDrawings(openedByRule)
         MessageBox.Show("선택된 도면이 없습니다.", "리비전 생성")
         Return
     End If
@@ -403,26 +426,29 @@ Sub Main()
             If total > 1 AndAlso mine > 0 AndAlso mine < total Then
 
                 Dim q2 As System.Windows.Forms.DialogResult = MessageBox.Show( _
-                    System.IO.Path.GetFileNameWithoutExtension(oldP) & " 부품이" & vbCrLf & _
+                    pnm & " 부품이" & vbCrLf & _
                     "조립도 [" & asmNm & "] 에 " & total & "개 배치되어 있고," & vbCrLf & _
                     "그중 " & mine & "개를 선택하셨습니다." & vbCrLf & vbCrLf & _
                     "[예]     선택한 " & mine & "개만 대치" & vbCrLf & _
                     "[아니오]  " & total & "개 전부 대치" & vbCrLf & _
-                    "[취소]   조립도 대치는 하지 않음 (파일만 생성)", _
+                    "[취소]   규칙 실행을 취소합니다 (파일도 만들지 않음)", _
                     "조립도 대치 범위", MessageBoxButtons.YesNoCancel)
 
                 If q2 = DialogResult.Yes Then
                     mode = 1
-                    asmNote &= "   " & System.IO.Path.GetFileNameWithoutExtension(oldP) & _
+                    asmNote &= "   " & pnm & _
                                " : 선택한 " & mine & " / " & total & "개만 대치" & vbCrLf
                 ElseIf q2 = DialogResult.No Then
                     mode = 0
-                    asmNote &= "   " & System.IO.Path.GetFileNameWithoutExtension(oldP) & _
+                    asmNote &= "   " & pnm & _
                                " : " & total & "개 전부 대치" & vbCrLf
                 Else
-                    mode = 2
-                    asmNote &= "   " & System.IO.Path.GetFileNameWithoutExtension(oldP) & _
-                               " : 조립도 대치 안 함" & vbCrLf
+                    ' [N] 취소는 취소다. 아직 아무것도 만들지 않았으므로
+                    '     규칙이 연 도면만 도로 닫고 그대로 끝낸다.
+                    CloseOpenedDrawings(openedByRule)
+                    MessageBox.Show("규칙 실행을 취소했습니다." & vbCrLf & _
+                                    "만들어진 파일은 없습니다.", "리비전 생성")
+                    Return
                 End If
 
             ElseIf total > 1 AndAlso mine = 0 Then
@@ -434,15 +460,22 @@ Sub Main()
                     "조립도 [" & asmNm & "] 에 " & total & "개 배치되어 있습니다." & vbCrLf & _
                     "선택하신 것이 그중 어느 배치인지는 특정하지 못했습니다." & vbCrLf & vbCrLf & _
                     "[예]     " & total & "개 전부 대치" & vbCrLf & _
-                    "[아니오]  조립도 대치는 하지 않음 (파일만 생성)", _
-                    "조립도 대치 범위", MessageBoxButtons.YesNo)
+                    "[아니오]  조립도는 그대로 두고 파일만 생성" & vbCrLf & _
+                    "[취소]   규칙 실행을 취소합니다 (파일도 만들지 않음)", _
+                    "조립도 대치 범위", MessageBoxButtons.YesNoCancel)
 
                 If q3 = DialogResult.Yes Then
                     mode = 0
                     asmNote &= "   " & pnm & " : " & total & "개 전부 대치" & vbCrLf
-                Else
+                ElseIf q3 = DialogResult.No Then
                     mode = 2
-                    asmNote &= "   " & pnm & " : 조립도 대치 안 함" & vbCrLf
+                    asmNote &= "   " & pnm & " : 조립도 대치 안 함 (파일만 생성)" & vbCrLf
+                Else
+                    ' [N] 취소는 취소다.
+                    CloseOpenedDrawings(openedByRule)
+                    MessageBox.Show("규칙 실행을 취소했습니다." & vbCrLf & _
+                                    "만들어진 파일은 없습니다.", "리비전 생성")
+                    Return
                 End If
 
             End If
@@ -496,7 +529,10 @@ Sub Main()
         Dim dummy As Boolean = False
         Dim picked2 As List(Of Integer) = PickListPre(subNames, msg2, preChk, "", dummy)
 
-        If picked2 Is Nothing Then Return
+        If picked2 Is Nothing Then
+            CloseOpenedDrawings(openedByRule)
+            Return
+        End If
 
         ' 선택 결과로 다시 채운다
         For i2 As Integer = 0 To isFieldMod.Count - 1
@@ -521,7 +557,10 @@ Sub Main()
         drwPaths.Add(drawings(ix).FullFileName)
     Next
 
-    If Not EditPartNumbers(curPNs, mdlPaths, drwPaths, editPNs) Then Return   ' 취소
+    If Not EditPartNumbers(curPNs, mdlPaths, drwPaths, editPNs) Then
+        CloseOpenedDrawings(openedByRule)
+        Return                                                     ' 취소
+    End If
 
     Dim ep As Integer = 0
     For Each ix As Integer In picked
@@ -583,6 +622,7 @@ Sub Main()
 
     '--- 5) 충돌 시 중단 -----------------------------------------------------
     If conflicts.Count > 0 Then
+        CloseOpenedDrawings(openedByRule)
         MessageBox.Show("같은 이름의 파일이 이미 있습니다. 중단합니다." & vbCrLf & _
                         "(덮어쓰지 않습니다)" & vbCrLf & vbCrLf & _
                         String.Join(vbCrLf, conflicts.ToArray()), "리비전 생성 - 중단")
@@ -608,6 +648,7 @@ Sub Main()
 
     If MessageBox.Show(ask, "리비전 생성 - 최종 확인", _
                        MessageBoxButtons.OKCancel) <> DialogResult.OK Then
+        CloseOpenedDrawings(openedByRule)
         Return
     End If
 
@@ -1120,6 +1161,28 @@ End Function
 
 
 ' ============================================================================
+'  규칙이 직접 연 도면을 도로 닫는다.  [N]
+'  취소했을 때 실행 전 상태로 되돌리기 위한 것이다.
+'  원래 열려있던 도면은 목록에 없으므로 건드리지 않는다.
+'  아직 아무것도 고치지 않은 문서들이라 저장 없이 닫아도 잃을 것이 없다.
+' ============================================================================
+Sub CloseOpenedDrawings(opened As List(Of Inventor.DrawingDocument))
+
+    If opened Is Nothing Then Return
+
+    For Each d As Inventor.DrawingDocument In opened
+        Try
+            d.Close(True)      ' True = 저장하지 않고 닫기
+        Catch
+        End Try
+    Next
+
+    opened.Clear()
+
+End Sub
+
+
+' ============================================================================
 '  문서를 조용히 닫는다 (실패해도 무시)
 ' ============================================================================
 Sub TryCloseDoc(d As Inventor.Document)
@@ -1158,8 +1221,13 @@ End Function
 ' ============================================================================
 '  도면 파일을 연다. 이미 열려있으면 그 문서를 그대로 반환한다.
 '  실패하면 Nothing 을 반환한다.
+'
+'  justOpened : 이 호출이 직접 연 것이면 True.
+'               취소했을 때 규칙이 연 도면만 골라 닫기 위해 필요하다.  [N]
 ' ============================================================================
-Function OpenDrawingDoc(dwgPath As String) As Inventor.DrawingDocument
+Function OpenDrawingDoc(dwgPath As String, ByRef justOpened As Boolean) As Inventor.DrawingDocument
+
+    justOpened = False
 
     ' 이미 열려있는지 먼저 확인
     Try
@@ -1177,7 +1245,10 @@ Function OpenDrawingDoc(dwgPath As String) As Inventor.DrawingDocument
 
     ' 없으면 새로 연다 (화면에 표시)
     Try
-        Return CType(ThisApplication.Documents.Open(dwgPath, True), Inventor.DrawingDocument)
+        Dim d As Inventor.DrawingDocument = _
+            CType(ThisApplication.Documents.Open(dwgPath, True), Inventor.DrawingDocument)
+        justOpened = True
+        Return d
     Catch
         Return Nothing
     End Try
