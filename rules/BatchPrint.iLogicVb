@@ -1,0 +1,821 @@
+' ============================================================================
+' 열려있는 도면을 한 번에 인쇄(made by pjh)
+'
+' ----------------------------------------------------------------------------
+'  [Inventor 2026 (26.4) 이관 수정]
+'
+'   iLogic 컴파일 대상이 .NET Framework 4.x 에서 최신 .NET 으로 바뀌면서
+'   두 군데가 깨졌다. 인쇄 동작 자체는 손대지 않았다.
+'
+'   [P] 프린터 목록을 레지스트리에서 읽던 것              (514 / 529행)
+'       .NET Framework 에서는 Microsoft.Win32.Registry 가 mscorlib 안에 있어
+'       늘 쓸 수 있었다. 최신 .NET 에서는 별도 어셈블리로 분리되었고
+'       iLogic 이 그것을 참조하지 않는다.
+'       -> 레지스트리를 아예 쓰지 않는다. 프린터 목록은 .NET 의 정식 창구인
+'          System.Drawing.Printing.PrinterSettings.InstalledPrinters 에서
+'          가져온다. 레지스트리보다 정확하다 - 예전 방식은 프린터가 아닌
+'          항목까지 목록에 넣고, 일부 네트워크 프린터는 빠뜨렸다.
+'
+'   [O] frm.AcceptButton / frm.CancelButton 대입                (699 / 700행)
+'       Button 을 IButtonControl 로 바꾸는 인터페이스 변환이다. 컴파일러가
+'       Button 이 구현한 인터페이스를 전부 훑는데, 새 WinForms 에서는 그
+'       목록에 참조되지 않은 System.Private.Windows.Core 의 타입이 들어 있다.
+'       -> 리플렉션으로 넘긴다. 자세한 설명은 SetDefaultButtons 참고.
+'
+'   ※ 이 규칙은 Vault 나 작업폴더 경로를 읽지 않는다. 도면 경로는 전부
+'     열려있는 문서 자신에게서 얻으므로 작업폴더가 옮겨가도 그대로 따라간다.
+' ============================================================================
+
+Sub Main()
+
+    Dim ALL_BLACK      As Boolean = True    ' 전부 흑백으로 인쇄
+    Dim REMOVE_LW      As Boolean = False   ' True=선가중치 무시
+    Dim CONFIRM_BEFORE As Boolean = True    ' 인쇄 직전 최종 확인창
+
+    Dim ADD_PREV_REV  As Boolean = True
+    Dim FIELD_MOD_TAG As String  = "(현품수정)"
+    Dim CLOSE_OPENED  As Boolean = True    ' 이번에 새로 연 이전판 도면을 인쇄 후 닫기
+
+    Dim FIXED_PRINTER  As String = "KONICA MINOLTA C368SeriesPCL"
+
+    ' 1) 열려있는 도면 수집
+    Dim drawings As New List(Of Inventor.DrawingDocument)
+
+    For Each oDoc As Inventor.Document In ThisApplication.Documents
+        If oDoc.DocumentType = kDrawingDocumentObject Then
+            Try
+                If Not String.IsNullOrEmpty(oDoc.FullFileName) Then
+                    drawings.Add(CType(oDoc, Inventor.DrawingDocument))
+                End If
+            Catch
+            End Try
+        End If
+    Next
+
+    If drawings.Count = 0 Then
+        MessageBox.Show("저장된 도면이 열려있지 않습니다.", "도면 일괄 인쇄")
+        Return
+    End If
+
+    ' 2) 파일명 오름차순 정렬 = 인쇄 순서
+    drawings.Sort(Function(a, b) String.Compare( _
+        System.IO.Path.GetFileNameWithoutExtension(a.FullFileName), _
+        System.IO.Path.GetFileNameWithoutExtension(b.FullFileName), _
+        StringComparison.OrdinalIgnoreCase))
+
+    Dim dwgNames As New List(Of String)
+    For Each d As Inventor.DrawingDocument In drawings
+        dwgNames.Add(System.IO.Path.GetFileNameWithoutExtension(d.FullFileName) & _
+                     "   (시트 " & d.Sheets.Count & ")")
+    Next
+
+    Dim pickedDwg As List(Of Integer) = PickDrawingList(dwgNames)
+    If pickedDwg Is Nothing Then Return
+
+    If pickedDwg.Count = 0 Then
+        MessageBox.Show("선택된 도면이 없습니다.", "도면 일괄 인쇄")
+        Return
+    End If
+
+    Dim kept As New List(Of Inventor.DrawingDocument)
+    For Each ix As Integer In pickedDwg
+        kept.Add(drawings(ix))
+    Next
+    drawings = kept
+
+    ' 3) 인쇄 목록 만들기 (도면 + 시트 단위)
+    Dim jobDocs   As New List(Of Inventor.DrawingDocument)
+    Dim jobIndex  As New List(Of Integer)     ' 그 도면 안에서의 시트 번호
+    Dim jobLabel  As New List(Of String)
+
+    Dim preview As String = ""
+    Dim lineNo  As Integer = 0
+
+    Dim ordered  As New List(Of Inventor.DrawingDocument)
+    Dim isPrev   As New List(Of Boolean)
+    Dim openedByUs As New List(Of Inventor.Document)
+    Dim prevMiss As New List(Of String)
+
+    Dim prevNeed As New List(Of String)          ' 이전판으로 쓸 파일 경로
+    Dim prevOwner As New List(Of String)         ' 그 이전판을 요구한 도면 경로
+
+    If ADD_PREV_REV Then
+        For Each oDrw As Inventor.DrawingDocument In drawings
+
+            Dim curDesc As String = ModelDesc(oDrw)
+            If curDesc.IndexOf(FIELD_MOD_TAG, StringComparison.Ordinal) < 0 Then Continue For
+
+            Dim curPN As String = ModelPN(oDrw)
+            Dim prevPN As String = PrevPartNumber(curPN)
+
+            If prevPN = "" Then
+                prevMiss.Add(curPN & " : 이전 리비전이 없음")
+                Continue For
+            End If
+
+            Dim prevPath As String = FindDrawingByName( _
+                System.IO.Path.GetDirectoryName(oDrw.FullFileName), prevPN)
+
+            If prevPath = "" Then
+                prevMiss.Add(prevPN & " : 도면 파일을 찾지 못함")
+                Continue For
+            End If
+
+            prevNeed.Add(prevPath)
+            prevOwner.Add(oDrw.FullFileName)
+        Next
+    End If
+
+    Dim movedOut As New List(Of String)          ' 원래 자리에서 빠진 도면
+
+    For Each oDrw As Inventor.DrawingDocument In drawings
+
+        Dim myPath As String = oDrw.FullFileName
+
+        Dim usedAsPrev As Boolean = False
+        For Each pn2 As String In prevNeed
+            If String.Equals(pn2, myPath, StringComparison.OrdinalIgnoreCase) Then
+                usedAsPrev = True
+                Exit For
+            End If
+        Next
+
+        If usedAsPrev Then
+            movedOut.Add(System.IO.Path.GetFileNameWithoutExtension(myPath))
+            Continue For      ' 원래 자리에서는 뺀다
+        End If
+
+        For k2 As Integer = 0 To prevOwner.Count - 1
+
+            If Not String.Equals(prevOwner(k2), myPath, StringComparison.OrdinalIgnoreCase) Then Continue For
+
+            Dim wasOpen As Boolean = False
+            Dim pd As Inventor.DrawingDocument = GetOrOpenDrawing(prevNeed(k2), wasOpen)
+
+            If pd Is Nothing Then
+                prevMiss.Add(System.IO.Path.GetFileNameWithoutExtension(prevNeed(k2)) & " : 도면을 열 수 없음")
+            Else
+                If Not wasOpen Then openedByUs.Add(pd)
+                ordered.Add(pd)
+                isPrev.Add(True)
+            End If
+
+            Exit For
+        Next
+
+        ordered.Add(oDrw)
+        isPrev.Add(False)
+
+    Next
+
+    For k As Integer = 0 To ordered.Count - 1
+
+        Dim oDrw2 As Inventor.DrawingDocument = ordered(k)
+        Dim fname As String = System.IO.Path.GetFileNameWithoutExtension(oDrw2.FullFileName)
+        Dim mark  As String = ""
+        If isPrev(k) Then mark = "  ◀ 이전판"
+
+        For i As Integer = 1 To oDrw2.Sheets.Count
+            Dim sh As Inventor.Sheet = oDrw2.Sheets.Item(i)
+            lineNo += 1
+
+            jobDocs.Add(oDrw2)
+            jobIndex.Add(i)
+            jobLabel.Add(fname & " [" & i & "/" & oDrw2.Sheets.Count & "]" & mark)
+
+            preview &= lineNo & ". " & fname
+            If oDrw2.Sheets.Count > 1 Then preview &= " (시트 " & i & ")"
+            preview &= "  -  " & SheetSizeLabel(sh.Width, sh.Height) & mark & vbCrLf
+        Next
+    Next
+
+    If movedOut.Count > 0 Then
+        preview &= vbCrLf & "※ 아래 도면은 이미 열려있어 중복을 막고자" & vbCrLf & _
+                   "   현품수정 도면 바로 앞으로 자리를 옮겼습니다." & vbCrLf & _
+                   "   " & String.Join(", ", movedOut.ToArray()) & vbCrLf
+    End If
+
+    If prevMiss.Count > 0 Then
+        preview &= vbCrLf & "[이전판을 못 넣은 항목]" & vbCrLf & _
+                   String.Join(vbCrLf, prevMiss.ToArray()) & vbCrLf
+    End If
+
+    If jobDocs.Count = 0 Then
+        MessageBox.Show("인쇄할 시트가 없습니다.", "도면 일괄 인쇄")
+        Return
+    End If
+
+    ' 4) 현재 기본 프린터 확인
+    Dim curPrinter As String = ""
+    Try
+        Dim pm0 As DrawingPrintManager = drawings(0).PrintManager
+        curPrinter = pm0.Printer
+    Catch
+    End Try
+
+    Dim printerList As List(Of String) = GetPrinterList()
+
+    ' 4-1) 고정 프린터 검증
+    Dim useFixed As Boolean = False
+
+    If Not String.IsNullOrWhiteSpace(FIXED_PRINTER) Then
+
+        Dim matched As String = ""
+
+        For Each pn As String In printerList
+            If String.Equals(pn.Trim(), FIXED_PRINTER.Trim(), StringComparison.OrdinalIgnoreCase) Then
+                matched = pn
+                Exit For
+            End If
+        Next
+
+        If matched = "" Then
+            For Each pn As String In printerList
+                If pn.IndexOf(FIXED_PRINTER.Trim(), StringComparison.OrdinalIgnoreCase) >= 0 _
+                   OrElse FIXED_PRINTER.Trim().IndexOf(pn, StringComparison.OrdinalIgnoreCase) >= 0 Then
+                    matched = pn
+                    Exit For
+                End If
+            Next
+        End If
+
+        If matched <> "" Then
+            FIXED_PRINTER = matched      ' 목록에 있는 정확한 표기로 교정
+            useFixed = True
+
+        ElseIf printerList.Count = 0 Then
+            useFixed = True
+
+        Else
+            Dim warn As String = "지정된 프린터를 찾을 수 없습니다." & vbCrLf & vbCrLf & _
+                                 "지정 : " & FIXED_PRINTER & vbCrLf & vbCrLf & _
+                                 "[예]   이 이름 그대로 인쇄 시도" & vbCrLf & _
+                                 "[아니오] 설치된 프린터 목록에서 선택" & vbCrLf & _
+                                 "[취소] 종료"
+
+            Dim wans = MessageBox.Show(warn, "도면 일괄 인쇄", MessageBoxButtons.YesNoCancel)
+
+            If wans = DialogResult.Yes Then
+                useFixed = True
+            ElseIf wans = DialogResult.No Then
+                useFixed = False
+            Else
+                Return
+            End If
+        End If
+    End If
+
+    Dim modeList = New String() { _
+        "프린터 기본 용지에 맞춤", _
+        "전부 A3 에 맞춰 축소", _
+        "전부 A4 에 맞춰 축소", _
+        "시트 원본 크기 그대로 (플로터)"}
+
+    Dim BACK As String = "← 이전 단계로"
+
+    ' 5) 설정 입력 (뒤로 가기 지원)
+    Dim stepNo      As Integer = 1
+    Dim printerName As String  = curPrinter
+
+    If useFixed Then
+        printerName = FIXED_PRINTER
+        stepNo = 2
+    End If
+    Dim modeText    As String  = modeList(0)
+    Dim paperMode   As Integer = 3
+    Dim copies      As Integer = 1
+
+    Do While stepNo <= 4
+
+        Select Case stepNo
+
+            Case 1
+
+                If printerList.Count > 0 Then
+
+                    Dim items As New List(Of String)
+                    items.AddRange(printerList)
+
+                    Dim defItem As String = printerName
+                    If Not items.Contains(defItem) Then defItem = items(0)
+
+                    Dim sel = InputListBox("[1/3] 사용할 프린터를 선택하세요." & vbCrLf & _
+                                           "(현재 기본 : " & curPrinter & ")", _
+                                           items.ToArray(), defItem, _
+                                           Title:="도면 일괄 인쇄", ListName:="프린터")
+                    If sel Is Nothing Then Return
+                    printerName = CStr(sel)
+
+                Else
+                    Dim typed As String = InputBox("[1/3] 사용할 프린터 이름을 확인하세요." & vbCrLf & _
+                                                   "(그대로 두면 현재 프린터로 인쇄됩니다)", _
+                                                   "도면 일괄 인쇄", printerName)
+                    If String.IsNullOrWhiteSpace(typed) Then Return
+                    printerName = typed.Trim()
+                End If
+
+                stepNo = 2
+
+            Case 2
+
+                Dim items2 As New List(Of String)
+                If Not useFixed Then items2.Add(BACK)   ' 고정이면 뒤로갈 곳이 없음
+                items2.AddRange(modeList)
+
+                Dim lbl2 As String = "[2/3]"
+                If useFixed Then lbl2 = "[1/2]"
+
+                Dim sel2 = InputListBox(lbl2 & " 용지를 어떻게 처리할까요?" & vbCrLf & _
+                                        "프린터 : " & printerName, _
+                                        items2.ToArray(), modeText, _
+                                        Title:="도면 일괄 인쇄", ListName:="용지")
+                If sel2 Is Nothing Then Return
+
+                If CStr(sel2) = BACK Then
+                    If useFixed Then Return
+                    stepNo = 1
+                Else
+                    modeText = CStr(sel2)
+                    Select Case modeText
+                        Case modeList(0) : paperMode = 3   ' 프린터 기본
+                        Case modeList(1) : paperMode = 1   ' A3
+                        Case modeList(2) : paperMode = 2   ' A4
+                        Case Else        : paperMode = 0   ' 원본 크기
+                    End Select
+                    stepNo = 3
+                End If
+
+            Case 3
+
+                Dim items3 = New String() {BACK, "1 매", "2 매", "3 매", "직접 입력"}
+
+                Dim defItem3 As String = "1 매"
+                If copies >= 1 AndAlso copies <= 3 Then defItem3 = copies & " 매"
+
+                Dim lbl3 As String = "[3/3]"
+                If useFixed Then lbl3 = "[2/2]"
+
+                Dim sel3 = InputListBox(lbl3 & " 인쇄 매수를 선택하세요." & vbCrLf & _
+                                        "용지 : " & modeText, _
+                                        items3, defItem3, _
+                                        Title:="도면 일괄 인쇄", ListName:="매수")
+                If sel3 Is Nothing Then Return
+
+                If CStr(sel3) = BACK Then
+                    stepNo = 2
+
+                ElseIf CStr(sel3) = "직접 입력" Then
+                    Dim ctxt As String = InputBox("인쇄 매수를 입력하세요. (1~99)", _
+                                                  "도면 일괄 인쇄", CStr(copies))
+                    If String.IsNullOrWhiteSpace(ctxt) Then
+                    Else
+                        Dim tmp As Integer = 1
+                        If Not Integer.TryParse(ctxt.Trim(), tmp) Then tmp = 1
+                        If tmp < 1 Then tmp = 1
+                        If tmp > 99 Then tmp = 99
+                        copies = tmp
+                        stepNo = 4
+                    End If
+
+                Else
+                    ' 목록 항목이 "N 매" 형식이 아닐 때 규칙이 죽지 않도록 감싼다
+                    Try
+                        copies = CInt(CStr(sel3).Replace(" 매", "").Trim())
+                    Catch
+                        copies = 1
+                    End Try
+                    If copies < 1 Then copies = 1
+                    If copies > 99 Then copies = 99
+                    stepNo = 4
+                End If
+
+            Case 4
+
+                If Not CONFIRM_BEFORE Then
+                    stepNo = 5
+                Else
+                    Dim ask As String = "아래 순서로 인쇄합니다." & vbCrLf & _
+                                        "총 " & jobDocs.Count & "장 × " & copies & "매" & vbCrLf & vbCrLf & _
+                                        "프린터 : " & printerName & vbCrLf & _
+                                        "용지    : " & modeText & vbCrLf & vbCrLf & preview & vbCrLf & _
+                                        "[예] 인쇄 시작   [아니오] 설정 다시   [취소] 종료"
+
+                    Dim ans = MessageBox.Show(ask, "도면 일괄 인쇄 - 최종 확인", _
+                                              MessageBoxButtons.YesNoCancel)
+
+                    If ans = DialogResult.Yes Then
+                        stepNo = 5
+                    ElseIf ans = DialogResult.No Then
+                        stepNo = 3
+                    Else
+                        Return
+                    End If
+                End If
+
+        End Select
+
+    Loop
+
+    ' 8) 인쇄 실행
+    Dim okCount As Integer = 0
+    Dim failed As New List(Of String)
+
+    For j As Integer = 0 To jobDocs.Count - 1
+
+        Dim oDrw As Inventor.DrawingDocument = jobDocs(j)
+        Dim sIdx As Integer = jobIndex(j)
+
+        Try
+            ThisApplication.StatusBarText = "인쇄 중 (" & (j + 1) & "/" & jobDocs.Count & ") : " & jobLabel(j)
+
+            Dim sh As Inventor.Sheet = oDrw.Sheets.Item(sIdx)
+            Dim oPM As DrawingPrintManager = oDrw.PrintManager
+
+            oPM.Printer            = printerName
+            oPM.NumberOfCopies     = copies
+            oPM.AllColorsAsBlack   = ALL_BLACK
+            oPM.RemoveLineWeights  = REMOVE_LW
+            oPM.Rotate90Degrees    = False
+            oPM.TilingEnabled      = False
+
+            oPM.PrintRange = kPrintSheetRange
+            oPM.SetSheetRange(sIdx, sIdx)
+
+            If sh.Width >= sh.Height Then
+                oPM.Orientation = kLandscapeOrientation
+            Else
+                oPM.Orientation = kPortraitOrientation
+            End If
+
+            Select Case paperMode
+                Case 0   ' 시트 원본 크기 그대로
+                    oPM.PaperSize   = kPaperSizeCustom
+                    oPM.PaperWidth  = sh.Width      ' cm 단위
+                    oPM.PaperHeight = sh.Height
+                    oPM.ScaleMode   = kPrintFullScale
+
+                Case 1   ' A3 맞춤
+                    oPM.PaperSize = kPaperSizeA3
+                    oPM.ScaleMode = kPrintBestFitScale
+
+                Case 2   ' A4 맞춤
+                    oPM.PaperSize = kPaperSizeA4
+                    oPM.ScaleMode = kPrintBestFitScale
+
+                Case Else ' 프린터 기본 용지
+                    oPM.PaperSize = kPaperSizeDefault
+                    oPM.ScaleMode = kPrintBestFitScale
+            End Select
+
+            oPM.SubmitPrint()
+            okCount += 1
+
+        Catch ex As Exception
+            failed.Add(jobLabel(j) & " : " & ex.Message)
+        End Try
+
+    Next
+
+    ThisApplication.StatusBarText = ""
+
+    Dim closed As Integer = 0
+    If CLOSE_OPENED Then
+        For Each od As Inventor.Document In openedByUs
+            Try
+                od.Close(True)      ' True = 저장하지 않고 닫기
+                closed += 1
+            Catch
+            End Try
+        Next
+    End If
+
+    ' 9) 결과 보고
+    Dim msg As String = "인쇄 작업 전송 완료" & vbCrLf & vbCrLf & _
+                        "성공 : " & okCount & " / " & jobDocs.Count & "장" & vbCrLf & _
+                        "매수 : " & copies & "매" & vbCrLf & _
+                        "프린터 : " & printerName & vbCrLf & _
+                        "용지 : " & modeText
+
+    If openedByUs.Count > 0 Then
+        msg &= vbCrLf & "이전판 : " & openedByUs.Count & "개 자동 추가"
+        If CLOSE_OPENED Then msg &= " (" & closed & "개 닫음)"
+    End If
+
+    If prevMiss.Count > 0 Then
+        msg &= vbCrLf & vbCrLf & "[이전판을 못 넣은 항목]" & vbCrLf & String.Join(vbCrLf, prevMiss.ToArray())
+    End If
+
+    If failed.Count > 0 Then
+        msg &= vbCrLf & vbCrLf & "[실패]" & vbCrLf & String.Join(vbCrLf, failed.ToArray())
+    End If
+
+    MessageBox.Show(msg, "도면 일괄 인쇄")
+
+End Sub
+
+' 시트 크기를 사람이 읽을 수 있는 이름으로 (입력 단위 : cm)
+Function SheetSizeLabel(wCm As Double, hCm As Double) As String
+
+    Dim a As Double = Math.Round(Math.Max(wCm, hCm) * 10.0)   ' 긴 변 mm
+    Dim b As Double = Math.Round(Math.Min(wCm, hCm) * 10.0)   ' 짧은 변 mm
+    Dim nm As String = "Custom"
+
+    If Math.Abs(a - 1189) <= 6 AndAlso Math.Abs(b - 841) <= 6 Then
+        nm = "A0"
+    ElseIf Math.Abs(a - 841) <= 6 AndAlso Math.Abs(b - 594) <= 6 Then
+        nm = "A1"
+    ElseIf Math.Abs(a - 594) <= 6 AndAlso Math.Abs(b - 420) <= 6 Then
+        nm = "A2"
+    ElseIf Math.Abs(a - 420) <= 6 AndAlso Math.Abs(b - 297) <= 6 Then
+        nm = "A3"
+    ElseIf Math.Abs(a - 297) <= 6 AndAlso Math.Abs(b - 210) <= 6 Then
+        nm = "A4"
+    End If
+
+    Return nm & " (" & a & "×" & b & ")"
+
+End Function
+
+
+' ============================================================================
+'  설치된 프린터 목록 가져오기                                          [P]
+'
+'  예전에는 레지스트리(HKCU\...\Windows NT\CurrentVersion\Devices)를 직접
+'  읽었다. Inventor 2026 의 iLogic 은 최신 .NET 으로 컴파일하는데, 거기서는
+'  Microsoft.Win32.Registry 가 별도 어셈블리로 분리되어 있고 iLogic 이 그것을
+'  참조하지 않는다. 그래서 컴파일이 깨졌다.
+'
+'      "'Registry'은(는) 'Microsoft.Win32'의 멤버가 아닙니다"
+'
+'  레지스트리를 되살리는 대신 .NET 의 정식 창구를 쓴다.
+'  PrinterSettings.InstalledPrinters 는 레지스트리보다 정확하다.
+'  예전 방식은 프린터가 아닌 항목까지 목록에 넣고, 일부 네트워크 프린터를
+'  빠뜨렸다.
+'
+'  타입을 직접 적지 않고 이름으로 찾는 이유 :
+'    System.Drawing 어셈블리가 iLogic 참조 목록에 없으면 직접 적었을 때
+'    또 컴파일이 깨진다. 컴파일 오류는 Try 로 막을 수 없다.
+'    이름으로 찾으면 컴파일은 무조건 통과하고, 실패해도 빈 목록이 될 뿐이다.
+'    빈 목록이면 위쪽에서 프린터 이름을 직접 입력받게 되어 있다.
+'
+'  참조가 문제없는 것이 확인되면 아래 한 줄로 줄여도 된다.
+'    For Each nm As String In System.Drawing.Printing.PrinterSettings.InstalledPrinters
+' ============================================================================
+Function GetPrinterList() As List(Of String)
+
+    Dim lst As New List(Of String)
+
+    Try
+        Dim t As System.Type = System.Type.GetType( _
+            "System.Drawing.Printing.PrinterSettings, System.Drawing.Common", False)
+
+        If t Is Nothing Then
+            t = System.Type.GetType( _
+                "System.Drawing.Printing.PrinterSettings, System.Drawing", False)
+        End If
+
+        If t IsNot Nothing Then
+
+            Dim pi As System.Reflection.PropertyInfo = t.GetProperty("InstalledPrinters")
+
+            If pi IsNot Nothing Then
+                Dim col As System.Collections.IEnumerable = _
+                    TryCast(pi.GetValue(Nothing), System.Collections.IEnumerable)
+
+                If col IsNot Nothing Then
+                    For Each o As Object In col
+                        Dim nm As String = ""
+                        Try
+                            nm = CStr(o)
+                        Catch
+                        End Try
+                        If Not String.IsNullOrWhiteSpace(nm) AndAlso Not lst.Contains(nm) Then
+                            lst.Add(nm)
+                        End If
+                    Next
+                End If
+            End If
+        End If
+    Catch
+    End Try
+
+    lst.Sort()
+    Return lst
+
+End Function
+
+
+' ============================================================================
+'  Enter / Esc 기본 버튼 지정                                           [O]
+'
+'  Inventor 2026 의 iLogic 은 최신 .NET 으로 컴파일한다. 그 WinForms 에서는
+'  Control 이 System.Private.Windows.Core 안의 내부 인터페이스
+'  (IHandle(Of ), IPersist.Interface) 를 구현하도록 바뀌었다.
+'
+'      frm.AcceptButton = btnOK
+'
+'  이 한 줄은 Button 을 IButtonControl 로 바꾸는 인터페이스 변환이다.
+'  컴파일러는 변환이 되는지 보려고 Button 이 구현한 인터페이스를 전부 훑는데,
+'  그 목록에 참조되지 않은 어셈블리의 타입이 끼어 있어 컴파일이 깨진다.
+'
+'      "System.Private.Windows.Core ... 어셈블리에 대한 참조를 찾을 수 없습니다"
+'
+'  Text / Width / DialogResult 같은 값 대입은 인터페이스 변환이 아니라서
+'  멀쩡하다. 그래서 딱 이 두 줄만 오류가 났다.
+'
+'  리플렉션으로 넘기면 컴파일 시점에 인터페이스 목록을 들여다보지 않으므로
+'  문제가 사라진다. 실행 시점에는 어셈블리가 이미 메모리에 있어 정상 동작한다.
+'  혹시 실패하더라도 두 버튼에 DialogResult 가 이미 지정되어 있어
+'  마우스 클릭과 창 닫기(X)로는 그대로 동작한다.
+' ============================================================================
+Sub SetDefaultButtons(frm As System.Windows.Forms.Form, _
+                      okBtn As System.Windows.Forms.Button, _
+                      cancelBtn As System.Windows.Forms.Button)
+
+    ' Enter -> 확인
+    Try
+        frm.GetType().GetProperty("AcceptButton").SetValue(frm, okBtn)
+    Catch
+    End Try
+
+    ' Esc -> 취소
+    Try
+        frm.GetType().GetProperty("CancelButton").SetValue(frm, cancelBtn)
+    Catch
+    End Try
+
+End Sub
+
+
+' 도면이 참조하는 모델의 부품번호
+Function ModelPN(oDrw As Inventor.DrawingDocument) As String
+    Try
+        Dim m As Inventor.Document = oDrw.ReferencedDocuments.Item(1)
+        Return CStr(m.PropertySets.Item("Design Tracking Properties").Item("Part Number").Value)
+    Catch
+        Return ""
+    End Try
+End Function
+
+' 도면이 참조하는 모델의 설명(Description)
+Function ModelDesc(oDrw As Inventor.DrawingDocument) As String
+    Try
+        Dim m As Inventor.Document = oDrw.ReferencedDocuments.Item(1)
+        Return CStr(m.PropertySets.Item("Design Tracking Properties").Item("Description").Value)
+    Catch
+        Return ""
+    End Try
+End Function
+
+' 부품번호의 직전 리비전을 구한다
+Function PrevPartNumber(pn As String) As String
+
+    If String.IsNullOrWhiteSpace(pn) Then Return ""
+
+    Dim s As String = pn.Trim()
+
+    Dim i As Integer = s.Length - 1
+    While i >= 0 AndAlso Char.IsUpper(s.Chars(i))
+        i -= 1
+    End While
+
+    Dim baseStr As String = s.Substring(0, i + 1)
+    Dim rev     As String = s.Substring(i + 1)
+
+    If baseStr.Length = 0 Then Return ""
+    If Not Char.IsDigit(baseStr.Chars(baseStr.Length - 1)) Then Return ""
+    If rev = "" Then Return ""          ' 리비전이 없으면 이전판도 없음
+
+    Dim AL As String = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+    Dim idx As New List(Of Integer)
+    For Each ch As Char In rev
+        Dim k As Integer = AL.IndexOf(ch)
+        If k < 0 Then Return ""
+        idx.Add(k)
+    Next
+
+    Dim p As Integer = idx.Count - 1
+    Do
+        idx(p) = idx(p) - 1
+        If idx(p) >= 0 Then Exit Do
+        idx(p) = AL.Length - 1
+        p -= 1
+        If p < 0 Then
+            idx.RemoveAt(0)             ' 자릿수 하나 줄임
+            Exit Do
+        End If
+    Loop
+
+    Dim res As String = ""
+    For Each k As Integer In idx
+        res &= AL.Substring(k, 1)
+    Next
+
+    Return baseStr & res
+
+End Function
+
+' 폴더에서 지정한 이름의 도면 파일을 찾는다 (.idw 우선, 없으면 .dwg)
+Function FindDrawingByName(dir As String, baseName As String) As String
+
+    Try
+        Dim c1 As String = System.IO.Path.Combine(dir, baseName & ".idw")
+        If System.IO.File.Exists(c1) Then Return c1
+
+        Dim c2 As String = System.IO.Path.Combine(dir, baseName & ".dwg")
+        If System.IO.File.Exists(c2) Then Return c2
+    Catch
+    End Try
+
+    Return ""
+
+End Function
+
+' 도면을 얻는다. 이미 열려있으면 그대로 쓰고, 아니면 새로 연다.
+Function GetOrOpenDrawing(dwgPath As String, ByRef wasOpen As Boolean) As Inventor.DrawingDocument
+
+    wasOpen = False
+
+    Try
+        For Each oDoc As Inventor.Document In ThisApplication.Documents
+            If oDoc.DocumentType <> kDrawingDocumentObject Then Continue For
+            Try
+                If String.Equals(oDoc.FullFileName, dwgPath, StringComparison.OrdinalIgnoreCase) Then
+                    wasOpen = True
+                    Return CType(oDoc, Inventor.DrawingDocument)
+                End If
+            Catch
+            End Try
+        Next
+    Catch
+    End Try
+
+    Try
+        Return CType(ThisApplication.Documents.Open(dwgPath, False), Inventor.DrawingDocument)
+    Catch
+        Return Nothing
+    End Try
+
+End Function
+
+' 인쇄할 도면을 고르는 체크박스 창. 취소하면 Nothing 반환
+Function PickDrawingList(names As List(Of String)) As List(Of Integer)
+
+    Dim frm As New System.Windows.Forms.Form
+    Dim picked As List(Of Integer) = Nothing
+
+    Try
+        frm.Text = "인쇄할 도면 선택"
+        frm.Width  = 640
+        frm.Height = 480
+        frm.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen
+        frm.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog
+        frm.MinimizeBox = False
+        frm.MaximizeBox = False
+        frm.TopMost = True
+
+        Dim lbl As New System.Windows.Forms.Label
+        lbl.Text = "인쇄할 도면을 선택하세요. 체크를 해제하면 인쇄하지 않습니다."
+        lbl.SetBounds(12, 12, 606, 20)
+
+        Dim clb As New System.Windows.Forms.CheckedListBox
+        clb.SetBounds(12, 38, 606, 340)
+        clb.CheckOnClick = True
+
+        For Each nm As String In names
+            clb.Items.Add(nm, True)
+        Next
+
+        Dim btnOK As New System.Windows.Forms.Button
+        btnOK.Text = "확인"
+        btnOK.SetBounds(414, 392, 92, 32)
+        btnOK.DialogResult = System.Windows.Forms.DialogResult.OK
+
+        Dim btnCancel As New System.Windows.Forms.Button
+        btnCancel.Text = "취소"
+        btnCancel.SetBounds(518, 392, 92, 32)
+        btnCancel.DialogResult = System.Windows.Forms.DialogResult.Cancel
+
+        frm.Controls.Add(lbl)
+        frm.Controls.Add(clb)
+        frm.Controls.Add(btnOK)
+        frm.Controls.Add(btnCancel)
+        SetDefaultButtons(frm, btnOK, btnCancel)   ' [O] Enter / Esc
+
+        Dim res As System.Windows.Forms.DialogResult = frm.ShowDialog()
+
+        If res = System.Windows.Forms.DialogResult.OK Then
+            picked = New List(Of Integer)
+            For Each ix As Integer In clb.CheckedIndices
+                picked.Add(ix)
+            Next
+        End If
+
+    Finally
+        frm.Dispose()
+    End Try
+
+    Return picked
+
+End Function
