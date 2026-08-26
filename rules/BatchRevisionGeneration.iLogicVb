@@ -111,6 +111,14 @@
 '       -> 다른 취소 지점(도면 선택 / 현품수정 / 부품번호 편집 / 최종 확인)
 '          에서도 규칙이 연 도면을 똑같이 닫는다.
 '
+'   [O] Inventor 2026 (26.4) 으로 올리면서 컴파일이 깨진 문제
+'       iLogic 컴파일 대상이 .NET Framework 4.x 에서 최신 .NET 으로 바뀌었다.
+'       frm.AcceptButton / frm.CancelButton 대입이 인터페이스 변환이라,
+'       컴파일러가 Button 의 인터페이스 목록을 훑다가 참조되지 않은
+'       System.Private.Windows.Core 의 타입을 만나 실패한다.
+'       -> 리플렉션으로 넘긴다. 자세한 설명은 SetDefaultButtons 참고.
+'       (이 규칙은 레지스트리를 쓰지 않으므로 Vault 26 전환과는 무관하다)
+'
 '   [K] 그 밖에
 '       - ActiveDocument 접근을 Try 로 감쌌다 (문서가 하나도 없을 때 대비)
 '       - 폼을 Try / Finally 로 확실히 Dispose 한다
@@ -1183,6 +1191,49 @@ End Sub
 
 
 ' ============================================================================
+'  Enter / Esc 기본 버튼 지정                                           [O]
+'
+'  Inventor 2026 의 iLogic 은 최신 .NET 으로 컴파일한다. 그 WinForms 에서는
+'  Control 이 System.Private.Windows.Core 안의 내부 인터페이스
+'  (IHandle(Of ), IPersist.Interface) 를 구현하도록 바뀌었다.
+'
+'      frm.AcceptButton = btnOK
+'
+'  이 한 줄은 Button 을 IButtonControl 로 바꾸는 인터페이스 변환이다.
+'  컴파일러는 변환이 되는지 보려고 Button 이 구현한 인터페이스를 전부 훑는데,
+'  그 목록에 참조되지 않은 어셈블리의 타입이 끼어 있어 컴파일이 깨진다.
+'  iLogic 은 그 어셈블리를 참조하지 않는다.
+'
+'      "System.Private.Windows.Core ... 어셈블리에 대한 참조를 찾을 수 없습니다"
+'
+'  Text / Width / DialogResult 같은 값 대입은 인터페이스 변환이 아니라서
+'  멀쩡하다. 그래서 딱 이 두 줄만 오류가 났다.
+'
+'  리플렉션으로 넘기면 컴파일 시점에 인터페이스 목록을 들여다보지 않으므로
+'  문제가 사라진다. 실행 시점에는 어셈블리가 이미 메모리에 있어 정상 동작한다.
+'  혹시 실패하더라도 두 버튼에 DialogResult 가 이미 지정되어 있어
+'  마우스 클릭과 창 닫기(X)로는 그대로 동작한다.
+' ============================================================================
+Sub SetDefaultButtons(frm As System.Windows.Forms.Form, _
+                      okBtn As System.Windows.Forms.Button, _
+                      cancelBtn As System.Windows.Forms.Button)
+
+    ' Enter -> 확인
+    Try
+        frm.GetType().GetProperty("AcceptButton").SetValue(frm, okBtn)
+    Catch
+    End Try
+
+    ' Esc -> 취소
+    Try
+        frm.GetType().GetProperty("CancelButton").SetValue(frm, cancelBtn)
+    Catch
+    End Try
+
+End Sub
+
+
+' ============================================================================
 '  문서를 조용히 닫는다 (실패해도 무시)
 ' ============================================================================
 Sub TryCloseDoc(d As Inventor.Document)
@@ -1476,8 +1527,7 @@ Function PickList(names As List(Of String), prompt As String, _
         frm.Controls.Add(clb)
         frm.Controls.Add(btnOK)
         frm.Controls.Add(btnCancel)
-        frm.AcceptButton = btnOK
-        frm.CancelButton = btnCancel
+        SetDefaultButtons(frm, btnOK, btnCancel)   ' [O] Enter / Esc
 
         Dim result As System.Windows.Forms.DialogResult = frm.ShowDialog()
 
@@ -1582,8 +1632,7 @@ Function EditPartNumbers(curPNs As List(Of String), _
         btnCancel.DialogResult = System.Windows.Forms.DialogResult.Cancel
         frm.Controls.Add(btnCancel)
 
-        frm.AcceptButton = btnOK
-        frm.CancelButton = btnCancel
+        SetDefaultButtons(frm, btnOK, btnCancel)   ' [O] Enter / Esc
 
         Dim bad As Char() = System.IO.Path.GetInvalidFileNameChars()
 
@@ -1729,8 +1778,7 @@ Function PickListPre(names As List(Of String), prompt As String, _
         frm.Controls.Add(clb)
         frm.Controls.Add(btnOK)
         frm.Controls.Add(btnCancel)
-        frm.AcceptButton = btnOK
-        frm.CancelButton = btnCancel
+        SetDefaultButtons(frm, btnOK, btnCancel)   ' [O] Enter / Esc
 
         Dim result As System.Windows.Forms.DialogResult = frm.ShowDialog()
 
