@@ -1,0 +1,395 @@
+' ============================================================================
+'  Inventor iLogic Rule : 타이틀블록 도면번호 강제 갱신
+'
+'  [문제]
+'   06A.idw 를 복사해 06B.idw 로 만들고 "모형 참조 대체" 로 06B.ipt 를 물려도
+'   타이틀블록의 DRAWING NO 는 06A 그대로 남는다.
+'   참조 대체가 뷰만 교체하고 타이틀블록 필드는 다시 읽게 만들지 않기 때문.
+'
+'  [해결]
+'   모델의 부품번호를 임시값으로 바꿨다가 즉시 원래대로 되돌린다.
+'   -> 속성 변경 알림이 발생하면서 타이틀블록이 값을 다시 읽는다.
+'   -> 최종 값은 원래와 완전히 동일하다. (수작업으로 BOM 칸을 건드리던 것과 같은 원리)
+'
+'  [중요]
+'   타이틀블록에 글자를 직접 쓰지 않는다.
+'   직접 쓰면 필드 연결이 끊겨 이후 영구히 자동 갱신이 안 되므로 절대 하지 않는다.
+'
+'  [안전장치]
+'   되돌리기를 Finally 에서 보장하고, 작업 후 값이 원래와 같은지 검증한다.
+'   불일치가 하나라도 있으면 결과창에 크게 경고한다.
+'
+'  [iLogic 문법 주의]
+'   Inventor 네임스페이스에도 Path / File / Environment 타입이 있으므로
+'   System.IO.Path 처럼 반드시 풀네임으로 씁니다.
+'   Sub / Function 바깥에는 Const, Dim 선언을 둘 수 없습니다.
+'
+' ----------------------------------------------------------------------------
+'  [Inventor 2026 (26.4) 이관 수정]
+'
+'   [O] frm.AcceptButton / frm.CancelButton 대입              (312 / 313행)
+'       iLogic 컴파일 대상이 .NET Framework 4.x 에서 최신 .NET 으로 바뀌었다.
+'       위 두 줄은 Button 을 IButtonControl 로 바꾸는 인터페이스 변환인데,
+'       컴파일러가 Button 이 구현한 인터페이스를 전부 훑다가 참조되지 않은
+'       System.Private.Windows.Core 의 타입을 만나 실패한다.
+'       -> 리플렉션으로 넘긴다. 자세한 설명은 SetDefaultButtons 참고.
+'
+'   함께 고친 것
+'     · 읽기 전용 모델이 여러 도면에서 참조되면 목록에 중복으로 찍히던 것
+'     · frm.Dispose() 가 Finally 밖에 있어 예외 시 누수되던 것
+'
+'   ※ 이 규칙은 레지스트리나 Vault 경로를 읽지 않으므로
+'     Vault 26 전환이나 작업폴더 이동과는 무관하다.
+' ============================================================================
+
+
+Sub Main()
+
+    ' ── 설정 ────────────────────────────────────────────────────────────────
+    ' False : 도면이 직접 참조하는 모델만 (권장)
+    ' True  : 하위 부품까지 전부
+    Dim DEEP_REFRESH As Boolean = False
+
+    ' 되돌리기 검증에 실패하면 즉시 중단할지 여부
+    Dim STOP_ON_MISMATCH As Boolean = True
+    ' ────────────────────────────────────────────────────────────────────────
+
+    '--- 1) 열려있는 도면 수집 ----------------------------------------------
+    Dim drawings As New List(Of Inventor.DrawingDocument)
+    Dim names    As New List(Of String)
+
+    For Each oDoc As Inventor.Document In ThisApplication.Documents
+        If oDoc.DocumentType = kDrawingDocumentObject Then
+            Try
+                If Not String.IsNullOrEmpty(oDoc.FullFileName) Then
+                    Dim dd As Inventor.DrawingDocument = CType(oDoc, Inventor.DrawingDocument)
+                    drawings.Add(dd)
+                    names.Add(System.IO.Path.GetFileName(oDoc.FullFileName) & _
+                              "   (시트 " & dd.Sheets.Count & ")")
+                End If
+            Catch
+            End Try
+        End If
+    Next
+
+    If drawings.Count = 0 Then
+        MessageBox.Show("저장된 도면이 열려있지 않습니다.", "타이틀블록 갱신")
+        Return
+    End If
+
+    '--- 2) 체크박스로 도면 선택 --------------------------------------------
+    Dim picked As List(Of Integer) = PickDrawings(names)
+    If picked Is Nothing Then Return
+    If picked.Count = 0 Then
+        MessageBox.Show("선택된 도면이 없습니다.", "타이틀블록 갱신")
+        Return
+    End If
+
+    '--- 3) 대상 모델 수집 (중복 제거) --------------------------------------
+    Dim models   As New List(Of Inventor.Document)
+    Dim seenPath As New List(Of String)
+    Dim roList   As New List(Of String)
+
+    For Each ix As Integer In picked
+
+        Dim oDrw As Inventor.DrawingDocument = drawings(ix)
+
+        Dim refs As Inventor.DocumentsEnumerator
+        If DEEP_REFRESH Then
+            refs = oDrw.AllReferencedDocuments
+        Else
+            refs = oDrw.ReferencedDocuments
+        End If
+
+        For Each m As Inventor.Document In refs
+
+            Dim mpath As String = ""
+            Try
+                mpath = m.FullFileName
+            Catch
+            End Try
+            If mpath = "" Then Continue For
+
+            Dim dup As Boolean = False
+            For Each s As String In seenPath
+                If String.Equals(s, mpath, StringComparison.OrdinalIgnoreCase) Then
+                    dup = True
+                    Exit For
+                End If
+            Next
+            If dup Then Continue For
+
+            ' 읽기 전용이라 건너뛰더라도 "본 것" 으로 기록한다.
+            ' 그러지 않으면 같은 모델을 여러 도면이 참조할 때
+            ' 읽기 전용 목록에 같은 이름이 여러 번 찍힌다.
+            seenPath.Add(mpath)
+
+            Dim canEdit As Boolean = True
+            Try
+                canEdit = m.IsModifiable
+            Catch
+            End Try
+
+            If Not canEdit Then
+                roList.Add(System.IO.Path.GetFileName(mpath))
+                Continue For
+            End If
+
+            models.Add(m)
+
+        Next
+    Next
+
+    If models.Count = 0 Then
+        Dim nm As String = "갱신할 모델이 없습니다."
+        If roList.Count > 0 Then
+            nm &= vbCrLf & vbCrLf & "[읽기 전용]" & vbCrLf & String.Join(vbCrLf, roList.ToArray())
+        End If
+        MessageBox.Show(nm, "타이틀블록 갱신")
+        Return
+    End If
+
+    '--- 4) 확인 ------------------------------------------------------------
+    Dim prev As String = ""
+    For i As Integer = 0 To models.Count - 1
+        prev &= (i + 1) & ". " & System.IO.Path.GetFileName(models(i).FullFileName) & _
+                "   [" & ReadPN(models(i)) & "]" & vbCrLf
+    Next
+
+    Dim ask As String = "아래 모델의 부품번호를 임시로 바꿨다가 즉시 되돌립니다." & vbCrLf & _
+                        "최종 값은 지금과 완전히 동일합니다." & vbCrLf & vbCrLf & _
+                        "도면 " & picked.Count & "개 / 모델 " & models.Count & "개" & vbCrLf & vbCrLf & prev
+
+    If MessageBox.Show(ask, "타이틀블록 갱신 - 확인", MessageBoxButtons.OKCancel) <> DialogResult.OK Then
+        Return
+    End If
+
+    '--- 5) 토글 실행 --------------------------------------------------------
+    Dim okCount   As Integer = 0
+    Dim mismatch  As New List(Of String)
+    Dim errList   As New List(Of String)
+
+    Dim prevSilent As Boolean = ThisApplication.SilentOperation
+
+    Try
+        ThisApplication.SilentOperation = True
+
+        For Each m As Inventor.Document In models
+
+            Dim mname As String = System.IO.Path.GetFileName(m.FullFileName)
+            Dim original As String = ReadPN(m)
+
+            If original = "읽기실패" Then
+                errList.Add(mname & " : 부품번호를 읽을 수 없음")
+                Continue For
+            End If
+
+            Dim restored As Boolean = False
+
+            Try
+                ' 임시값으로 변경 -> 속성 변경 알림 발생
+                WritePN(m, original & "#")
+
+                ' 원래 값으로 복원 -> 두 번째 알림
+                WritePN(m, original)
+                restored = True
+
+            Catch ex As Exception
+                errList.Add(mname & " : " & ex.Message)
+
+            Finally
+                ' 예외가 났더라도 반드시 원래 값으로 되돌린다
+                If Not restored Then
+                    Try
+                        WritePN(m, original)
+                    Catch
+                    End Try
+                End If
+            End Try
+
+            ' 검증 - 최종 값이 원래와 같은지 확인
+            Dim after As String = ReadPN(m)
+            If String.Equals(after, original, StringComparison.Ordinal) Then
+                okCount += 1
+            Else
+                mismatch.Add(mname & vbCrLf & "     원래 : [" & original & "]" & vbCrLf & _
+                             "     현재 : [" & after & "]")
+                If STOP_ON_MISMATCH Then Exit For
+            End If
+
+        Next
+
+        '--- 6) 도면 갱신 ----------------------------------------------------
+        If mismatch.Count = 0 Then
+            For Each ix As Integer In picked
+                Try
+                    drawings(ix).Update()
+                Catch ex As Exception
+                    errList.Add(System.IO.Path.GetFileName(drawings(ix).FullFileName) & " : " & ex.Message)
+                End Try
+            Next
+        End If
+
+    Catch ex As Exception
+        errList.Add("전체 처리 오류 : " & ex.Message)
+
+    Finally
+        ThisApplication.SilentOperation = prevSilent
+    End Try
+
+    '--- 7) 결과 보고 --------------------------------------------------------
+    Dim msg As String = ""
+
+    If mismatch.Count > 0 Then
+        msg &= "★★ 경고 : 되돌리기에 실패한 모델이 있습니다 ★★" & vbCrLf & vbCrLf & _
+               String.Join(vbCrLf, mismatch.ToArray()) & vbCrLf & vbCrLf & _
+               "위 모델의 부품번호를 직접 확인하고 수정하세요." & vbCrLf & _
+               "저장하지 마세요. 닫고 다시 열면 원래대로 돌아갑니다." & vbCrLf & vbCrLf
+    Else
+        msg &= "갱신 완료" & vbCrLf & vbCrLf
+    End If
+
+    msg &= "모델 : " & okCount & " / " & models.Count & "개 처리" & vbCrLf
+    msg &= "도면 : " & picked.Count & "개 갱신"
+
+    If roList.Count > 0 Then
+        msg &= vbCrLf & vbCrLf & "[읽기 전용 - 건너뜀]" & vbCrLf & String.Join(vbCrLf, roList.ToArray())
+    End If
+    If errList.Count > 0 Then
+        msg &= vbCrLf & vbCrLf & "[오류]" & vbCrLf & String.Join(vbCrLf, errList.ToArray())
+    End If
+
+    If mismatch.Count = 0 Then
+        msg &= vbCrLf & vbCrLf & "※ 타이틀블록의 DRAWING NO 를 확인한 뒤 저장하세요."
+    End If
+
+    MessageBox.Show(msg, "타이틀블록 갱신")
+
+End Sub
+
+
+' ============================================================================
+'  부품번호 읽기
+' ============================================================================
+Function ReadPN(d As Inventor.Document) As String
+    Try
+        Return CStr(d.PropertySets.Item("Design Tracking Properties").Item("Part Number").Value)
+    Catch
+        Return "읽기실패"
+    End Try
+End Function
+
+
+' ============================================================================
+'  부품번호 쓰기
+' ============================================================================
+Sub WritePN(d As Inventor.Document, v As String)
+    d.PropertySets.Item("Design Tracking Properties").Item("Part Number").Value = v
+End Sub
+
+
+' ============================================================================
+'  Enter / Esc 기본 버튼 지정                                           [O]
+'
+'  Inventor 2026 의 iLogic 은 최신 .NET 으로 컴파일한다. 그 WinForms 에서는
+'  Control 이 System.Private.Windows.Core 안의 내부 인터페이스
+'  (IHandle(Of ), IPersist.Interface) 를 구현하도록 바뀌었다.
+'
+'      frm.AcceptButton = btnOK
+'
+'  이 한 줄은 Button 을 IButtonControl 로 바꾸는 인터페이스 변환이다.
+'  컴파일러는 변환이 되는지 보려고 Button 이 구현한 인터페이스를 전부 훑는데,
+'  그 목록에 참조되지 않은 어셈블리의 타입이 끼어 있어 컴파일이 깨진다.
+'
+'      "System.Private.Windows.Core ... 어셈블리에 대한 참조를 찾을 수 없습니다"
+'
+'  Text / Width / DialogResult 같은 값 대입은 인터페이스 변환이 아니라서
+'  멀쩡하다. 그래서 딱 이 두 줄만 오류가 났다.
+'
+'  리플렉션으로 넘기면 컴파일 시점에 인터페이스 목록을 들여다보지 않으므로
+'  문제가 사라진다. 실행 시점에는 어셈블리가 이미 메모리에 있어 정상 동작한다.
+'  혹시 실패하더라도 두 버튼에 DialogResult 가 이미 지정되어 있어
+'  마우스 클릭과 창 닫기(X)로는 그대로 동작한다.
+' ============================================================================
+Sub SetDefaultButtons(frm As System.Windows.Forms.Form, _
+                      okBtn As System.Windows.Forms.Button, _
+                      cancelBtn As System.Windows.Forms.Button)
+
+    ' Enter -> 확인
+    Try
+        frm.GetType().GetProperty("AcceptButton").SetValue(frm, okBtn)
+    Catch
+    End Try
+
+    ' Esc -> 취소
+    Try
+        frm.GetType().GetProperty("CancelButton").SetValue(frm, cancelBtn)
+    Catch
+    End Try
+
+End Sub
+
+
+' ============================================================================
+'  체크박스 목록으로 도면 선택
+'  반환 : 선택된 인덱스 목록 / 취소하면 Nothing
+' ============================================================================
+Function PickDrawings(names As List(Of String)) As List(Of Integer)
+
+    Dim frm As New System.Windows.Forms.Form
+    Dim picked As List(Of Integer) = Nothing
+
+    Try
+        frm.Text = "갱신할 도면 선택"
+        frm.Width  = 576
+        frm.Height = 480
+        frm.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen
+        frm.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog
+        frm.MinimizeBox = False
+        frm.MaximizeBox = False
+        frm.TopMost = True
+
+        Dim lbl As New System.Windows.Forms.Label
+        lbl.Text = "타이틀블록을 갱신할 도면을 선택하세요. (기본값 : 전체)"
+        lbl.SetBounds(12, 12, 536, 20)
+
+        Dim clb As New System.Windows.Forms.CheckedListBox
+        clb.SetBounds(12, 38, 536, 340)
+        clb.CheckOnClick = True
+
+        For Each nm As String In names
+            clb.Items.Add(nm, True)
+        Next
+
+        Dim btnOK As New System.Windows.Forms.Button
+        btnOK.Text = "확인"
+        btnOK.SetBounds(352, 392, 92, 32)
+        btnOK.DialogResult = System.Windows.Forms.DialogResult.OK
+
+        Dim btnCancel As New System.Windows.Forms.Button
+        btnCancel.Text = "취소"
+        btnCancel.SetBounds(456, 392, 92, 32)
+        btnCancel.DialogResult = System.Windows.Forms.DialogResult.Cancel
+
+        frm.Controls.Add(lbl)
+        frm.Controls.Add(clb)
+        frm.Controls.Add(btnOK)
+        frm.Controls.Add(btnCancel)
+        SetDefaultButtons(frm, btnOK, btnCancel)   ' [O] Enter / Esc
+
+        Dim result As System.Windows.Forms.DialogResult = frm.ShowDialog()
+
+        If result = System.Windows.Forms.DialogResult.OK Then
+            picked = New List(Of Integer)
+            For Each ix As Integer In clb.CheckedIndices
+                picked.Add(ix)
+            Next
+        End If
+
+    Finally
+        frm.Dispose()
+    End Try
+
+    Return picked
+
+End Function
