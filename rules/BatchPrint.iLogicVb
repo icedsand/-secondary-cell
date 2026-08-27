@@ -24,6 +24,27 @@
 '
 '   ※ 이 규칙은 Vault 나 작업폴더 경로를 읽지 않는다. 도면 경로는 전부
 '     열려있는 문서 자신에게서 얻으므로 작업폴더가 옮겨가도 그대로 따라간다.
+'
+' ----------------------------------------------------------------------------
+'  [Q] 이전판(구본) 도면이 안 열려있을 때 인쇄가 안 되던 문제
+'
+'      이미 열려있던 이전판은 멀쩡히 인쇄되는데, 규칙이 직접 연 이전판만
+'      인쇄가 안 됐다. 그 둘의 차이는 두 가지뿐이었다.
+'
+'        1. 규칙이 열 때 Documents.Open(경로, False) 로 숨겨서 열었다.
+'           화면에 그려진 적이 없는 도면은 SubmitPrint 를 해도 인쇄할
+'           내용이 준비되지 않아 아무것도 나오지 않는 경우가 있다.
+'           -> 보이게 연다. (OPEN_PREV_VISIBLE)
+'
+'        2. 규칙이 연 도면만 인쇄 직후에 닫았다.
+'           SubmitPrint 는 작업을 넘기고 곧바로 돌아오므로, 인쇄 데이터가
+'           스풀러로 다 넘어가기 전에 닫으면 그 작업이 통째로 사라진다.
+'           -> 잠시 기다린 뒤 닫는다. (CLOSE_DELAY_SEC)
+'
+'      이미 열려있던 도면은 둘 다 해당되지 않아 정상이었다.
+'
+'      그래도 안 되면 CLOSE_OPENED = False 로 두고 시험해 보세요.
+'      그때 인쇄가 되면 원인은 2번이므로 CLOSE_DELAY_SEC 를 늘리면 됩니다.
 ' ============================================================================
 
 Sub Main()
@@ -35,6 +56,10 @@ Sub Main()
     Dim ADD_PREV_REV  As Boolean = True
     Dim FIELD_MOD_TAG As String  = "(현품수정)"
     Dim CLOSE_OPENED  As Boolean = True    ' 이번에 새로 연 이전판 도면을 인쇄 후 닫기
+
+    ' [Q] 이전판이 안 열려있을 때 인쇄가 안 되던 문제 - 아래 설명 참고
+    Dim OPEN_PREV_VISIBLE As Boolean = True   ' 이전판을 화면에 보이게 연다
+    Dim CLOSE_DELAY_SEC   As Integer = 5      ' 인쇄 전송 후 닫기까지 기다릴 초
 
     Dim FIXED_PRINTER  As String = "KONICA MINOLTA C368SeriesPCL"
 
@@ -150,7 +175,8 @@ Sub Main()
             If Not String.Equals(prevOwner(k2), myPath, StringComparison.OrdinalIgnoreCase) Then Continue For
 
             Dim wasOpen As Boolean = False
-            Dim pd As Inventor.DrawingDocument = GetOrOpenDrawing(prevNeed(k2), wasOpen)
+            Dim pd As Inventor.DrawingDocument = _
+                GetOrOpenDrawing(prevNeed(k2), OPEN_PREV_VISIBLE, wasOpen)
 
             If pd Is Nothing Then
                 prevMiss.Add(System.IO.Path.GetFileNameWithoutExtension(prevNeed(k2)) & " : 도면을 열 수 없음")
@@ -479,7 +505,17 @@ Sub Main()
     ThisApplication.StatusBarText = ""
 
     Dim closed As Integer = 0
-    If CLOSE_OPENED Then
+    If CLOSE_OPENED AndAlso openedByUs.Count > 0 Then
+
+        ' [Q] SubmitPrint 는 작업을 넘기고 곧바로 돌아온다. 실제 인쇄 데이터가
+        '     스풀러로 다 넘어가기 전에 문서를 닫으면 그 작업이 통째로 사라진다.
+        '     이미 열려있던 도면은 닫지 않으니 이 문제를 겪지 않았고,
+        '     규칙이 연 이전판만 인쇄가 안 되는 것처럼 보였다.
+        '     스풀러가 가져갈 시간을 준 뒤에 닫는다.
+        ThisApplication.StatusBarText = "인쇄 작업 전송 대기 중..."
+        WaitSeconds(CLOSE_DELAY_SEC)
+        ThisApplication.StatusBarText = ""
+
         For Each od As Inventor.Document In openedByUs
             Try
                 od.Close(True)      ' True = 저장하지 않고 닫기
@@ -498,7 +534,9 @@ Sub Main()
 
     If openedByUs.Count > 0 Then
         msg &= vbCrLf & "이전판 : " & openedByUs.Count & "개 자동 추가"
-        If CLOSE_OPENED Then msg &= " (" & closed & "개 닫음)"
+        If CLOSE_OPENED Then
+            msg &= " (" & CLOSE_DELAY_SEC & "초 대기 후 " & closed & "개 닫음)"
+        End If
     End If
 
     If prevMiss.Count > 0 Then
@@ -647,6 +685,28 @@ Sub SetDefaultButtons(frm As System.Windows.Forms.Form, _
 End Sub
 
 
+' ============================================================================
+'  지정한 초만큼 기다린다.                                              [Q]
+'  그냥 멈춰 있으면 인벤터 화면이 얼어붙은 것처럼 보이므로,
+'  짧게 끊어 자면서 메시지를 처리해 준다.
+' ============================================================================
+Sub WaitSeconds(sec As Integer)
+
+    If sec <= 0 Then Return
+
+    Dim t0 As DateTime = DateTime.Now
+
+    Do While (DateTime.Now - t0).TotalSeconds < sec
+        Try
+            System.Windows.Forms.Application.DoEvents()
+        Catch
+        End Try
+        System.Threading.Thread.Sleep(100)
+    Loop
+
+End Sub
+
+
 ' 도면이 참조하는 모델의 부품번호
 Function ModelPN(oDrw As Inventor.DrawingDocument) As String
     Try
@@ -732,8 +792,19 @@ Function FindDrawingByName(dir As String, baseName As String) As String
 
 End Function
 
-' 도면을 얻는다. 이미 열려있으면 그대로 쓰고, 아니면 새로 연다.
-Function GetOrOpenDrawing(dwgPath As String, ByRef wasOpen As Boolean) As Inventor.DrawingDocument
+' ============================================================================
+'  도면을 얻는다. 이미 열려있으면 그대로 쓰고, 아니면 새로 연다.
+'
+'  visible : 새로 열 때 화면에 표시할지                                  [Q]
+'
+'  예전에는 무조건 False(숨김)로 열었다. 그런데 숨겨서 연 도면은
+'  SubmitPrint 를 해도 아무것도 나오지 않는 경우가 있다. 화면에 그려진 적이
+'  없어서 인쇄할 내용이 준비되지 않기 때문이다.
+'  이미 열려있던 도면은 당연히 화면에 있으므로 멀쩡히 인쇄됐고,
+'  그래서 "이전판이 안 열려있을 때만 인쇄가 안 되는" 것처럼 보였다.
+' ============================================================================
+Function GetOrOpenDrawing(dwgPath As String, visible As Boolean, _
+                          ByRef wasOpen As Boolean) As Inventor.DrawingDocument
 
     wasOpen = False
 
@@ -752,7 +823,7 @@ Function GetOrOpenDrawing(dwgPath As String, ByRef wasOpen As Boolean) As Invent
     End Try
 
     Try
-        Return CType(ThisApplication.Documents.Open(dwgPath, False), Inventor.DrawingDocument)
+        Return CType(ThisApplication.Documents.Open(dwgPath, visible), Inventor.DrawingDocument)
     Catch
         Return Nothing
     End Try
