@@ -119,6 +119,18 @@
 '       -> 리플렉션으로 넘긴다. 자세한 설명은 SetDefaultButtons 참고.
 '       (이 규칙은 레지스트리를 쓰지 않으므로 Vault 26 전환과는 무관하다)
 '
+'   [R] 다음 리비전이 이미 있으면 아예 손을 댈 수 없던 문제  (요청)
+'       01-15 를 골랐는데 01-15A 가 이미 폴더에 있으면 그 부품이 목록에서
+'       통째로 빠졌다. "최신 리비전을 열고 실행하세요" 라는 안내만 나왔다.
+'       -> 이제 이미 있는 것 중 가장 높은 리비전을 찾아 그 다음 번호를
+'          목표로 잡고, 진행할지 물어본다.
+'            01-15A 가 있으면  ->  01-15B 로 만들지 묻는다
+'          [예] 만든다  [아니오] 이 부품만 건너뛴다  [취소] 규칙 중단
+'       -> 복사 원본은 지금 고른 01-15 이다. 01-15A 가 아니다.
+'          01-15A 에서 바뀐 내용은 따라오지 않으므로 창에 그 사실을 적는다.
+'       -> 중간 리비전을 지운 경우(01-15B 없이 01-15A, 01-15C)도 대비해
+'          한 칸 비었다고 멈추지 않는다. LatestExistingRev 참고.
+'
 '   [K] 그 밖에
 '       - ActiveDocument 접근을 Try 로 감쌌다 (문서가 하나도 없을 때 대비)
 '       - 폼을 Try / Finally 로 확실히 Dispose 한다
@@ -154,8 +166,8 @@ Sub Main()
     Dim models   As New List(Of Inventor.Document)
     Dim names    As New List(Of String)
     Dim newPNs   As New List(Of String)
-    Dim already  As New List(Of String)   ' 다음 리비전이 이미 있어 제외된 것
     Dim noDwg    As New List(Of String)   ' 도면 파일을 못 찾은 부품
+    Dim existed  As New List(Of String)   ' 이미 있는 최신 리비전 (없으면 "")  [R]
     Dim skipped  As New List(Of String)   ' 그 밖의 사유로 제외된 것  [I]
 
     '--- 1-1) 작업 방식 결정 -------------------------------------------------
@@ -323,36 +335,43 @@ Sub Main()
             Continue For
         End If
 
-        ' 다음 리비전 파일이 이미 있으면 목록에서 제외한다.
-        ' 결과적으로 각 부품의 "최신 리비전" 만 목록에 남는다.
         Dim mDir As String = System.IO.Path.GetDirectoryName(mdl.FullFileName)
         Dim dDir As String = System.IO.Path.GetDirectoryName(oDrw.FullFileName)
         Dim mExt As String = System.IO.Path.GetExtension(mdl.FullFileName)
         Dim dExt As String = System.IO.Path.GetExtension(oDrw.FullFileName)
 
-        Dim tIpt As String = System.IO.Path.Combine(mDir, nextPN & mExt)
-        Dim tIdw As String = System.IO.Path.Combine(dDir, nextPN & dExt)
+        ' [R] 예전에는 다음 리비전 파일이 이미 있으면 목록에서 통째로 뺐다.
+        '     그래서 01-15 를 열어놓고 01-15A 가 이미 있으면 아무것도 못 했다.
+        '     이제는 이미 있는 것 중 가장 높은 리비전을 찾아 그 다음 번호를
+        '     목표로 잡고, 진행할지 아래 2-0 에서 물어본다.
+        Dim lastRev As String = LatestExistingRev(curPN, SKIP_LETTERS, _
+                                                  mDir, mExt, dDir, dExt)
 
-        If System.IO.File.Exists(tIpt) OrElse System.IO.File.Exists(tIdw) Then
-            already.Add(curPN & "  →  " & nextPN & "  (이미 존재)")
-            Continue For
+        If lastRev <> "" Then
+            Dim adv As String = BumpPartNumber(lastRev, SKIP_LETTERS)
+            If adv = "" Then
+                skipped.Add(curPN & "  (" & lastRev & " 의 다음 리비전을 계산하지 못함)")
+                Continue For
+            End If
+            nextPN = adv
         End If
 
         drawings.Add(oDrw)
         models.Add(mdl)
         newPNs.Add(nextPN)
-        names.Add(curPN & "   →   " & nextPN)
+        existed.Add(lastRev)
+
+        If lastRev = "" Then
+            names.Add(curPN & "   →   " & nextPN)
+        Else
+            names.Add(curPN & "   →   " & nextPN & "   (" & lastRev & " 이미 있음)")
+        End If
 
     Next
 
     If drawings.Count = 0 Then
         Dim nm As String = "대상 도면이 없습니다." & vbCrLf & vbCrLf & _
                            "조건 : 저장된 도면 / 참조 모델 1개 / 사내 도면번호 형식"
-        If already.Count > 0 Then
-            nm &= vbCrLf & vbCrLf & "[다음 리비전이 이미 있어 제외됨]" & vbCrLf & _
-                  String.Join(vbCrLf, already.ToArray()) & vbCrLf & vbCrLf & _
-                  "더 올리려면 해당 도면의 최신 리비전을 열고 실행하세요."
-        End If
         If noDwg.Count > 0 Then
             nm &= vbCrLf & vbCrLf & "[도면 파일을 찾지 못함]" & vbCrLf & _
                   String.Join(vbCrLf, noDwg.ToArray()) & vbCrLf & _
@@ -369,9 +388,6 @@ Sub Main()
 
     '--- 2) 대상 선택 --------------------------------------------------------
     Dim pickMsg As String = "리비전을 딸 도면을 선택하세요."
-    If already.Count > 0 Then
-        pickMsg &= "   (다음 리비전이 이미 있는 " & already.Count & "건 제외)"
-    End If
     If noDwg.Count > 0 Then
         pickMsg &= "   (도면을 못 찾은 " & noDwg.Count & "건 제외)"
     End If
@@ -405,6 +421,55 @@ Sub Main()
     If picked.Count = 0 Then
         CloseOpenedDrawings(openedByRule)
         MessageBox.Show("선택된 도면이 없습니다.", "리비전 생성")
+        Return
+    End If
+
+    '--- 2-0) 이미 다음 리비전이 있는 항목 확인 --------------------------  [R]
+    '     01-15 를 골랐는데 01-15A 가 이미 폴더에 있는 경우.
+    '     예전에는 목록에서 아예 빠져 손을 댈 수 없었다.
+    '     이제는 최신 리비전(01-15A) 다음 번호(01-15B)로 만들지 물어본다.
+    '     복사 원본은 지금 고른 01-15 이다. 01-15A 가 아니다.
+    Dim confirmed As New List(Of Integer)
+
+    For Each ix As Integer In picked
+
+        If existed(ix) = "" Then
+            confirmed.Add(ix)          ' 다음 리비전이 비어 있으면 물을 것이 없다
+            Continue For
+        End If
+
+        Dim srcPN As String = ReadPN(models(ix))
+
+        Dim q1 As System.Windows.Forms.DialogResult = MessageBox.Show( _
+            srcPN & " 의 다음 리비전이 이미 있습니다." & vbCrLf & vbCrLf & _
+            "   이미 있는 최신 리비전 : " & existed(ix) & vbCrLf & _
+            "   새로 만들 리비전       : " & newPNs(ix) & vbCrLf & vbCrLf & _
+            "새 리비전은 지금 고른 " & srcPN & " 에서 복사합니다." & vbCrLf & _
+            existed(ix) & " 에서 바뀐 내용은 반영되지 않습니다." & vbCrLf & vbCrLf & _
+            "[예]     " & newPNs(ix) & " 로 새로 만듭니다" & vbCrLf & _
+            "[아니오]  이 부품은 건너뜁니다" & vbCrLf & _
+            "[취소]   규칙 실행을 취소합니다", _
+            "리비전 생성 - 이미 있는 리비전", MessageBoxButtons.YesNoCancel)
+
+        If q1 = DialogResult.Yes Then
+            confirmed.Add(ix)
+
+        ElseIf q1 = DialogResult.Cancel Then
+            CloseOpenedDrawings(openedByRule)
+            MessageBox.Show("규칙 실행을 취소했습니다." & vbCrLf & _
+                            "만들어진 파일은 없습니다.", "리비전 생성")
+            Return
+        End If
+        ' 아니오 - 이 부품만 목록에서 뺀다
+
+    Next
+
+    picked = confirmed
+
+    If picked.Count = 0 Then
+        CloseOpenedDrawings(openedByRule)
+        MessageBox.Show("처리할 부품이 없습니다." & vbCrLf & _
+                        "이미 리비전이 있는 부품을 모두 건너뛰었습니다.", "리비전 생성")
         Return
     End If
 
@@ -1396,6 +1461,59 @@ Function ApplyTag(src As String, tag As String, want As Boolean) As String
     Loop
 
     Return res.Trim()
+
+End Function
+
+
+' ============================================================================
+'  이미 만들어져 있는 리비전 중 가장 높은 것을 찾는다                    [R]
+'
+'  01-15 를 받으면 01-15A, 01-15B ... 를 차례로 확인하면서
+'  모델이나 도면 파일이 있는 마지막 리비전을 돌려준다.
+'  하나도 없으면 "" 를 돌려준다.
+'
+'  한 칸 비었다고 바로 멈추지 않는다. 중간 리비전을 지운 경우가 있기 때문이다.
+'  01-15A 와 01-15C 가 있고 B 만 없을 때 B 를 최신으로 보면 안 되고 C 로 봐야
+'  한다. 그래서 연달아 GAP 개가 비었을 때 비로소 멈춘다.
+' ============================================================================
+Function LatestExistingRev(curPN As String, skipLetters As String, _
+                           mDir As String, mExt As String, _
+                           dDir As String, dExt As String) As String
+
+    Dim GAP  As Integer = 3      ' 연속으로 이만큼 비면 멈춘다
+    Dim SCAN As Integer = 60     ' 무한 반복 방지
+
+    Dim last  As String = ""
+    Dim probe As String = curPN
+    Dim miss  As Integer = 0
+
+    For n As Integer = 1 To SCAN
+
+        Dim nxt As String = BumpPartNumber(probe, skipLetters)
+        If nxt = "" Then Exit For
+
+        Dim hit As Boolean = False
+        Try
+            If System.IO.File.Exists(System.IO.Path.Combine(mDir, nxt & mExt)) Then
+                hit = True
+            ElseIf System.IO.File.Exists(System.IO.Path.Combine(dDir, nxt & dExt)) Then
+                hit = True
+            End If
+        Catch
+        End Try
+
+        If hit Then
+            last = nxt
+            miss = 0
+        Else
+            miss += 1
+            If miss >= GAP Then Exit For
+        End If
+
+        probe = nxt
+    Next
+
+    Return last
 
 End Function
 
