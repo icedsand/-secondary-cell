@@ -1,0 +1,904 @@
+' ============================================================================
+'  유닛 이름 일괄 변경 (made by pjh)
+'
+'  같은 유닛을 새 프로젝트로 다시 내보낼 때, 프로젝트 코드만 바꿔서
+'  파일이름과 부품번호를 한 번에 치환한다.
+'
+'      LIKG-LM2102-FTL02-01.ipt  ->  LIKG-LM2602-FTL02-01.ipt
+'                 ~~~~                          ~~~~
+'                 찾을 문자열                   바꿀 문자열
+'
+' ----------------------------------------------------------------------------
+'  [쓰는 법]
+'
+'   1. 서버에서 유닛 폴더를 통째로 개인 작업공간에 복사해 온다.
+'   2. 그 폴더의 최상위 조립도(.iam) 하나만 연다. 다른 문서는 전부 닫는다.
+'   3. 이 규칙을 실행한다.
+'   4. 찾을 문자열 / 바꿀 문자열을 넣는다.          (예: LM2102 -> LM2602)
+'   5. 미리보기에서 옛이름 -> 새이름을 확인하고 실행한다.
+'
+'  BOM 을 열 필요도, 부품을 고를 필요도, 서브조립도에 들어갈 필요도 없다.
+'  최상위 조립도 하나에서 한 번 돌리면 트리 전체가 처리된다.
+'
+' ----------------------------------------------------------------------------
+'  [동작 원리]  왜 사본을 만들지 않는가
+'
+'   Document.SaveAs 의 두 번째 인자가 이 규칙의 전부다.
+'
+'     SaveAs(경로, True)   사본 저장. 열려있는 문서는 옛 파일에 그대로 남는다.
+'                          -> 조립도/도면 참조를 손수 이어붙여야 한다.
+'
+'     SaveAs(경로, False)  문서 자신이 새 파일로 옮겨간다. 그리고 인벤터가
+'                          "열려있는 모든 상위 문서의 참조를 자동으로 갱신"한다.
+'                          -> 참조를 손댈 필요가 없다.
+'
+'   그래서 순서가 이렇게 된다.
+'
+'     1) 최상위 조립도를 연다              - 트리 전체가 메모리에 올라온다
+'     2) 관련 도면을 전부 연다 (비표시)     - 도면도 부품을 참조한 상태가 된다
+'        ※ 반드시 이름 바꾸기 전에. 뒤에 열면 옛 파일을 찾다 실패한다.
+'     3) 트리 아래쪽(부품)부터 위쪽(최상위)으로 SaveAs(새이름, False)
+'     4) 도면도 SaveAs(새이름, False)
+'     5) 전부 저장
+'     6) 옛 파일은 디스크에 남으므로 _OLD 폴더로 옮긴다 (지우지 않는다)
+'
+' ----------------------------------------------------------------------------
+'  [구매품은 저절로 걸러진다]
+'
+'   찾을 문자열(LM2102)은 우리가 설계한 가공품 이름에만 들어있다.
+'   구매품은 제조사 품번이라 그 문자열이 없다. 그래서
+'
+'       파일이름에 찾을 문자열이 없으면 건드리지 않는다
+'
+'   이 한 줄이 곧 가공품/구매품 판별기다. 별도 목록이 필요없다.
+'   컨텐츠센터 부품, 라이브러리 부품도 같은 이유로 자동 제외된다.
+'
+'   미리보기 아래쪽에 "바뀌지 않는 파일" 목록을 같이 띄운다.
+'   거기 가공품이 섞여 있으면 이름 규칙에서 벗어난 파일이라는 뜻이다.
+'
+' ----------------------------------------------------------------------------
+'  [안전장치]
+'
+'   - 새 이름이 이미 있으면 그 항목을 막는다. _2 를 붙이지 않는다.
+'     이 작업에서 _2 는 잘못된 번호가 발주로 나간다는 뜻이다.
+'   - 옛 파일은 지우지 않고 _OLD 폴더로 옮긴다. 되돌릴 유일한 수단이다.
+'   - 읽기전용 파일은 건드리지 않는다.
+'   - 실행 전 미리보기에서 항목별로 뺄 수 있다.
+'
+'  [Vault 로 옮긴 뒤에는]
+'   Vault Professional 의 Copy Design 이 이 작업을 정식으로 지원한다.
+'   번호매기기 규칙으로 일괄 치환이 되고, 어느 조립도가 그 부품을 쓰는지도
+'   Vault 가 추적한다. 이 규칙은 그 전까지 쓰는 다리다.
+'
+'  ※ 폴더 이름은 바꾸지 않는다. 파일 이름과 부품번호만 바꾼다.
+' ============================================================================
+
+Sub Main()
+
+    ' ---- 설정 --------------------------------------------------------------
+    Dim MOVE_OLD_FILES As Boolean = True   ' 옛 파일을 _OLD 폴더로 옮긴다
+    Dim SCAN_ALL_IDW   As Boolean = True   ' 이름이 안 맞는 도면도 열어서 참조를 확인
+    Dim RENAME_TOP_ASM As Boolean = True   ' 최상위 조립도 이름도 바꾼다
+    Dim DWG_ROOT       As String  = ""     ' 도면 검색 폴더. 비우면 조립도 폴더
+
+    Dim TITLE As String = "유닛 이름 일괄 변경"
+
+    ' ---- 1. 최상위 조립도 확인 ---------------------------------------------
+    If ThisApplication.ActiveDocumentType <> kAssemblyDocumentObject Then
+        MessageBox.Show("최상위 조립도(.iam)를 연 상태에서 실행하세요.", TITLE, _
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning)
+        Return
+    End If
+
+    Dim oTop As AssemblyDocument = ThisApplication.ActiveDocument
+    If String.IsNullOrEmpty(oTop.FullFileName) Then
+        MessageBox.Show("조립도를 먼저 저장한 뒤 실행하세요.", TITLE, _
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning)
+        Return
+    End If
+
+    Dim topDir As String = System.IO.Path.GetDirectoryName(oTop.FullFileName)
+
+    ' 다른 문서가 열려있으면 그쪽 참조까지 끌려간다. 알려만 주고 막지는 않는다.
+    Dim strays As New List(Of String)
+    For Each oOther As Document In ThisApplication.Documents
+        If oOther.DocumentType = kDrawingDocumentObject Then Continue For
+        If String.IsNullOrEmpty(oOther.FullFileName) Then Continue For
+        If String.Equals(oOther.FullFileName, oTop.FullFileName, StringComparison.OrdinalIgnoreCase) Then Continue For
+        If IsInTree(oTop, oOther) Then Continue For
+        strays.Add(System.IO.Path.GetFileName(oOther.FullFileName))
+    Next
+    If strays.Count > 0 Then
+        Dim ans As DialogResult = MessageBox.Show( _
+            "이 조립도와 상관없는 문서가 " & strays.Count & " 개 열려있습니다." & vbCrLf & vbCrLf & _
+            String.Join(vbCrLf, strays.ToArray()) & vbCrLf & vbCrLf & _
+            "같은 부품을 쓰고 있으면 그쪽 참조까지 함께 바뀝니다." & vbCrLf & _
+            "닫고 다시 실행하시길 권합니다. 그래도 계속할까요?", _
+            TITLE, MessageBoxButtons.YesNo, MessageBoxIcon.Warning)
+        If ans <> DialogResult.Yes Then Return
+    End If
+
+    ' ---- 2. 찾을 문자열 / 바꿀 문자열 --------------------------------------
+    Dim findStr As String = ""
+    Dim replStr As String = ""
+    If Not AskFindReplace(System.IO.Path.GetFileName(oTop.FullFileName), findStr, replStr) Then Return
+
+    ' ---- 3. 대상 문서 수집 (트리 전체) -------------------------------------
+    '  AllReferencedDocuments 는 깊이에 상관없이 트리 전체를 평평한 목록으로
+    '  돌려준다. 서브조립도도 이 목록의 한 항목일 뿐이라 부품과 똑같이 다룬다.
+    Dim docs As New List(Of Document)
+    Dim seen As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+
+    For Each d As Document In oTop.AllReferencedDocuments
+        If d.DocumentType <> kPartDocumentObject AndAlso _
+           d.DocumentType <> kAssemblyDocumentObject Then Continue For
+        If String.IsNullOrEmpty(d.FullFileName) Then Continue For
+        If seen.Add(d.FullFileName) Then docs.Add(d)
+    Next
+    If RENAME_TOP_ASM Then
+        If seen.Add(oTop.FullFileName) Then docs.Add(oTop)
+    End If
+
+    ' 트리 아래쪽부터 처리해야 조립도가 두 번 더렵혀지지 않는다.
+    Dim depthCache As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
+    Dim plan As New List(Of RenameItem)
+    Dim skipped As New List(Of String)
+
+    For Each d As Document In docs
+        Dim oldPath As String = d.FullFileName
+        Dim oldBase As String = System.IO.Path.GetFileNameWithoutExtension(oldPath)
+
+        If oldBase.IndexOf(findStr, StringComparison.Ordinal) < 0 Then
+            skipped.Add(System.IO.Path.GetFileName(oldPath) & "   (찾을 문자열 없음)")
+            Continue For
+        End If
+        If IsReadOnlyFile(oldPath) Then
+            skipped.Add(System.IO.Path.GetFileName(oldPath) & "   (읽기전용)")
+            Continue For
+        End If
+
+        Dim it As New RenameItem
+        it.Doc     = d
+        it.OldPath = oldPath
+        it.NewPath = System.IO.Path.Combine( _
+                        System.IO.Path.GetDirectoryName(oldPath), _
+                        oldBase.Replace(findStr, replStr) & System.IO.Path.GetExtension(oldPath))
+        it.Depth   = TreeDepth(d, depthCache, 0)
+        it.IsDwg   = False
+        plan.Add(it)
+    Next
+
+    If plan.Count = 0 Then
+        MessageBox.Show("""" & findStr & """ 이(가) 들어간 부품이 없습니다." & vbCrLf & vbCrLf & _
+                        "찾을 문자열을 다시 확인하세요.", TITLE, _
+                        MessageBoxButtons.OK, MessageBoxIcon.Information)
+        Return
+    End If
+
+    ' ---- 4. 도면 수집 ------------------------------------------------------
+    '  이름이 맞는 도면은 파일명으로 바로 잡고, 나머지는 열어서 참조를 본다.
+    '  참조로 잡으면 이름 규칙에서 벗어난 도면도 놓치지 않는다.
+    Dim searchRoot As String = DWG_ROOT
+    If String.IsNullOrEmpty(searchRoot) OrElse Not System.IO.Directory.Exists(searchRoot) Then
+        searchRoot = topDir
+    End If
+
+    Dim targetPaths As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+    For Each it As RenameItem In plan
+        targetPaths.Add(it.OldPath)
+    Next
+
+    ThisApplication.StatusBarText = "도면을 찾는 중..."
+    Dim idwFiles As List(Of String) = SafeFindFiles(searchRoot, "*.idw")
+
+    Dim prevSilent As Boolean = ThisApplication.SilentOperation
+    ThisApplication.SilentOperation = True
+
+    Dim openedByRule As New List(Of Document)
+    Dim dwgPlan As New List(Of RenameItem)
+
+    Try
+        Dim dwgSeen As Integer = 0
+        For Each idwPath As String In idwFiles
+            dwgSeen += 1
+            ThisApplication.StatusBarText = "도면 확인 " & dwgSeen & " / " & idwFiles.Count & " ..."
+            If IsReadOnlyFile(idwPath) Then
+                skipped.Add(System.IO.Path.GetFileName(idwPath) & "   (읽기전용 도면)")
+                Continue For
+            End If
+
+            Dim nameHit As Boolean = _
+                System.IO.Path.GetFileNameWithoutExtension(idwPath).IndexOf(findStr, StringComparison.Ordinal) >= 0
+            If Not nameHit AndAlso Not SCAN_ALL_IDW Then Continue For
+
+            ' 이미 열려있으면 그것을 쓰고, 아니면 비표시로 연다.
+            Dim oDwg As Document = FindOpenDoc(idwPath)
+            Dim wasOpen As Boolean = (oDwg IsNot Nothing)
+            If Not wasOpen Then
+                Try
+                    oDwg = ThisApplication.Documents.Open(idwPath, False)
+                    openedByRule.Add(oDwg)
+                Catch ex As Exception
+                    skipped.Add(System.IO.Path.GetFileName(idwPath) & "   (열기 실패: " & ex.Message & ")")
+                    Continue For
+                End Try
+            End If
+
+            ' 이 도면이 대상 부품을 하나라도 참조하는가
+            Dim uses As Boolean = False
+            Try
+                For Each rd As Document In oDwg.AllReferencedDocuments
+                    If Not String.IsNullOrEmpty(rd.FullFileName) AndAlso _
+                       targetPaths.Contains(rd.FullFileName) Then
+                        uses = True
+                        Exit For
+                    End If
+                Next
+            Catch
+            End Try
+
+            If Not uses Then
+                ' 관계없는 도면은 도로 닫는다. 원래 열려있던 것은 그대로 둔다.
+                If Not wasOpen Then
+                    Try
+                        oDwg.Close(True)
+                        openedByRule.Remove(oDwg)
+                    Catch
+                    End Try
+                End If
+                Continue For
+            End If
+
+            Dim dwgBase As String = System.IO.Path.GetFileNameWithoutExtension(idwPath)
+            Dim it As New RenameItem
+            it.Doc     = oDwg
+            it.OldPath = idwPath
+            it.IsDwg   = True
+            it.Depth   = -1                      ' 도면은 부품보다 뒤에 처리한다
+            If nameHit Then
+                it.NewPath = System.IO.Path.Combine( _
+                                System.IO.Path.GetDirectoryName(idwPath), _
+                                dwgBase.Replace(findStr, replStr) & ".idw")
+            Else
+                ' 이름에 찾을 문자열이 없는 도면. 참조만 따라가고 이름은 그대로 둔다.
+                it.NewPath = ""
+            End If
+            dwgPlan.Add(it)
+        Next
+
+        ' ---- 5. 충돌 검사 --------------------------------------------------
+        Dim allItems As New List(Of RenameItem)
+        allItems.AddRange(plan)
+        allItems.AddRange(dwgPlan)
+
+        Dim newSeen As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase)
+        For Each it As RenameItem In allItems
+            If it.NewPath = "" Then Continue For
+            If String.Equals(it.NewPath, it.OldPath, StringComparison.OrdinalIgnoreCase) Then
+                it.Conflict = "새 이름이 옛 이름과 같음"
+            ElseIf System.IO.File.Exists(it.NewPath) Then
+                it.Conflict = "그 이름의 파일이 이미 있음"
+            ElseIf newSeen.ContainsKey(it.NewPath) Then
+                it.Conflict = "다른 파일과 새 이름이 겹침"
+            Else
+                newSeen.Add(it.NewPath, it.OldPath)
+            End If
+        Next
+
+        ' ---- 6. 미리보기 ---------------------------------------------------
+        ThisApplication.StatusBarText = ""
+        Dim picked As List(Of Integer) = ConfirmPlan(allItems, skipped, findStr, replStr)
+        If picked Is Nothing Then
+            CloseOpened(openedByRule)
+            Return
+        End If
+
+        Dim run As New List(Of RenameItem)
+        For Each ix As Integer In picked
+            run.Add(allItems(ix))
+        Next
+        If run.Count = 0 Then
+            CloseOpened(openedByRule)
+            Return
+        End If
+
+        ' ---- 7. 실행 -------------------------------------------------------
+        Dim oLog As New System.Text.StringBuilder()
+        oLog.AppendLine("유닛 이름 일괄 변경   " & DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"))
+        oLog.AppendLine("최상위 : " & oTop.FullFileName)
+        oLog.AppendLine("치환   : """ & findStr & """  ->  """ & replStr & """")
+        oLog.AppendLine(New String("-"c, 70))
+
+        ' 트리 아래쪽(부품)부터 위쪽(최상위 조립도)으로 처리한다. 그래야 조립도가
+        ' 저장된 뒤에 하위가 바뀌어 다시 더렵혀지는 일이 없다. 도면은 맨 뒤.
+        Dim ordered As New List(Of RenameItem)
+        Dim maxDepth As Integer = 0
+        For Each it0 As RenameItem In run
+            If Not it0.IsDwg AndAlso it0.Depth > maxDepth Then maxDepth = it0.Depth
+        Next
+        For lv As Integer = 0 To maxDepth
+            For Each it0 As RenameItem In run
+                If Not it0.IsDwg AndAlso it0.Depth = lv Then ordered.Add(it0)
+            Next
+        Next
+        For Each it0 As RenameItem In run
+            If it0.IsDwg Then ordered.Add(it0)
+        Next
+        run = ordered
+
+        Dim okCount As Integer = 0
+        Dim movedOld As New List(Of String)
+
+        For i As Integer = 0 To run.Count - 1
+            Dim it As RenameItem = run(i)
+            ThisApplication.StatusBarText = "이름 변경 " & (i + 1) & " / " & run.Count & " ..."
+
+            Try
+                ' 부품번호 iProperty 도 같은 규칙으로 치환한다.
+                ' 타이틀블록이 iProperty 연동이므로 도면은 저절로 따라온다.
+                Dim pnOld As String = GetProp(it.Doc, "Part Number")
+                If pnOld <> "" AndAlso pnOld.IndexOf(findStr, StringComparison.Ordinal) >= 0 Then
+                    Dim pnNew As String = pnOld.Replace(findStr, replStr)
+                    If SetProp(it.Doc, "Part Number", pnNew) Then
+                        oLog.AppendLine("  부품번호  " & pnOld & "  ->  " & pnNew)
+                    Else
+                        oLog.AppendLine("  [경고] 부품번호를 바꾸지 못함 : " & pnOld)
+                    End If
+                End If
+
+                If it.IsDwg Then it.Doc.Update()
+
+                If it.NewPath = "" Then
+                    ' 이름은 그대로. 참조 갱신만 저장한다.
+                    it.Doc.Save()
+                    oLog.AppendLine("[참조갱신] " & System.IO.Path.GetFileName(it.OldPath))
+                Else
+                    ' SaveCopyAs = False : 문서가 새 파일로 옮겨가고
+                    '                      열려있는 상위 문서의 참조가 자동 갱신된다.
+                    it.Doc.SaveAs(it.NewPath, False)
+                    oLog.AppendLine("[이름변경] " & System.IO.Path.GetFileName(it.OldPath) & _
+                                    "  ->  " & System.IO.Path.GetFileName(it.NewPath))
+                    movedOld.Add(it.OldPath)
+                End If
+                okCount += 1
+
+            Catch ex As Exception
+                oLog.AppendLine("[오류] " & System.IO.Path.GetFileName(it.OldPath) & " : " & ex.Message)
+            End Try
+        Next
+
+        ' 참조가 바뀌어 더렵혀진 문서를 모두 저장한다.
+        ThisApplication.StatusBarText = "저장하는 중..."
+        For Each d As Document In ThisApplication.Documents
+            Try
+                If d.Dirty AndAlso Not String.IsNullOrEmpty(d.FullFileName) Then
+                    If Not IsReadOnlyFile(d.FullFileName) Then d.Save()
+                End If
+            Catch ex As Exception
+                oLog.AppendLine("[저장실패] " & System.IO.Path.GetFileName(d.FullFileName) & " : " & ex.Message)
+            End Try
+        Next
+
+        ' ---- 8. 옛 파일 정리 ------------------------------------------------
+        Dim oldDir As String = ""
+        If MOVE_OLD_FILES AndAlso movedOld.Count > 0 Then
+            oldDir = System.IO.Path.Combine(topDir, "_OLD_" & DateTime.Now.ToString("yyMMdd_HHmm"))
+            Try
+                System.IO.Directory.CreateDirectory(oldDir)
+                oLog.AppendLine(New String("-"c, 70))
+                For Each op As String In movedOld
+                    Try
+                        If System.IO.File.Exists(op) Then
+                            Dim dst As String = System.IO.Path.Combine(oldDir, System.IO.Path.GetFileName(op))
+                            If System.IO.File.Exists(dst) Then
+                                oLog.AppendLine("[보존] 같은 이름이 이미 _OLD 에 있어 그대로 둠 : " & System.IO.Path.GetFileName(op))
+                            Else
+                                System.IO.File.Move(op, dst)
+                            End If
+                        End If
+                    Catch ex As Exception
+                        oLog.AppendLine("[보존실패] " & System.IO.Path.GetFileName(op) & " : " & ex.Message)
+                    End Try
+                Next
+                oLog.AppendLine("옛 파일 " & movedOld.Count & " 개를 옮김 : " & oldDir)
+            Catch ex As Exception
+                oLog.AppendLine("[오류] _OLD 폴더를 만들지 못함 : " & ex.Message)
+            End Try
+        End If
+
+        ' 규칙이 연 도면은 닫는다. (이미 저장했으므로 SkipSave)
+        CloseOpened(openedByRule)
+
+        ' ---- 9. 결과 --------------------------------------------------------
+        ThisApplication.StatusBarText = ""
+        Dim logPath As String = ""
+        Try
+            logPath = System.IO.Path.Combine(topDir, "이름변경_" & DateTime.Now.ToString("yyMMdd_HHmm") & ".log.txt")
+            System.IO.File.WriteAllText(logPath, oLog.ToString(), System.Text.Encoding.UTF8)
+        Catch
+            logPath = ""
+        End Try
+
+        Dim msg As String = okCount & " / " & run.Count & " 개 처리 완료." & vbCrLf & vbCrLf
+        If oldDir <> "" Then msg &= "옛 파일 : " & oldDir & vbCrLf
+        If logPath <> "" Then msg &= "로그    : " & logPath & vbCrLf
+        msg &= vbCrLf & "결과를 확인한 뒤 이상이 없으면 _OLD 폴더를 지우세요." & vbCrLf & _
+               "잘못됐으면 _OLD 의 파일을 되돌려 놓으면 됩니다."
+
+        ShowLog(msg, oLog.ToString())
+
+    Finally
+        ThisApplication.SilentOperation = prevSilent
+        ThisApplication.StatusBarText = ""
+    End Try
+
+End Sub
+
+
+' ============================================================================
+'  이름 변경 한 건
+' ============================================================================
+Class RenameItem
+    Public Doc      As Inventor.Document
+    Public OldPath  As String = ""
+    Public NewPath  As String = ""      ' 빈 값이면 이름은 그대로, 참조만 갱신
+    Public Depth    As Integer = 0      ' 클수록 트리 위쪽. 도면은 -1
+    Public IsDwg    As Boolean = False
+    Public Conflict As String = ""
+End Class
+
+
+
+' ============================================================================
+'  조립도 트리에서의 깊이. 부품 = 0, 그 위 조립도 = 1, ...
+'  ReferencedDocuments 는 직접 참조만 돌려주므로 재귀가 성립한다.
+' ============================================================================
+Function TreeDepth(d As Document, cache As Dictionary(Of String, Integer), guard As Integer) As Integer
+
+    If guard > 32 Then Return 0                     ' 만일을 위한 재귀 제동
+    If d.DocumentType <> kAssemblyDocumentObject Then Return 0
+
+    Dim key As String = d.FullFileName
+    If key <> "" AndAlso cache.ContainsKey(key) Then Return cache(key)
+
+    Dim mx As Integer = 0
+    Try
+        For Each c As Document In d.ReferencedDocuments
+            Dim sub_ As Integer = TreeDepth(c, cache, guard + 1) + 1
+            If sub_ > mx Then mx = sub_
+        Next
+    Catch
+    End Try
+
+    If key <> "" Then cache(key) = mx
+    Return mx
+
+End Function
+
+
+' ============================================================================
+'  oTop 트리 안에 있는 문서인가
+'
+'  COM 객체는 같은 문서라도 서로 다른 래퍼로 넘어올 수 있어 Is 비교가 어긋난다.
+'  전체 경로로 비교한다.
+' ============================================================================
+Function IsInTree(oTop As AssemblyDocument, oDoc As Document) As Boolean
+    Dim target As String = ""
+    Try
+        target = oDoc.FullFileName
+    Catch
+    End Try
+    If target = "" Then Return False
+
+    Try
+        For Each d As Document In oTop.AllReferencedDocuments
+            If String.Equals(d.FullFileName, target, StringComparison.OrdinalIgnoreCase) Then Return True
+        Next
+    Catch
+    End Try
+    Return False
+End Function
+
+
+' 이미 열려있는 문서 찾기
+Function FindOpenDoc(fullPath As String) As Document
+    For Each d As Document In ThisApplication.Documents
+        Try
+            If String.Equals(d.FullFileName, fullPath, StringComparison.OrdinalIgnoreCase) Then Return d
+        Catch
+        End Try
+    Next
+    Return Nothing
+End Function
+
+
+Sub CloseOpened(opened As List(Of Document))
+    For Each d As Document In opened
+        Try
+            d.Close(True)
+        Catch
+        End Try
+    Next
+End Sub
+
+
+Function IsReadOnlyFile(path As String) As Boolean
+    Try
+        Return (System.IO.File.GetAttributes(path) And System.IO.FileAttributes.ReadOnly) = System.IO.FileAttributes.ReadOnly
+    Catch
+        Return False
+    End Try
+End Function
+
+
+' ============================================================================
+'  하위 폴더까지 훑되, 접근 못하는 폴더 하나 때문에 전체가 날아가지 않게 한다.
+'  Directory.GetFiles(..., AllDirectories) 는 권한 없는 폴더를 만나면
+'  그때까지 찾은 결과까지 통째로 버린다.
+' ============================================================================
+Function SafeFindFiles(root As String, pattern As String) As List(Of String)
+
+    Dim result As New List(Of String)
+    Dim stack As New Stack(Of String)
+    stack.Push(root)
+
+    Do While stack.Count > 0
+        Dim cur As String = stack.Pop()
+
+        ' 이 규칙이 만든 _OLD 폴더는 훑지 않는다.
+        If System.IO.Path.GetFileName(cur).StartsWith("_OLD_", StringComparison.OrdinalIgnoreCase) Then Continue Do
+
+        Try
+            For Each f As String In System.IO.Directory.GetFiles(cur, pattern)
+                result.Add(f)
+            Next
+        Catch
+        End Try
+
+        Try
+            For Each sub_ As String In System.IO.Directory.GetDirectories(cur)
+                stack.Push(sub_)
+            Next
+        Catch
+        End Try
+    Loop
+
+    Return result
+
+End Function
+
+
+Function GetProp(oDoc As Document, propName As String) As String
+    Try
+        Return CStr(oDoc.PropertySets.Item("Design Tracking Properties").Item(propName).Value).Trim()
+    Catch
+        Return ""
+    End Try
+End Function
+
+
+Function SetProp(oDoc As Document, propName As String, value As String) As Boolean
+    Try
+        oDoc.PropertySets.Item("Design Tracking Properties").Item(propName).Value = value
+        Return True
+    Catch
+        Return False
+    End Try
+End Function
+
+
+' ============================================================================
+'  찾을 문자열 / 바꿀 문자열 입력
+' ============================================================================
+Function AskFindReplace(topName As String, ByRef findStr As String, ByRef replStr As String) As Boolean
+
+    Dim frm As New System.Windows.Forms.Form
+    Dim ok As Boolean = False
+
+    Try
+        frm.Text = "유닛 이름 일괄 변경"
+        frm.Width  = 520
+        frm.Height = 268
+        frm.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen
+        frm.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog
+        frm.MinimizeBox = False
+        frm.MaximizeBox = False
+        frm.TopMost = True
+
+        Dim lbl0 As New System.Windows.Forms.Label
+        lbl0.Text = "최상위 조립도 : " & topName
+        lbl0.SetBounds(12, 12, 480, 20)
+
+        Dim lbl1 As New System.Windows.Forms.Label
+        lbl1.Text = "찾을 문자열 (예: LM2102)"
+        lbl1.SetBounds(12, 48, 200, 20)
+
+        Dim txtFind As New System.Windows.Forms.TextBox
+        txtFind.SetBounds(216, 45, 276, 24)
+
+        Dim lbl2 As New System.Windows.Forms.Label
+        lbl2.Text = "바꿀 문자열 (예: LM2602)"
+        lbl2.SetBounds(12, 84, 200, 20)
+
+        Dim txtRepl As New System.Windows.Forms.TextBox
+        txtRepl.SetBounds(216, 81, 276, 24)
+
+        Dim lbl3 As New System.Windows.Forms.Label
+        lbl3.Text = "파일이름과 부품번호에서 이 문자열을 찾아 바꿉니다." & vbCrLf & _
+                    "대소문자를 구분합니다. 찾을 문자열이 없는 파일은 건드리지 않습니다." & vbCrLf & _
+                    "(구매품은 이 문자열이 없으므로 저절로 제외됩니다)"
+        lbl3.SetBounds(12, 118, 480, 56)
+
+        Dim btnOK As New System.Windows.Forms.Button
+        btnOK.Text = "다음"
+        btnOK.SetBounds(296, 186, 92, 32)
+        btnOK.DialogResult = System.Windows.Forms.DialogResult.OK
+
+        Dim btnCancel As New System.Windows.Forms.Button
+        btnCancel.Text = "취소"
+        btnCancel.SetBounds(400, 186, 92, 32)
+        btnCancel.DialogResult = System.Windows.Forms.DialogResult.Cancel
+
+        frm.Controls.Add(lbl0)
+        frm.Controls.Add(lbl1)
+        frm.Controls.Add(txtFind)
+        frm.Controls.Add(lbl2)
+        frm.Controls.Add(txtRepl)
+        frm.Controls.Add(lbl3)
+        frm.Controls.Add(btnOK)
+        frm.Controls.Add(btnCancel)
+        SetDefaultButtons(frm, btnOK, btnCancel)   ' Enter / Esc
+
+        Do
+            If frm.ShowDialog() <> System.Windows.Forms.DialogResult.OK Then Return False
+
+            findStr = txtFind.Text.Trim()
+            replStr = txtRepl.Text.Trim()
+
+            If findStr = "" Then
+                MessageBox.Show("찾을 문자열을 넣으세요.", "유닛 이름 일괄 변경")
+            ElseIf replStr = "" Then
+                MessageBox.Show("바꿀 문자열을 넣으세요.", "유닛 이름 일괄 변경")
+            ElseIf findStr = replStr Then
+                MessageBox.Show("찾을 문자열과 바꿀 문자열이 같습니다.", "유닛 이름 일괄 변경")
+            ElseIf HasBadChar(replStr) Then
+                MessageBox.Show("바꿀 문자열에 파일이름으로 쓸 수 없는 글자가 있습니다." & vbCrLf & _
+                                "\ / : * ? "" < > |", "유닛 이름 일괄 변경")
+            Else
+                ok = True
+            End If
+        Loop While Not ok
+
+    Finally
+        frm.Dispose()
+    End Try
+
+    Return ok
+
+End Function
+
+
+Function HasBadChar(s As String) As Boolean
+    For Each c As Char In System.IO.Path.GetInvalidFileNameChars()
+        If s.IndexOf(c) >= 0 Then Return True
+    Next
+    Return False
+End Function
+
+
+' ============================================================================
+'  미리보기. 위쪽은 바꿀 목록(체크로 뺄 수 있음), 아래쪽은 안 바뀌는 파일.
+'  반환 : 선택된 인덱스 / 취소하면 Nothing
+' ============================================================================
+Function ConfirmPlan(items As List(Of RenameItem), skipped As List(Of String), _
+                     findStr As String, replStr As String) As List(Of Integer)
+
+    Dim frm As New System.Windows.Forms.Form
+    Dim picked As List(Of Integer) = Nothing
+
+    Try
+        frm.Text = "이름 변경 미리보기   " & findStr & "  ->  " & replStr
+        frm.Width  = 900
+        frm.Height = 660
+        frm.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen
+        frm.FormBorderStyle = System.Windows.Forms.FormBorderStyle.Sizable
+        frm.MinimizeBox = False
+        frm.TopMost = True
+
+        Dim nConflict As Integer = 0
+        For Each it As RenameItem In items
+            If it.Conflict <> "" Then nConflict += 1
+        Next
+
+        Dim lbl1 As New System.Windows.Forms.Label
+        lbl1.Text = "바꿀 파일 " & items.Count & " 개   (빼려면 체크를 끄세요)" & _
+                    If(nConflict > 0, "   ( [!] 표시 " & nConflict & " 개는 충돌이라 체크가 꺼져 있습니다 )", "")
+        lbl1.SetBounds(12, 10, 860, 20)
+
+        Dim clb As New System.Windows.Forms.CheckedListBox
+        clb.SetBounds(12, 34, 860, 340)
+        clb.CheckOnClick = True
+        SetMonoFont(clb)
+        clb.Anchor = System.Windows.Forms.AnchorStyles.Top Or System.Windows.Forms.AnchorStyles.Left Or _
+                     System.Windows.Forms.AnchorStyles.Right Or System.Windows.Forms.AnchorStyles.Bottom
+
+        For Each it As RenameItem In items
+            Dim tag As String = If(it.IsDwg, "[도면] ", "[모델] ")
+            Dim line As String
+            If it.NewPath = "" Then
+                line = tag & System.IO.Path.GetFileName(it.OldPath) & "   ->   (이름 그대로, 참조만 갱신)"
+            Else
+                line = tag & System.IO.Path.GetFileName(it.OldPath) & _
+                       "   ->   " & System.IO.Path.GetFileName(it.NewPath)
+            End If
+            If it.Conflict <> "" Then line = "[!] " & line & "   << " & it.Conflict
+            clb.Items.Add(line, it.Conflict = "")
+        Next
+
+        Dim lbl2 As New System.Windows.Forms.Label
+        lbl2.Text = "바뀌지 않는 파일 " & skipped.Count & " 개 — 구매품이면 정상입니다. " & _
+                    "가공품이 여기 있으면 이름 규칙에서 벗어난 파일입니다."
+        lbl2.SetBounds(12, 384, 860, 20)
+        lbl2.Anchor = System.Windows.Forms.AnchorStyles.Left Or System.Windows.Forms.AnchorStyles.Right Or _
+                      System.Windows.Forms.AnchorStyles.Bottom
+
+        Dim lst As New System.Windows.Forms.ListBox
+        lst.SetBounds(12, 408, 860, 150)
+        SetMonoFont(lst)
+        lst.Anchor = System.Windows.Forms.AnchorStyles.Left Or System.Windows.Forms.AnchorStyles.Right Or _
+                     System.Windows.Forms.AnchorStyles.Bottom
+        For Each s As String In skipped
+            lst.Items.Add(s)
+        Next
+
+        Dim btnOK As New System.Windows.Forms.Button
+        btnOK.Text = "실행"
+        btnOK.SetBounds(676, 572, 92, 32)
+        btnOK.DialogResult = System.Windows.Forms.DialogResult.OK
+        btnOK.Anchor = System.Windows.Forms.AnchorStyles.Right Or System.Windows.Forms.AnchorStyles.Bottom
+
+        Dim btnCancel As New System.Windows.Forms.Button
+        btnCancel.Text = "취소"
+        btnCancel.SetBounds(780, 572, 92, 32)
+        btnCancel.DialogResult = System.Windows.Forms.DialogResult.Cancel
+        btnCancel.Anchor = System.Windows.Forms.AnchorStyles.Right Or System.Windows.Forms.AnchorStyles.Bottom
+
+        frm.Controls.Add(lbl1)
+        frm.Controls.Add(clb)
+        frm.Controls.Add(lbl2)
+        frm.Controls.Add(lst)
+        frm.Controls.Add(btnOK)
+        frm.Controls.Add(btnCancel)
+        SetDefaultButtons(frm, btnOK, btnCancel)   ' Enter / Esc
+
+        Do
+            If frm.ShowDialog() <> System.Windows.Forms.DialogResult.OK Then Return Nothing
+
+            ' 충돌 항목이 켜져 있으면 막는다. _2 를 붙이는 대신 사람이 정리해야 한다.
+            Dim bad As New List(Of String)
+            For Each ix As Integer In clb.CheckedIndices
+                If items(ix).Conflict <> "" Then
+                    bad.Add(System.IO.Path.GetFileName(items(ix).OldPath) & "  <<  " & items(ix).Conflict)
+                End If
+            Next
+
+            If bad.Count > 0 Then
+                MessageBox.Show("충돌하는 항목이 켜져 있습니다. 체크를 끄거나 먼저 정리하세요." & vbCrLf & vbCrLf & _
+                                String.Join(vbCrLf, bad.ToArray()) & vbCrLf & vbCrLf & _
+                                "이 규칙은 이름 뒤에 _2 를 붙이지 않습니다." & vbCrLf & _
+                                "잘못된 번호가 그대로 발주로 나가기 때문입니다.", _
+                                "이름 변경 미리보기", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                Continue Do
+            End If
+
+            picked = New List(Of Integer)
+            For Each ix As Integer In clb.CheckedIndices
+                picked.Add(ix)
+            Next
+            Exit Do
+        Loop
+
+    Finally
+        frm.Dispose()
+    End Try
+
+    Return picked
+
+End Function
+
+
+' ============================================================================
+'  결과 + 로그. 부품이 많으면 MessageBox 하나로는 화면 밖으로 넘어간다.
+' ============================================================================
+Sub ShowLog(summary As String, logText As String)
+
+    Dim frm As New System.Windows.Forms.Form
+    Try
+        frm.Text = "유닛 이름 일괄 변경 - 결과"
+        frm.Width  = 820
+        frm.Height = 620
+        frm.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen
+        frm.FormBorderStyle = System.Windows.Forms.FormBorderStyle.Sizable
+        frm.TopMost = True
+
+        Dim lbl As New System.Windows.Forms.Label
+        lbl.Text = summary
+        lbl.SetBounds(12, 12, 780, 110)
+        lbl.Anchor = System.Windows.Forms.AnchorStyles.Top Or System.Windows.Forms.AnchorStyles.Left Or _
+                     System.Windows.Forms.AnchorStyles.Right
+
+        Dim txt As New System.Windows.Forms.TextBox
+        txt.SetBounds(12, 128, 780, 400)
+        txt.Multiline = True
+        txt.ReadOnly = True
+        txt.ScrollBars = System.Windows.Forms.ScrollBars.Both
+        txt.WordWrap = False
+        SetMonoFont(txt)
+        txt.Text = logText.Replace(vbLf, vbCrLf).Replace(vbCr & vbCrLf, vbCrLf)
+        txt.Anchor = System.Windows.Forms.AnchorStyles.Top Or System.Windows.Forms.AnchorStyles.Left Or _
+                     System.Windows.Forms.AnchorStyles.Right Or System.Windows.Forms.AnchorStyles.Bottom
+
+        Dim btnOK As New System.Windows.Forms.Button
+        btnOK.Text = "닫기"
+        btnOK.SetBounds(700, 540, 92, 32)
+        btnOK.DialogResult = System.Windows.Forms.DialogResult.OK
+        btnOK.Anchor = System.Windows.Forms.AnchorStyles.Right Or System.Windows.Forms.AnchorStyles.Bottom
+
+        frm.Controls.Add(lbl)
+        frm.Controls.Add(txt)
+        frm.Controls.Add(btnOK)
+        SetDefaultButtons(frm, btnOK, btnOK)
+
+        frm.ShowDialog()
+    Finally
+        frm.Dispose()
+    End Try
+
+End Sub
+
+
+' ============================================================================
+'  Enter / Esc 기본 버튼 지정
+'
+'  frm.AcceptButton = btnOK 를 직접 쓰면 Inventor 2026 에서 컴파일이 깨진다.
+'  Button 을 IButtonControl 로 바꾸는 인터페이스 변환인데, 컴파일러가 Button 이
+'  구현한 인터페이스를 전부 훑다가 iLogic 이 참조하지 않는
+'  System.Private.Windows.Core 의 타입을 만나기 때문이다.
+'  리플렉션으로 넘기면 컴파일은 무조건 통과하고, 실패해도 단축키만 안 될 뿐이다.
+'  (BatchPrint / BatchRevisionGeneration 과 같은 처리)
+' ============================================================================
+Sub SetDefaultButtons(frm As System.Windows.Forms.Form, _
+                      okBtn As System.Windows.Forms.Button, _
+                      cancelBtn As System.Windows.Forms.Button)
+
+    Try
+        frm.GetType().GetProperty("AcceptButton").SetValue(frm, okBtn)
+    Catch
+    End Try
+
+    Try
+        frm.GetType().GetProperty("CancelButton").SetValue(frm, cancelBtn)
+    Catch
+    End Try
+
+End Sub
+
+
+' ============================================================================
+'  목록을 고정폭 글꼴로. 옛이름 -> 새이름 이 세로로 맞아 눈에 잘 들어온다.
+'
+'  New System.Drawing.Font(...) 를 직접 적으면 안 된다. System.Drawing 이
+'  iLogic 참조 목록에 없으면 컴파일이 깨지고, 컴파일 오류는 Try 로 막지 못한다.
+'  (BatchPrint 의 프린터 목록에서 겪은 것과 같은 문제)
+'
+'  Font 속성의 PropertyType 을 통해 타입을 얻으면 System.Drawing 을 이름으로
+'  적을 일이 없다. 실패해도 기본 글꼴로 나올 뿐 규칙은 그대로 돈다.
+' ============================================================================
+Sub SetMonoFont(ctrl As System.Windows.Forms.Control)
+    Try
+        Dim pi As System.Reflection.PropertyInfo = ctrl.GetType().GetProperty("Font")
+        Dim f As Object = Activator.CreateInstance(pi.PropertyType, New Object() {"Consolas", CSng(9.0)})
+        pi.SetValue(ctrl, f)
+    Catch
+    End Try
+End Sub
