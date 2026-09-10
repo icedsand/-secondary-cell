@@ -345,6 +345,7 @@ Sub Main()
     Dim nByRef   As Integer = 0     ' 참조로 짝
     Dim nNoMatch As Integer = 0     ' 관련 없음
     Dim nOpenErr As Integer = 0     ' 열기 실패
+    Dim nOrphan  As Integer = 0     ' 이름은 맞지만 이 조립도에 없는 부품의 도면
 
     Try
         Dim dwgSeen As Integer = 0
@@ -361,16 +362,21 @@ Sub Main()
                 Continue For
             End If
 
+            ' 트리에 같은 이름의 부품이 있는가. 이 회사 규칙에서는 도면과
+            ' 부품이 같은 폴더에 같은 이름으로 있으므로 이것이 가장 확실한 짝이다.
+            Dim hasModel As Boolean = modelFinalByBase.ContainsKey(dwgBase)
+
             ' --- 1) 이름 규칙 --------------------------------------------
             Dim wantBase As String = ""
             Dim how As String = ""
+            Dim isOrphan As Boolean = False
 
             Dim byRule As String = ApplyRules(dwgBase, rules, SEP)
             If byRule <> dwgBase Then
                 wantBase = byRule
                 how = "이름규칙"
                 nByRule += 1
-            ElseIf modelFinalByBase.ContainsKey(dwgBase) Then
+            ElseIf hasModel Then
                 ' --- 2) 같은 이름의 부품 ---------------------------------
                 Dim mf As String = modelFinalByBase(dwgBase)
                 If mf <> "" AndAlso mf <> dwgBase Then
@@ -380,8 +386,11 @@ Sub Main()
                 End If
             End If
 
-            ' --- 3) 그래도 못 정하면 열어서 참조를 본다 -------------------
-            Dim needRefCheck As Boolean = (wantBase = "")
+            ' --- 3) 열어서 참조를 봐야 하는 경우 ---------------------------
+            '  짝을 아직 못 정했거나, 이름 규칙엔 맞는데 트리에 같은 이름의
+            '  부품이 없는 경우다. 후자는 이 조립도 것이 아닐 수 있다.
+            '  부품이 다른 번호로 바뀐 뒤 남은 옛 도면이 그렇다.
+            Dim needRefCheck As Boolean = (wantBase = "") OrElse (Not hasModel)
             If needRefCheck AndAlso Not SCAN_ALL_IDW Then
                 nNoMatch += 1
                 skipped.Add(dwgName & "   (이름이 규칙에도 부품에도 안 맞음)")
@@ -417,28 +426,37 @@ Sub Main()
                 End Try
 
                 If usedTargets.Count = 0 Then
-                    ' 이 조립도와 상관없는 도면이다. 도로 닫는다.
-                    nNoMatch += 1
-                    skipped.Add(dwgName & "   (이 조립도의 부품을 그리지 않음)")
-                    If Not wasOpen Then
-                        Try
-                            oDwg.Close(True)
-                            openedByRule.Remove(oDwg)
-                        Catch
-                        End Try
+                    If wantBase = "" Then
+                        ' 이 조립도와 아무 상관없는 도면이다. 도로 닫는다.
+                        nNoMatch += 1
+                        skipped.Add(dwgName & "   (이 조립도의 부품을 그리지 않음)")
+                        If Not wasOpen Then
+                            Try
+                                oDwg.Close(True)
+                                openedByRule.Remove(oDwg)
+                            Catch
+                            End Try
+                        End If
+                        Continue For
                     End If
-                    Continue For
-                End If
 
-                nByRef += 1
-                If DWG_NAME_FOLLOWS_MODEL AndAlso usedTargets.Count = 1 Then
-                    Dim mfin As String = System.IO.Path.GetFileNameWithoutExtension(newByOld(usedTargets(0)))
-                    If mfin <> "" AndAlso mfin <> dwgBase Then
-                        wantBase = mfin
-                        how = "참조한 부품"
-                    End If
+                    ' 이름 규칙엔 맞지만 이 조립도에 그 부품이 없다.
+                    ' 부품이 다른 번호로 바뀐 뒤 안 지워진 옛 도면이 대표적이다.
+                    ' 목록에는 올리되 체크를 꺼 둔다. 사람이 보고 정해야 한다.
+                    isOrphan = True
+                    nOrphan += 1
+                    skipped.Add(dwgName & "   (이름은 맞지만 이 조립도에 그 부품이 없음 - 체크 꺼둠)")
                 Else
-                    skipped.Add(dwgName & "   (부품 " & usedTargets.Count & " 개를 그린 도면 - 이름 그대로, 참조만 갱신)")
+                    nByRef += 1
+                    If wantBase = "" AndAlso DWG_NAME_FOLLOWS_MODEL AndAlso usedTargets.Count = 1 Then
+                        Dim mfin As String = System.IO.Path.GetFileNameWithoutExtension(newByOld(usedTargets(0)))
+                        If mfin <> "" AndAlso mfin <> dwgBase Then
+                            wantBase = mfin
+                            how = "참조한 부품"
+                        End If
+                    ElseIf wantBase = "" AndAlso usedTargets.Count > 1 Then
+                        skipped.Add(dwgName & "   (부품 " & usedTargets.Count & " 개를 그린 도면 - 이름 그대로, 참조만 갱신)")
+                    End If
                 End If
             End If
 
@@ -447,6 +465,8 @@ Sub Main()
             itd.OldPath = idwPath
             itd.IsDwg   = True
             itd.Depth   = -1                     ' 도면은 부품보다 뒤에 처리한다
+            itd.Orphan  = isOrphan
+            If isOrphan Then itd.Warn = "이 조립도에 그 부품이 없음 (남은 옛 도면일 수 있음)"
             If wantBase <> "" AndAlso wantBase <> dwgBase Then
                 itd.NewPath = System.IO.Path.Combine( _
                                 System.IO.Path.GetDirectoryName(idwPath), wantBase & ".idw")
@@ -462,6 +482,7 @@ Sub Main()
             "  /  같은이름부품 " & nByName & _
             "  /  참조 " & nByRef & _
             "  /  관련없음 " & nNoMatch & _
+            "  /  고아 " & nOrphan & _
             "  /  읽기전용 " & nRO & _
             "  /  열기실패 " & nOpenErr & _
             "  ->  처리 대상 " & dwgPlan.Count & " 개"
@@ -492,8 +513,13 @@ Sub Main()
             ElseIf System.IO.File.Exists(it.NewPath) Then
                 it.Conflict = "그 이름의 파일이 이미 있음"
             ElseIf newSeen.ContainsKey(it.NewPath) Then
-                it.Conflict = "다른 파일과 새 이름이 겹침 (" & _
-                              System.IO.Path.GetFileName(newSeen(it.NewPath)) & ")"
+                Dim other As String = newSeen(it.NewPath)
+                Dim otherDir As String = System.IO.Path.GetDirectoryName(other)
+                Dim thisDir  As String = System.IO.Path.GetDirectoryName(it.OldPath)
+                it.Conflict = "새 이름이 겹침 : " & System.IO.Path.GetFileName(other)
+                If Not String.Equals(otherDir, thisDir, StringComparison.OrdinalIgnoreCase) Then
+                    it.Conflict &= "  [" & otherDir & "]"
+                End If
             Else
                 newSeen.Add(it.NewPath, it.OldPath)
             End If
@@ -778,6 +804,7 @@ Class RenameItem
     Public IsDwg    As Boolean = False
     Public Conflict As String = ""
     Public Warn     As String = ""      ' 막지는 않지만 알려야 하는 것
+    Public Orphan   As Boolean = False  ' 이 조립도에 없는 부품의 도면
 End Class
 
 
@@ -1063,7 +1090,7 @@ End Function
 '  규칙을 고칠 때마다 이 값을 올린다.
 ' ============================================================================
 Function RuleVersion() As String
-    Return "v7 (2026-09-10)"
+    Return "v8 (2026-09-10)"
 End Function
 
 
@@ -1590,9 +1617,14 @@ Function ConfirmPlan(items As List(Of RenameItem), skipped As List(Of String), _
 
         Dim nConflict As Integer = 0
         Dim nWarn As Integer = 0
+        Dim nOrph As Integer = 0
         For Each it As RenameItem In items
             If it.Conflict <> "" Then nConflict += 1
-            If it.Warn <> "" Then nWarn += 1
+            If it.Orphan Then
+                nOrph += 1
+            ElseIf it.Warn <> "" Then
+                nWarn += 1
+            End If
         Next
 
         Dim nDwg As Integer = 0
@@ -1604,6 +1636,7 @@ Function ConfirmPlan(items As List(Of RenameItem), skipped As List(Of String), _
         lbl1.Text = "바꿀 파일 " & items.Count & " 개   (모델 " & (items.Count - nDwg) & _
                     " / 도면 " & nDwg & ")   빼려면 체크를 끄세요" & _
                     If(nConflict > 0, "   [!] " & nConflict & " 개는 충돌이라 체크가 꺼져 있습니다", "") & _
+                    If(nOrph > 0, "   [고아] " & nOrph & " 개는 이 조립도에 없는 부품의 도면이라 체크가 꺼져 있습니다", "") & _
                     If(nWarn > 0, "   [주의] " & nWarn & " 개는 다른 폴더에 같은 이름이 생깁니다", "")
         lbl1.SetBounds(12, 10, 860, 20)
 
@@ -1625,10 +1658,12 @@ Function ConfirmPlan(items As List(Of RenameItem), skipped As List(Of String), _
             End If
             If it.Conflict <> "" Then
                 line = "[!] " & line & "   << " & it.Conflict
+            ElseIf it.Orphan Then
+                line = "[고아] " & line & "   << " & it.Warn
             ElseIf it.Warn <> "" Then
                 line = "[주의] " & line & "   << " & it.Warn
             End If
-            clb.Items.Add(line, it.Conflict = "")
+            clb.Items.Add(line, it.Conflict = "" AndAlso Not it.Orphan)
         Next
 
         Dim lbl2 As New System.Windows.Forms.Label
@@ -1682,7 +1717,10 @@ Function ConfirmPlan(items As List(Of RenameItem), skipped As List(Of String), _
                 MessageBox.Show("충돌하는 항목이 켜져 있습니다. 체크를 끄거나 먼저 정리하세요." & vbCrLf & vbCrLf & _
                                 String.Join(vbCrLf, bad.ToArray()) & vbCrLf & vbCrLf & _
                                 "이 규칙은 이름 뒤에 _2 를 붙이지 않습니다." & vbCrLf & _
-                                "잘못된 번호가 그대로 발주로 나가기 때문입니다.", _
+                                "잘못된 번호가 그대로 발주로 나가기 때문입니다." & vbCrLf & vbCrLf & _
+                                "겹치는 상대가 [고아] 로 표시된 도면이면, 부품이 다른 번호로" & vbCrLf & _
+                                "바뀐 뒤 안 지워진 옛 도면일 수 있습니다. 폴더에서 치우고" & vbCrLf & _
+                                "다시 돌리면 충돌이 사라집니다.", _
                                 "이름 변경 미리보기", MessageBoxButtons.OK, MessageBoxIcon.Warning)
                 Continue Do
             End If
