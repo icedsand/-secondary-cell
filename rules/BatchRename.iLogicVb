@@ -281,33 +281,48 @@ Sub Main()
     ' 그래도 아무것도 없으면 그때 알린다.
 
     ' ---- 7. 도면 수집 ------------------------------------------------------
-    '  이름이 맞는 도면은 파일명으로 바로 잡고, 나머지는 열어서 참조를 본다.
-    '  참조로 잡으면 이름 규칙에서 벗어난 도면도 놓치지 않는다.
-    ' ------------------------------------------------------------------
-    '  도면은 조립도와 다른 폴더에 있는 경우가 많다.
-    '      O:\...\06. FPC LOADER\01. 조립도\LIKG-...-FTL00.iam
-    '      O:\...\06. FPC LOADER\02. 도면\LIKG-...-FTL01-09.idw
-    '  조립도 폴더만 훑으면 도면을 하나도 못 찾는다. 그래서 .idw 가 나올
-    '  때까지 상위로 올라가며 찾고, 어디를 훑을지 사람에게 보여주고 확인받는다.
+    '
+    '  짝을 짓는 순서가 중요하다.
+    '
+    '    1) 이름 규칙에 걸리면 그것으로 끝. 참조를 보지 않는다.
+    '       이름이 규칙에 맞다는 것은 이 프로젝트 도면이라는 뜻이다.
+    '    2) 규칙에 안 걸리면, 같은 이름의 부품이 트리에 있는지 본다.
+    '       도면과 부품이 같은 폴더에 같은 이름으로 있는 것이 우리 규칙이다.
+    '    3) 그래도 못 정하면 그때만 열어서 참조를 본다.
+    '
+    '  예전에는 1) 을 통과해도 참조가 안 맞으면 버렸고, 버리면서 로그도
+    '  남기지 않았다. 그래서 도면이 통째로 사라지는데 아무 흔적이 없었다.
+    '  이제 버리는 모든 경우에 이유를 남긴다.
     ' ------------------------------------------------------------------
     Dim searchRoot As String = DWG_ROOT
     If String.IsNullOrEmpty(searchRoot) OrElse Not System.IO.Directory.Exists(searchRoot) Then
         searchRoot = FindDrawingRoot(topDir, DWG_SEARCH_UP)
     End If
 
-    ' 도면 짝짓기에는 트리의 부품 전부를 쓴다. 이름이 이번에 안 바뀌는 부품도
-    ' 포함해야, 부품만 먼저 바뀌고 남은 도면을 부품 이름에 맞춰줄 수 있다.
+    ' 부품 이름(확장자 뺀 것) -> 이 작업이 끝났을 때의 최종 이름
+    ' 이번에 안 바뀌는 부품도 넣는다. 부품만 먼저 바뀌고 남은 도면을
+    ' 이미 바뀐 부품 이름에 맞춰줄 수 있어야 하기 때문이다.
+    Dim modelFinalByBase As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase)
+    For Each d As Document In docs
+        Dim b As String = System.IO.Path.GetFileNameWithoutExtension(d.FullFileName)
+        If b <> "" AndAlso Not modelFinalByBase.ContainsKey(b) Then modelFinalByBase.Add(b, b)
+    Next
+    For Each it As RenameItem In plan
+        Dim b As String = System.IO.Path.GetFileNameWithoutExtension(it.OldPath)
+        modelFinalByBase(b) = System.IO.Path.GetFileNameWithoutExtension(it.NewPath)
+    Next
+
+    ' 참조로 짝을 지을 때 쓸 표
     Dim targetPaths As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
     Dim newByOld As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase)
-
     For Each d As Document In docs
         Dim mp As String = d.FullFileName
         If mp = "" Then Continue For
         targetPaths.Add(mp)
-        If Not newByOld.ContainsKey(mp) Then newByOld.Add(mp, mp)   ' 기본값 : 이름 그대로
+        If Not newByOld.ContainsKey(mp) Then newByOld.Add(mp, mp)
     Next
     For Each it As RenameItem In plan
-        newByOld(it.OldPath) = it.NewPath                            ' 바뀌는 것은 새 이름으로
+        newByOld(it.OldPath) = it.NewPath
     Next
 
     ThisApplication.StatusBarText = "도면을 찾는 중..."
@@ -323,23 +338,59 @@ Sub Main()
     Dim openedByRule As New List(Of Document)
     Dim dwgPlan As New List(Of RenameItem)
 
+    ' 무슨 일이 있었는지 세어 둔다. 도면이 통째로 빠지면 여기서 드러난다.
+    Dim nRO      As Integer = 0     ' 읽기전용
+    Dim nByRule  As Integer = 0     ' 이름 규칙으로 짝
+    Dim nByName  As Integer = 0     ' 같은 이름 부품으로 짝
+    Dim nByRef   As Integer = 0     ' 참조로 짝
+    Dim nNoMatch As Integer = 0     ' 관련 없음
+    Dim nOpenErr As Integer = 0     ' 열기 실패
+
     Try
         Dim dwgSeen As Integer = 0
         For Each idwPath As String In idwFiles
             dwgSeen += 1
             ThisApplication.StatusBarText = "도면 확인 " & dwgSeen & " / " & idwFiles.Count & " ..."
 
+            Dim dwgName As String = System.IO.Path.GetFileName(idwPath)
+            Dim dwgBase As String = System.IO.Path.GetFileNameWithoutExtension(idwPath)
+
             If IsReadOnlyFile(idwPath) Then
-                skipped.Add(System.IO.Path.GetFileName(idwPath) & "   (읽기전용 도면)")
+                nRO += 1
+                skipped.Add(dwgName & "   (읽기전용 도면)")
                 Continue For
             End If
 
-            Dim dwgBase As String = System.IO.Path.GetFileNameWithoutExtension(idwPath)
-            Dim dwgNew  As String = ApplyRules(dwgBase, rules, SEP)
-            Dim nameHit As Boolean = (dwgNew <> dwgBase)
-            If Not nameHit AndAlso Not SCAN_ALL_IDW Then Continue For
+            ' --- 1) 이름 규칙 --------------------------------------------
+            Dim wantBase As String = ""
+            Dim how As String = ""
+
+            Dim byRule As String = ApplyRules(dwgBase, rules, SEP)
+            If byRule <> dwgBase Then
+                wantBase = byRule
+                how = "이름규칙"
+                nByRule += 1
+            ElseIf modelFinalByBase.ContainsKey(dwgBase) Then
+                ' --- 2) 같은 이름의 부품 ---------------------------------
+                Dim mf As String = modelFinalByBase(dwgBase)
+                If mf <> "" AndAlso mf <> dwgBase Then
+                    wantBase = mf
+                    how = "같은이름 부품"
+                    nByName += 1
+                End If
+            End If
+
+            ' --- 3) 그래도 못 정하면 열어서 참조를 본다 -------------------
+            Dim needRefCheck As Boolean = (wantBase = "")
+            If needRefCheck AndAlso Not SCAN_ALL_IDW Then
+                nNoMatch += 1
+                skipped.Add(dwgName & "   (이름이 규칙에도 부품에도 안 맞음)")
+                Continue For
+            End If
 
             ' 이미 열려있으면 그것을 쓰고, 아니면 비표시로 연다.
+            ' 이름으로 짝이 잡힌 도면도 반드시 열어야 한다. 닫혀 있으면
+            ' 부품 이름이 바뀔 때 도면의 참조가 따라가지 못한다.
             Dim oDwg As Document = FindOpenDoc(idwPath)
             Dim wasOpen As Boolean = (oDwg IsNot Nothing)
             If Not wasOpen Then
@@ -347,34 +398,48 @@ Sub Main()
                     oDwg = ThisApplication.Documents.Open(idwPath, False)
                     openedByRule.Add(oDwg)
                 Catch ex As Exception
-                    skipped.Add(System.IO.Path.GetFileName(idwPath) & "   (열기 실패: " & ex.Message & ")")
+                    nOpenErr += 1
+                    skipped.Add(dwgName & "   (열기 실패: " & ex.Message & ")")
                     Continue For
                 End Try
             End If
 
-            ' 이 도면이 대상 부품을 하나라도 그리는가. 어떤 것들인지도 모은다.
-            Dim usedTargets As New List(Of String)
-            Try
-                For Each rd As Document In oDwg.AllReferencedDocuments
-                    If Not String.IsNullOrEmpty(rd.FullFileName) AndAlso _
-                       targetPaths.Contains(rd.FullFileName) Then
-                        If Not usedTargets.Contains(rd.FullFileName) Then usedTargets.Add(rd.FullFileName)
-                    End If
-                Next
-            Catch
-            End Try
-            Dim uses As Boolean = (usedTargets.Count > 0)
+            If needRefCheck Then
+                Dim usedTargets As New List(Of String)
+                Try
+                    For Each rd As Document In oDwg.AllReferencedDocuments
+                        If Not String.IsNullOrEmpty(rd.FullFileName) AndAlso _
+                           targetPaths.Contains(rd.FullFileName) Then
+                            If Not usedTargets.Contains(rd.FullFileName) Then usedTargets.Add(rd.FullFileName)
+                        End If
+                    Next
+                Catch
+                End Try
 
-            If Not uses Then
-                ' 관계없는 도면은 도로 닫는다. 원래 열려있던 것은 그대로 둔다.
-                If Not wasOpen Then
-                    Try
-                        oDwg.Close(True)
-                        openedByRule.Remove(oDwg)
-                    Catch
-                    End Try
+                If usedTargets.Count = 0 Then
+                    ' 이 조립도와 상관없는 도면이다. 도로 닫는다.
+                    nNoMatch += 1
+                    skipped.Add(dwgName & "   (이 조립도의 부품을 그리지 않음)")
+                    If Not wasOpen Then
+                        Try
+                            oDwg.Close(True)
+                            openedByRule.Remove(oDwg)
+                        Catch
+                        End Try
+                    End If
+                    Continue For
                 End If
-                Continue For
+
+                nByRef += 1
+                If DWG_NAME_FOLLOWS_MODEL AndAlso usedTargets.Count = 1 Then
+                    Dim mfin As String = System.IO.Path.GetFileNameWithoutExtension(newByOld(usedTargets(0)))
+                    If mfin <> "" AndAlso mfin <> dwgBase Then
+                        wantBase = mfin
+                        how = "참조한 부품"
+                    End If
+                Else
+                    skipped.Add(dwgName & "   (부품 " & usedTargets.Count & " 개를 그린 도면 - 이름 그대로, 참조만 갱신)")
+                End If
             End If
 
             Dim itd As New RenameItem
@@ -382,39 +447,31 @@ Sub Main()
             itd.OldPath = idwPath
             itd.IsDwg   = True
             itd.Depth   = -1                     ' 도면은 부품보다 뒤에 처리한다
-            If nameHit Then
+            If wantBase <> "" AndAlso wantBase <> dwgBase Then
                 itd.NewPath = System.IO.Path.Combine( _
-                                System.IO.Path.GetDirectoryName(idwPath), dwgNew & ".idw")
-            ElseIf DWG_NAME_FOLLOWS_MODEL AndAlso usedTargets.Count = 1 Then
-                ' 이름 규칙으로는 안 바뀌지만 부품 하나만 그린 도면이다.
-                ' 도면 이름은 그 부품 이름과 같아야 하므로 부품의 최종 이름을 쓴다.
-                ' (이번에 바뀌는 부품이면 새 이름, 아니면 지금 이름)
-                Dim modelFinal As String = newByOld(usedTargets(0))
-                Dim wantBase As String = System.IO.Path.GetFileNameWithoutExtension(modelFinal)
-                If wantBase <> "" AndAlso wantBase <> dwgBase Then
-                    itd.NewPath = System.IO.Path.Combine( _
-                                    System.IO.Path.GetDirectoryName(idwPath), wantBase & ".idw")
-                Else
-                    itd.NewPath = ""
-                End If
+                                System.IO.Path.GetDirectoryName(idwPath), wantBase & ".idw")
             Else
-                ' 여러 부품을 한 장에 그렸거나 짝을 정할 수 없다. 참조만 갱신한다.
-                itd.NewPath = ""
-                If usedTargets.Count > 1 Then
-                    skipped.Add(System.IO.Path.GetFileName(idwPath) & _
-                                "   (부품 " & usedTargets.Count & " 개를 그린 도면 - 이름 그대로, 참조만 갱신)")
-                End If
+                itd.NewPath = ""                 ' 이름 그대로, 참조만 갱신
             End If
             dwgPlan.Add(itd)
         Next
 
+        Dim dwgReport As String = _
+            "도면 : 발견 " & idwFiles.Count & _
+            "  /  이름규칙 " & nByRule & _
+            "  /  같은이름부품 " & nByName & _
+            "  /  참조 " & nByRef & _
+            "  /  관련없음 " & nNoMatch & _
+            "  /  읽기전용 " & nRO & _
+            "  /  열기실패 " & nOpenErr & _
+            "  ->  처리 대상 " & dwgPlan.Count & " 개"
+
         If plan.Count = 0 AndAlso dwgPlan.Count = 0 Then
             ThisApplication.StatusBarText = ""
             MessageBox.Show("바뀌는 파일이 없습니다." & vbCrLf & vbCrLf & _
-                            "부품 : 고른 조각이 파일이름에 실제로 들어있는지 확인하세요." & vbCrLf & _
-                            "도면 : 아래 폴더에서 .idw 를 " & idwFiles.Count & " 개 찾았습니다." & vbCrLf & _
-                            "       " & searchRoot & vbCrLf & _
-                            "       0 개면 도면이 다른 폴더에 있는 것입니다.", _
+                            "부품 : 고른 조각이 파일이름에 실제로 들어있는지 확인하세요." & vbCrLf & vbCrLf & _
+                            dwgReport & vbCrLf & _
+                            "폴더 : " & searchRoot, _
                             TITLE, MessageBoxButtons.OK, MessageBoxIcon.Information)
             CloseOpened(openedByRule)
             Return
@@ -457,6 +514,7 @@ Sub Main()
 
         ' ---- 9. 미리보기 ---------------------------------------------------
         ThisApplication.StatusBarText = ""
+        skipped.Insert(0, dwgReport)
         Dim picked As List(Of Integer) = ConfirmPlan(allItems, skipped, RulesSummary(rules))
         If picked Is Nothing Then
             CloseOpened(openedByRule)
@@ -481,7 +539,8 @@ Sub Main()
         oLog.AppendLine("유닛 이름 일괄 변경   " & DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"))
         oLog.AppendLine("최상위 : " & oTop.FullFileName)
         oLog.AppendLine("규칙   : " & RulesSummary(rules))
-        oLog.AppendLine("도면검색: " & searchRoot & "   (.idw " & idwFiles.Count & " 개 발견)")
+        oLog.AppendLine("도면검색: " & searchRoot)
+        oLog.AppendLine(dwgReport)
         oLog.AppendLine(New String("-"c, 70))
 
         ' 트리 아래쪽(부품)부터 위쪽(최상위 조립도)으로 처리한다. 그래야 조립도가
@@ -1004,7 +1063,7 @@ End Function
 '  규칙을 고칠 때마다 이 값을 올린다.
 ' ============================================================================
 Function RuleVersion() As String
-    Return "v6 (2026-09-10)"
+    Return "v7 (2026-09-10)"
 End Function
 
 
