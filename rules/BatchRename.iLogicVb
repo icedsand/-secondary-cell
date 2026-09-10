@@ -345,7 +345,7 @@ Sub Main()
     Dim nByRef   As Integer = 0     ' 참조로 짝
     Dim nNoMatch As Integer = 0     ' 관련 없음
     Dim nOpenErr As Integer = 0     ' 열기 실패
-    Dim nOrphan  As Integer = 0     ' 이름은 맞지만 이 조립도에 없는 부품의 도면
+    Dim nUnused  As Integer = 0     ' 이름은 맞지만 이 조립도에서 안 쓰는 도면
 
     Try
         Dim dwgSeen As Integer = 0
@@ -369,7 +369,7 @@ Sub Main()
             ' --- 1) 이름 규칙 --------------------------------------------
             Dim wantBase As String = ""
             Dim how As String = ""
-            Dim isOrphan As Boolean = False
+            Dim isUnused As Boolean = False
 
             Dim byRule As String = ApplyRules(dwgBase, rules, SEP)
             If byRule <> dwgBase Then
@@ -443,9 +443,9 @@ Sub Main()
                     ' 이름 규칙엔 맞지만 이 조립도에 그 부품이 없다.
                     ' 부품이 다른 번호로 바뀐 뒤 안 지워진 옛 도면이 대표적이다.
                     ' 목록에는 올리되 체크를 꺼 둔다. 사람이 보고 정해야 한다.
-                    isOrphan = True
-                    nOrphan += 1
-                    skipped.Add(dwgName & "   (이름은 맞지만 이 조립도에 그 부품이 없음 - 체크 꺼둠)")
+                    isUnused = True
+                    nUnused += 1
+                    skipped.Add(dwgName & "   (이 조립도에서 쓰지 않는 도면 - 체크 꺼둠)")
                 Else
                     nByRef += 1
                     If wantBase = "" AndAlso DWG_NAME_FOLLOWS_MODEL AndAlso usedTargets.Count = 1 Then
@@ -465,8 +465,8 @@ Sub Main()
             itd.OldPath = idwPath
             itd.IsDwg   = True
             itd.Depth   = -1                     ' 도면은 부품보다 뒤에 처리한다
-            itd.Orphan  = isOrphan
-            If isOrphan Then itd.Warn = "이 조립도에 그 부품이 없음 (남은 옛 도면일 수 있음)"
+            itd.Unused  = isUnused
+            If isUnused Then itd.Warn = "이 조립도에서 쓰지 않는 도면 (남은 옛 도면일 수 있음)"
             If wantBase <> "" AndAlso wantBase <> dwgBase Then
                 itd.NewPath = System.IO.Path.Combine( _
                                 System.IO.Path.GetDirectoryName(idwPath), wantBase & ".idw")
@@ -482,7 +482,7 @@ Sub Main()
             "  /  같은이름부품 " & nByName & _
             "  /  참조 " & nByRef & _
             "  /  관련없음 " & nNoMatch & _
-            "  /  고아 " & nOrphan & _
+            "  /  미사용 " & nUnused & _
             "  /  읽기전용 " & nRO & _
             "  /  열기실패 " & nOpenErr & _
             "  ->  처리 대상 " & dwgPlan.Count & " 개"
@@ -505,23 +505,73 @@ Sub Main()
         allItems.AddRange(plan)
         allItems.AddRange(dwgPlan)
 
-        Dim newSeen As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase)
+        ' 1) 그 자리에서 막아야 하는 것부터
         For Each it As RenameItem In allItems
             If it.NewPath = "" Then Continue For
             If String.Equals(it.NewPath, it.OldPath, StringComparison.OrdinalIgnoreCase) Then
                 it.Conflict = "새 이름이 옛 이름과 같음"
             ElseIf System.IO.File.Exists(it.NewPath) Then
                 it.Conflict = "그 이름의 파일이 이미 있음"
-            ElseIf newSeen.ContainsKey(it.NewPath) Then
-                Dim other As String = newSeen(it.NewPath)
-                Dim otherDir As String = System.IO.Path.GetDirectoryName(other)
-                Dim thisDir  As String = System.IO.Path.GetDirectoryName(it.OldPath)
-                it.Conflict = "새 이름이 겹침 : " & System.IO.Path.GetFileName(other)
-                If Not String.Equals(otherDir, thisDir, StringComparison.OrdinalIgnoreCase) Then
-                    it.Conflict &= "  [" & otherDir & "]"
+            End If
+        Next
+
+        ' 2) 새 이름이 겹치는 것끼리 묶어 최신 코드만 남긴다
+        '
+        '    LIKG-LM2401-FTL01-09.idw  ->  LIKG-LM2602-FTL01-09.idw
+        '    LIKG-LM2102-FTL01-09.idw  ->  LIKG-LM2602-FTL01-09.idw
+        '
+        '    2401 이 2102 보다 최신이므로 2401 만 바꾸고 2102 는 그대로 둔다.
+        '    최신을 가릴 수 없으면(코드가 같거나 숫자가 없으면) 사람이 정하도록
+        '    양쪽 다 막는다. 이 규칙은 임의로 하나를 고르지 않는다.
+        Dim byNew As New Dictionary(Of String, List(Of Integer))(StringComparer.OrdinalIgnoreCase)
+        For i As Integer = 0 To allItems.Count - 1
+            Dim it As RenameItem = allItems(i)
+            If it.NewPath = "" OrElse it.Conflict <> "" Then Continue For
+            If Not byNew.ContainsKey(it.NewPath) Then byNew.Add(it.NewPath, New List(Of Integer))
+            byNew(it.NewPath).Add(i)
+        Next
+
+        For Each kv As KeyValuePair(Of String, List(Of Integer)) In byNew
+            If kv.Value.Count <= 1 Then Continue For
+
+            ' 가장 최신인 것을 고른다
+            Dim bestIx As Integer = -1
+            Dim bestVer As String = ""
+            Dim tie As Boolean = False
+
+            For Each ix As Integer In kv.Value
+                Dim v As String = VersionKeyOf( _
+                        System.IO.Path.GetFileNameWithoutExtension(allItems(ix).OldPath), rules, SEP)
+                If bestIx < 0 Then
+                    bestIx = ix : bestVer = v
+                Else
+                    Dim c As Integer = CompareVersion(v, bestVer)
+                    If c > 0 Then
+                        bestIx = ix : bestVer = v : tie = False
+                    ElseIf c = 0 Then
+                        tie = True
+                    End If
                 End If
+            Next
+
+            If bestIx < 0 OrElse tie OrElse bestVer = "" Then
+                ' 최신을 가릴 수 없다. 전부 막는다.
+                For Each ix As Integer In kv.Value
+                    Dim others As New List(Of String)
+                    For Each jx As Integer In kv.Value
+                        If jx <> ix Then others.Add(System.IO.Path.GetFileName(allItems(jx).OldPath))
+                    Next
+                    allItems(ix).Conflict = "새 이름이 겹치는데 어느 쪽이 최신인지 알 수 없음 : " & _
+                                            String.Join(", ", others.ToArray())
+                Next
             Else
-                newSeen.Add(it.NewPath, it.OldPath)
+                ' 최신이 아닌 것은 그대로 둔다. 막지 않고 체크만 꺼 둔다.
+                For Each ix As Integer In kv.Value
+                    If ix = bestIx Then Continue For
+                    allItems(ix).OldVer  = True
+                    allItems(ix).NewPath = ""        ' 이름을 바꾸지 않는다
+                    allItems(ix).Warn    = "더 최신인 " & bestVer & " 이(가) 있어 그대로 둡니다"
+                Next
             End If
         Next
 
@@ -804,7 +854,8 @@ Class RenameItem
     Public IsDwg    As Boolean = False
     Public Conflict As String = ""
     Public Warn     As String = ""      ' 막지는 않지만 알려야 하는 것
-    Public Orphan   As Boolean = False  ' 이 조립도에 없는 부품의 도면
+    Public Unused   As Boolean = False  ' 이 조립도에서 쓰지 않는 도면
+    Public OldVer   As Boolean = False  ' 더 최신 코드가 있어 그대로 두는 것
 End Class
 
 
@@ -1086,11 +1137,74 @@ End Function
 
 
 ' ============================================================================
+'  이 이름에서 규칙이 걸린 조각을 돌려준다.  프로젝트 코드가 곧 판 번호다.
+'    LIKG-LM2401-FTL01-09  +  규칙(LM2401 -> LM2602)  ->  "LM2401"
+' ============================================================================
+Function VersionKeyOf(name As String, rules As List(Of SegRule), sep As String) As String
+
+    If String.IsNullOrEmpty(name) OrElse rules Is Nothing Then Return ""
+
+    Dim parts As String() = name.Split(New String() {sep}, StringSplitOptions.None)
+    For i As Integer = 0 To parts.Length - 1
+        For Each r As SegRule In rules
+            If String.Equals(parts(i), r.FromVal, StringComparison.Ordinal) Then Return parts(i)
+        Next
+    Next
+    Return ""
+
+End Function
+
+
+' ============================================================================
+'  판 번호 비교.  a 가 더 최신이면 양수, 같으면 0, 옛것이면 음수.
+'
+'  LM2401 과 LM2102 는 숫자만 뽑아 2401 과 2102 로 견준다. 큰 쪽이 최신이다.
+'  숫자가 없거나 같으면 0 을 돌려준다. 그때는 규칙이 임의로 고르지 않고
+'  사람에게 넘긴다.
+' ============================================================================
+Function CompareVersion(a As String, b As String) As Integer
+
+    If a = b Then Return 0
+
+    Dim na As Long = DigitsOf(a)
+    Dim nb As Long = DigitsOf(b)
+
+    If na >= 0 AndAlso nb >= 0 AndAlso na <> nb Then
+        If na > nb Then Return 1
+        Return -1
+    End If
+
+    Return 0        ' 가릴 수 없다
+
+End Function
+
+
+' 문자열에서 숫자만 뽑아 정수로. 숫자가 없으면 -1.
+Function DigitsOf(s As String) As Long
+
+    If String.IsNullOrEmpty(s) Then Return -1
+
+    Dim sb As New System.Text.StringBuilder()
+    For Each c As Char In s
+        If Char.IsDigit(c) Then sb.Append(c)
+    Next
+    If sb.Length = 0 OrElse sb.Length > 18 Then Return -1
+
+    Try
+        Return Convert.ToInt64(sb.ToString())
+    Catch
+        Return -1
+    End Try
+
+End Function
+
+
+' ============================================================================
 '  이 규칙의 버전.  창 제목에 찍어서 어느 판이 붙어 있는지 바로 알게 한다.
 '  규칙을 고칠 때마다 이 값을 올린다.
 ' ============================================================================
 Function RuleVersion() As String
-    Return "v8 (2026-09-10)"
+    Return "v9 (2026-09-10)"
 End Function
 
 
@@ -1616,12 +1730,15 @@ Function ConfirmPlan(items As List(Of RenameItem), skipped As List(Of String), _
         frm.TopMost = True
 
         Dim nConflict As Integer = 0
-        Dim nWarn As Integer = 0
-        Dim nOrph As Integer = 0
+        Dim nWarn   As Integer = 0
+        Dim nUnusedP As Integer = 0
+        Dim nOldVer As Integer = 0
         For Each it As RenameItem In items
             If it.Conflict <> "" Then nConflict += 1
-            If it.Orphan Then
-                nOrph += 1
+            If it.OldVer Then
+                nOldVer += 1
+            ElseIf it.Unused Then
+                nUnusedP += 1
             ElseIf it.Warn <> "" Then
                 nWarn += 1
             End If
@@ -1636,7 +1753,8 @@ Function ConfirmPlan(items As List(Of RenameItem), skipped As List(Of String), _
         lbl1.Text = "바꿀 파일 " & items.Count & " 개   (모델 " & (items.Count - nDwg) & _
                     " / 도면 " & nDwg & ")   빼려면 체크를 끄세요" & _
                     If(nConflict > 0, "   [!] " & nConflict & " 개는 충돌이라 체크가 꺼져 있습니다", "") & _
-                    If(nOrph > 0, "   [고아] " & nOrph & " 개는 이 조립도에 없는 부품의 도면이라 체크가 꺼져 있습니다", "") & _
+                    If(nOldVer > 0, "   [구버전] " & nOldVer & " 개는 더 최신이 있어 그대로 둡니다", "") & _
+                    If(nUnusedP > 0, "   [미사용] " & nUnusedP & " 개는 이 조립도에서 쓰지 않는 도면입니다", "") & _
                     If(nWarn > 0, "   [주의] " & nWarn & " 개는 다른 폴더에 같은 이름이 생깁니다", "")
         lbl1.SetBounds(12, 10, 860, 20)
 
@@ -1658,12 +1776,14 @@ Function ConfirmPlan(items As List(Of RenameItem), skipped As List(Of String), _
             End If
             If it.Conflict <> "" Then
                 line = "[!] " & line & "   << " & it.Conflict
-            ElseIf it.Orphan Then
-                line = "[고아] " & line & "   << " & it.Warn
+            ElseIf it.OldVer Then
+                line = "[구버전] " & line & "   << " & it.Warn
+            ElseIf it.Unused Then
+                line = "[미사용] " & line & "   << " & it.Warn
             ElseIf it.Warn <> "" Then
                 line = "[주의] " & line & "   << " & it.Warn
             End If
-            clb.Items.Add(line, it.Conflict = "" AndAlso Not it.Orphan)
+            clb.Items.Add(line, it.Conflict = "" AndAlso Not it.Unused AndAlso Not it.OldVer)
         Next
 
         Dim lbl2 As New System.Windows.Forms.Label
@@ -1718,9 +1838,9 @@ Function ConfirmPlan(items As List(Of RenameItem), skipped As List(Of String), _
                                 String.Join(vbCrLf, bad.ToArray()) & vbCrLf & vbCrLf & _
                                 "이 규칙은 이름 뒤에 _2 를 붙이지 않습니다." & vbCrLf & _
                                 "잘못된 번호가 그대로 발주로 나가기 때문입니다." & vbCrLf & vbCrLf & _
-                                "겹치는 상대가 [고아] 로 표시된 도면이면, 부품이 다른 번호로" & vbCrLf & _
-                                "바뀐 뒤 안 지워진 옛 도면일 수 있습니다. 폴더에서 치우고" & vbCrLf & _
-                                "다시 돌리면 충돌이 사라집니다.", _
+                                "어느 쪽이 최신인지 코드로 가릴 수 있으면 규칙이 알아서" & vbCrLf & _
+                                "최신만 바꾸고 나머지는 [구버전] 으로 그대로 둡니다." & vbCrLf & _
+                                "여기 남은 것은 그것으로도 가릴 수 없는 경우입니다.", _
                                 "이름 변경 미리보기", MessageBoxButtons.OK, MessageBoxIcon.Warning)
                 Continue Do
             End If
