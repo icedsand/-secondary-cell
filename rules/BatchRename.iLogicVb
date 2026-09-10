@@ -109,10 +109,19 @@ Sub Main()
 
     ' ---- 설정 --------------------------------------------------------------
     Dim SEP            As String  = "-"    ' 이름을 나누는 구분자
+    ' 대상을 묶어 보여줄 때 쓸 앞 묶음 개수.
+    ' 1 이면 LIKG / SHF / MISUMI 처럼 회사·제조사 단위로 묶여 목록이 짧다.
+    ' 2 로 올리면 LIKG-LM2102 / LIKG-LM2201 로 갈라지지만, 구매품이 저마다
+    ' 다른 앞부분을 가져서 묶음이 수백 개가 된다. 1 을 권한다.
+    Dim PREFIX_SEGS    As Integer = 1
     Dim MOVE_OLD_FILES As Boolean = True   ' 옛 파일을 _OLD 폴더로 옮긴다
     Dim SCAN_ALL_IDW   As Boolean = True   ' 이름이 안 맞는 도면도 열어서 참조를 확인
     Dim RENAME_TOP_ASM As Boolean = True   ' 최상위 조립도 이름도 바꾼다
     Dim DWG_ROOT       As String  = ""     ' 도면 검색 폴더. 비우면 조립도 폴더
+
+    ' 부품번호를 새 파일이름과 무조건 같게 맞춘다.
+    ' False 로 두면 옛 부품번호에 칸 규칙만 적용한다(파일이름과 어긋날 수 있다).
+    Dim PN_FOLLOWS_FILENAME As Boolean = True
 
     Dim TITLE As String = "유닛 이름 일괄 변경"
 
@@ -173,21 +182,60 @@ Sub Main()
         Return
     End If
 
-    ' ---- 3. 이름 조각을 칸별로 모은다 --------------------------------------
+    ' ---- 3. 대상 좁히기 ----------------------------------------------------
+    '  파일이 500 개쯤 되면 칸 조각도 수백 개가 되어 눈으로 볼 수가 없다.
+    '  이름 앞부분이 같은 것끼리 묶어서 먼저 구매품을 통째로 걷어낸다.
+    '  가공품은 LIKG-LM2102-FTL01-03 처럼 같은 앞부분을 공유하기 때문에
+    '  묶음 몇 개만 고르면 대상이 확 줄어든다.
+    Dim allNames As New List(Of String)
+    For Each d As Document In docs
+        allNames.Add(System.IO.Path.GetFileNameWithoutExtension(d.FullFileName))
+    Next
+
+    Dim groups As List(Of String) = CollectGroups(allNames, SEP, PREFIX_SEGS)
+    Dim topFirstSeg As String = FirstSegment( _
+            System.IO.Path.GetFileNameWithoutExtension(oTop.FullFileName), SEP)
+
+    Dim chosen As New List(Of String)
+    If Not PickGroups(System.IO.Path.GetFileName(oTop.FullFileName), docs.Count, _
+                      groups, topFirstSeg, chosen) Then Return
+
+    Dim kept As New List(Of Document)
+    Dim droppedCount As Integer = 0
+    For Each d As Document In docs
+        Dim gk As String = GroupKeyOf(System.IO.Path.GetFileNameWithoutExtension(d.FullFileName), SEP, PREFIX_SEGS)
+        If chosen.Contains(gk) Then
+            kept.Add(d)
+        Else
+            droppedCount += 1
+        End If
+    Next
+    docs = kept
+
+    If docs.Count = 0 Then
+        MessageBox.Show("고른 묶음에 해당하는 파일이 없습니다.", TITLE, _
+                        MessageBoxButtons.OK, MessageBoxIcon.Information)
+        Return
+    End If
+
+    ' ---- 4. 이름 조각을 칸별로 모은다 --------------------------------------
     Dim baseNames As New List(Of String)
     For Each d As Document In docs
         baseNames.Add(System.IO.Path.GetFileNameWithoutExtension(d.FullFileName))
     Next
     Dim segKeys As List(Of String) = CollectSegments(baseNames, SEP)
 
-    ' ---- 4. 치환 규칙 만들기 ------------------------------------------------
+    ' ---- 5. 치환 규칙 만들기 ------------------------------------------------
     Dim rules As New List(Of SegRule)
     If Not AskRules(System.IO.Path.GetFileName(oTop.FullFileName), baseNames, segKeys, rules, SEP) Then Return
 
-    ' ---- 5. 모델 대상 정리 --------------------------------------------------
+    ' ---- 6. 모델 대상 정리 --------------------------------------------------
     Dim depthCache As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
     Dim plan As New List(Of RenameItem)
     Dim skipped As New List(Of String)
+    If droppedCount > 0 Then
+        skipped.Add("(대상 좁히기에서 제외한 파일 " & droppedCount & " 개 — 고르지 않은 묶음)")
+    End If
 
     For Each d As Document In docs
         Dim oldPath As String = d.FullFileName
@@ -221,7 +269,7 @@ Sub Main()
         Return
     End If
 
-    ' ---- 6. 도면 수집 ------------------------------------------------------
+    ' ---- 7. 도면 수집 ------------------------------------------------------
     '  이름이 맞는 도면은 파일명으로 바로 잡고, 나머지는 열어서 참조를 본다.
     '  참조로 잡으면 이름 규칙에서 벗어난 도면도 놓치지 않는다.
     Dim searchRoot As String = DWG_ROOT
@@ -312,7 +360,7 @@ Sub Main()
             dwgPlan.Add(itd)
         Next
 
-        ' ---- 7. 충돌 검사 --------------------------------------------------
+        ' ---- 8. 충돌 검사 --------------------------------------------------
         '  여러 칸 값을 하나로 모으면 서로 다른 파일이 같은 이름이 될 수 있다.
         '  그때는 막는다. _2 를 붙이면 잘못된 번호가 그대로 발주로 나간다.
         Dim allItems As New List(Of RenameItem)
@@ -334,7 +382,7 @@ Sub Main()
             End If
         Next
 
-        ' ---- 8. 미리보기 ---------------------------------------------------
+        ' ---- 9. 미리보기 ---------------------------------------------------
         ThisApplication.StatusBarText = ""
         Dim picked As List(Of Integer) = ConfirmPlan(allItems, skipped, RulesSummary(rules))
         If picked Is Nothing Then
@@ -347,11 +395,15 @@ Sub Main()
             run.Add(allItems(ix))
         Next
         If run.Count = 0 Then
+            MessageBox.Show("체크된 항목이 하나도 없어서 아무것도 하지 않았습니다." & vbCrLf & vbCrLf & _
+                            "충돌([!] 표시)이 있으면 체크가 꺼진 채로 시작합니다." & vbCrLf & _
+                            "충돌을 정리하거나, 충돌이 없는 항목만 체크하고 다시 실행하세요.", _
+                            TITLE, MessageBoxButtons.OK, MessageBoxIcon.Warning)
             CloseOpened(openedByRule)
             Return
         End If
 
-        ' ---- 9. 실행 -------------------------------------------------------
+        ' ---- 10. 실행 ------------------------------------------------------
         Dim oLog As New System.Text.StringBuilder()
         oLog.AppendLine("유닛 이름 일괄 변경   " & DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"))
         oLog.AppendLine("최상위 : " & oTop.FullFileName)
@@ -375,47 +427,111 @@ Sub Main()
         Next
         run = ordered
 
-        Dim okCount As Integer = 0
-        Dim movedOld As New List(Of String)
+        Dim okCount   As Integer = 0
+        Dim failCount As Integer = 0
+        Dim movedOld  As New List(Of String)
+        Dim failLines As New List(Of String)
 
         For i As Integer = 0 To run.Count - 1
             Dim it As RenameItem = run(i)
             ThisApplication.StatusBarText = "이름 변경 " & (i + 1) & " / " & run.Count & " ..."
 
-            Try
-                ' 부품번호 iProperty 도 같은 칸 규칙으로 바꾼다.
-                ' 타이틀블록이 iProperty 연동이므로 도면은 저절로 따라온다.
-                Dim pnOld As String = GetProp(it.Doc, "Part Number")
-                If pnOld <> "" Then
-                    Dim pnNew As String = ApplyRules(pnOld, rules, SEP)
-                    If pnNew <> pnOld Then
+            Dim oldName As String = System.IO.Path.GetFileName(it.OldPath)
+
+            ' ----------------------------------------------------------------
+            '  순서가 중요하다. 이름부터 바꾸고, 성공한 것만 부품번호를 손댄다.
+            '
+            '  거꾸로 하면 SaveAs 가 실패했을 때 부품번호 변경만 메모리에 남고,
+            '  뒤의 "수정된 문서 전부 저장" 이 그것을 옛 파일에 써 버린다.
+            '  파일이름은 그대로인데 부품번호만 바뀌는 상태가 된다.
+            ' ----------------------------------------------------------------
+            Dim renamed As Boolean = False
+
+            If it.NewPath = "" Then
+                ' 이름은 그대로. 참조 갱신만 저장한다.
+                Try
+                    it.Doc.Save()
+                    oLog.AppendLine("[참조갱신] " & oldName)
+                    renamed = True
+                Catch ex As Exception
+                    failCount += 1
+                    failLines.Add(oldName & " : " & ex.Message)
+                    oLog.AppendLine("[오류] 저장 실패 " & oldName & " : " & ex.Message)
+                End Try
+            Else
+                Dim errMsg As String = ""
+                Try
+                    ' SaveCopyAs = False : 문서가 새 파일로 옮겨가고
+                    '                      열려있는 상위 문서의 참조가 자동 갱신된다.
+                    it.Doc.SaveAs(it.NewPath, False)
+                Catch ex As Exception
+                    errMsg = ex.GetType().Name & " : " & ex.Message
+                End Try
+
+                ' 예외가 없어도 실제로 됐는지 확인한다. 조용히 실패할 수 있다.
+                Dim nowPath As String = ""
+                Try
+                    nowPath = it.Doc.FullFileName
+                Catch
+                End Try
+
+                Dim madeFile As Boolean = System.IO.File.Exists(it.NewPath)
+                Dim docMoved As Boolean = String.Equals(nowPath, it.NewPath, StringComparison.OrdinalIgnoreCase)
+
+                If madeFile AndAlso docMoved Then
+                    oLog.AppendLine("[이름변경] " & oldName & "  ->  " & System.IO.Path.GetFileName(it.NewPath))
+                    movedOld.Add(it.OldPath)
+                    renamed = True
+                Else
+                    ' 새 파일이 생겼더라도 문서가 따라가지 않았으면 참조는 아직
+                    ' 옛 파일을 가리킨다. 그때는 옛 파일을 치우면 안 된다.
+                    Dim why As String
+                    If Not madeFile Then
+                        why = "새 파일이 만들어지지 않음"
+                    Else
+                        why = "새 파일은 생겼으나 문서가 옛 파일을 붙들고 있음"
+                    End If
+                    If errMsg <> "" Then why &= "  /  " & errMsg
+
+                    failCount += 1
+                    failLines.Add(oldName & vbCrLf & "      " & why)
+                    oLog.AppendLine("[실패] " & oldName & " : " & why)
+                    oLog.AppendLine("        현재 경로 : " & nowPath)
+                End If
+            End If
+
+            ' 이름이 제대로 바뀐 것만 부품번호를 건드린다.
+            If renamed Then
+                Try
+                    Dim pnOld As String = GetProp(it.Doc, "Part Number")
+                    Dim pnNew As String
+                    If PN_FOLLOWS_FILENAME AndAlso it.NewPath <> "" Then
+                        ' 부품번호는 파일이름과 반드시 같아야 한다.
+                        pnNew = System.IO.Path.GetFileNameWithoutExtension(it.NewPath)
+                        If pnOld <> "" AndAlso _
+                           pnOld <> System.IO.Path.GetFileNameWithoutExtension(it.OldPath) Then
+                            oLog.AppendLine("  [주의] 원래 부품번호가 파일이름과 달랐음 : " & _
+                                            pnOld & "  (파일 " & System.IO.Path.GetFileNameWithoutExtension(it.OldPath) & ")")
+                        End If
+                    Else
+                        pnNew = ApplyRules(pnOld, rules, SEP)
+                    End If
+
+                    If pnNew <> "" AndAlso pnNew <> pnOld Then
                         If SetProp(it.Doc, "Part Number", pnNew) Then
                             oLog.AppendLine("  부품번호  " & pnOld & "  ->  " & pnNew)
                         Else
                             oLog.AppendLine("  [경고] 부품번호를 바꾸지 못함 : " & pnOld)
                         End If
                     End If
-                End If
 
-                If it.IsDwg Then it.Doc.Update()
-
-                If it.NewPath = "" Then
-                    ' 이름은 그대로. 참조 갱신만 저장한다.
-                    it.Doc.Save()
-                    oLog.AppendLine("[참조갱신] " & System.IO.Path.GetFileName(it.OldPath))
-                Else
-                    ' SaveCopyAs = False : 문서가 새 파일로 옮겨가고
-                    '                      열려있는 상위 문서의 참조가 자동 갱신된다.
-                    it.Doc.SaveAs(it.NewPath, False)
-                    oLog.AppendLine("[이름변경] " & System.IO.Path.GetFileName(it.OldPath) & _
-                                    "  ->  " & System.IO.Path.GetFileName(it.NewPath))
-                    movedOld.Add(it.OldPath)
-                End If
-                okCount += 1
-
-            Catch ex As Exception
-                oLog.AppendLine("[오류] " & System.IO.Path.GetFileName(it.OldPath) & " : " & ex.Message)
-            End Try
+                    If it.IsDwg Then it.Doc.Update()
+                    okCount += 1
+                Catch ex As Exception
+                    oLog.AppendLine("  [경고] 부품번호/갱신 처리 중 : " & ex.Message)
+                    okCount += 1
+                End Try
+            End If
         Next
 
         ' 참조가 바뀌어 더렵혀진 문서를 모두 저장한다.
@@ -430,7 +546,7 @@ Sub Main()
             End Try
         Next
 
-        ' ---- 10. 옛 파일 정리 -----------------------------------------------
+        ' ---- 11. 옛 파일 정리 -----------------------------------------------
         Dim oldDir As String = ""
         If MOVE_OLD_FILES AndAlso movedOld.Count > 0 Then
             oldDir = System.IO.Path.Combine(topDir, "_OLD_" & DateTime.Now.ToString("yyMMdd_HHmm"))
@@ -460,7 +576,7 @@ Sub Main()
         ' 규칙이 연 도면은 닫는다. (이미 저장했으므로 SkipSave)
         CloseOpened(openedByRule)
 
-        ' ---- 11. 결과 -------------------------------------------------------
+        ' ---- 12. 결과 -------------------------------------------------------
         ThisApplication.StatusBarText = ""
         Dim logPath As String = ""
         Try
@@ -470,13 +586,35 @@ Sub Main()
             logPath = ""
         End Try
 
-        Dim msg As String = okCount & " / " & run.Count & " 개 처리 완료." & vbCrLf & vbCrLf
+        Dim msg As String = okCount & " / " & run.Count & " 개 처리 완료."
+        If failCount > 0 Then
+            msg &= "      실패 " & failCount & " 개"
+        End If
+        msg &= vbCrLf
+        If failCount > 0 Then
+            msg &= vbCrLf & "※ 이름이 바뀌지 않은 파일이 있습니다. 아래 로그의 [실패] 줄을 보세요." & vbCrLf & _
+                   "   이름이 안 바뀐 파일은 부품번호도 건드리지 않았습니다." & vbCrLf
+        End If
+        msg &= vbCrLf
         If oldDir <> "" Then msg &= "옛 파일 : " & oldDir & vbCrLf
         If logPath <> "" Then msg &= "로그    : " & logPath & vbCrLf
         msg &= vbCrLf & "결과를 확인한 뒤 이상이 없으면 _OLD 폴더를 지우세요." & vbCrLf & _
                "잘못됐으면 _OLD 의 파일을 되돌려 놓으면 됩니다."
 
-        ShowLog(msg, oLog.ToString())
+        ' 실패가 있으면 로그 맨 위로 끌어올린다. 246 개 중 몇 개면 묻혀 버린다.
+        Dim logText As String = oLog.ToString()
+        If failCount > 0 Then
+            Dim head As New System.Text.StringBuilder()
+            head.AppendLine("###  이름이 바뀌지 않은 파일 " & failCount & " 개  ###")
+            For Each fl As String In failLines
+                head.AppendLine("  " & fl)
+            Next
+            head.AppendLine(New String("="c, 70))
+            head.AppendLine()
+            logText = head.ToString() & logText
+        End If
+
+        ShowLog(msg, logText)
 
     Finally
         ThisApplication.SilentOperation = prevSilent
@@ -610,6 +748,180 @@ Function SegCount(key As String) As String
     Dim p As String() = key.Split(New String() {"|"}, StringSplitOptions.None)
     If p.Length >= 4 Then Return p(3)
     Return "0"
+End Function
+
+
+' ============================================================================
+'  이름 앞부분이 같은 것끼리 묶는다.
+'
+'  묶음의 정체는 "묶음 개수 + 앞 N 묶음" 이다. 개수까지 넣는 이유는
+'  LIKG-LM2102-FTL01-03 (4묶음) 과 LIKG-LM2102 (2묶음) 을 섞지 않기 위해서다.
+'
+'  돌려주는 것은 정렬된 문자열 목록이고 한 줄의 모양은
+'      정렬용숫자(5자리) | 묶음개수(2자리) | 앞부분 | 파일수
+'  정렬 기준을 문자열에 넣어두면 List.Sort() 만으로 파일 많은 순이 된다.
+' ============================================================================
+Function CollectGroups(names As List(Of String), sep As String, prefixSegs As Integer) As List(Of String)
+
+    Dim count As New Dictionary(Of String, Integer)(StringComparer.Ordinal)
+
+    For Each nm As String In names
+        If String.IsNullOrEmpty(nm) Then Continue For
+        Dim k As String = GroupKeyOf(nm, sep, prefixSegs)
+        If count.ContainsKey(k) Then
+            count(k) = count(k) + 1
+        Else
+            count.Add(k, 1)
+        End If
+    Next
+
+    Dim result As New List(Of String)
+    For Each kv As KeyValuePair(Of String, Integer) In count
+        ' kv.Key 는 "묶음개수(2자리)|앞부분"
+        result.Add((99999 - kv.Value).ToString("00000") & "|" & kv.Key & "|" & kv.Value)
+    Next
+    result.Sort()
+    Return result
+
+End Function
+
+
+' 한 이름이 속하는 묶음의 정체.  "묶음개수(2자리)|앞부분"
+Function GroupKeyOf(name As String, sep As String, prefixSegs As Integer) As String
+
+    Dim parts As String() = name.Split(New String() {sep}, StringSplitOptions.None)
+    Dim n As Integer = prefixSegs
+    If n > parts.Length Then n = parts.Length
+    If n < 1 Then n = 1
+    Return parts.Length.ToString("00") & "|" & String.Join(sep, parts, 0, n)
+
+End Function
+
+
+' 정렬용 문자열에서 꺼내기
+Function GrpId(key As String) As String
+    Dim p As String() = key.Split(New String() {"|"}, StringSplitOptions.None)
+    If p.Length >= 3 Then Return p(1) & "|" & p(2)
+    Return ""
+End Function
+
+Function GrpSegs(key As String) As String
+    Dim p As String() = key.Split(New String() {"|"}, StringSplitOptions.None)
+    If p.Length >= 2 Then Return p(1)
+    Return "0"
+End Function
+
+Function GrpPrefix(key As String) As String
+    Dim p As String() = key.Split(New String() {"|"}, StringSplitOptions.None)
+    If p.Length >= 3 Then Return p(2)
+    Return ""
+End Function
+
+Function GrpCount(key As String) As String
+    Dim p As String() = key.Split(New String() {"|"}, StringSplitOptions.None)
+    If p.Length >= 4 Then Return p(3)
+    Return "0"
+End Function
+
+
+Function FirstSegment(name As String, sep As String) As String
+    Dim parts As String() = name.Split(New String() {sep}, StringSplitOptions.None)
+    If parts.Length >= 1 Then Return parts(0)
+    Return name
+End Function
+
+
+' ============================================================================
+'  대상 좁히기 화면
+'
+'  최상위 조립도와 첫 묶음이 같은 것들을 미리 체크해 둔다. 가공품은 거의
+'  언제나 최상위와 같은 앞부분을 쓰기 때문이다. 구매품은 제조사 이름으로
+'  시작하므로 체크가 꺼진 채로 남는다.
+'
+'  반환 : 계속하면 True.  chosen 에 고른 묶음의 정체가 담긴다.
+' ============================================================================
+Function PickGroups(topName As String, totalCount As Integer, _
+                    groups As List(Of String), topFirstSeg As String, _
+                    chosen As List(Of String)) As Boolean
+
+    Dim frm As New System.Windows.Forms.Form
+    Dim ok As Boolean = False
+
+    Try
+        frm.Text = "유닛 이름 일괄 변경 - 대상 좁히기"
+        frm.Width  = 720
+        frm.Height = 580
+        frm.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen
+        frm.FormBorderStyle = System.Windows.Forms.FormBorderStyle.Sizable
+        frm.MinimizeBox = False
+        frm.TopMost = True
+
+        Dim lbl0 As New System.Windows.Forms.Label
+        lbl0.Text = "최상위 : " & topName & "     (부품/조립도 " & totalCount & " 개)"
+        lbl0.SetBounds(12, 10, 680, 20)
+
+        Dim lbl1 As New System.Windows.Forms.Label
+        lbl1.Text = "이름 앞부분이 같은 것끼리 묶었습니다.   [묶음수] 앞부분  (파일수)" & vbCrLf & _
+                    "우리가 설계한 가공품 묶음만 체크하세요. 구매품을 빼면 다음 화면이 훨씬 짧아집니다." & vbCrLf & _
+                    "최상위 조립도와 앞부분이 같은 묶음은 미리 체크해 두었습니다."
+        lbl1.SetBounds(12, 34, 680, 52)
+
+        Dim clb As New System.Windows.Forms.CheckedListBox
+        clb.SetBounds(12, 92, 680, 396)
+        clb.CheckOnClick = True
+        clb.Anchor = System.Windows.Forms.AnchorStyles.Top Or System.Windows.Forms.AnchorStyles.Left Or _
+                     System.Windows.Forms.AnchorStyles.Right Or System.Windows.Forms.AnchorStyles.Bottom
+        SetMonoFont(clb)
+
+        For Each g As String In groups
+            Dim pre As String = GrpPrefix(g)
+            Dim pre1 As String = FirstSegment(pre, "-")
+            Dim line As String = "[" & GrpSegs(g) & "묶음]  " & pre.PadRight(32) & "  (" & GrpCount(g) & ")"
+            clb.Items.Add(line, String.Equals(pre1, topFirstSeg, StringComparison.OrdinalIgnoreCase))
+        Next
+
+        Dim btnOK As New System.Windows.Forms.Button
+        btnOK.Text = "다음"
+        btnOK.SetBounds(496, 498, 92, 32)
+        btnOK.DialogResult = DialogResult.OK
+        btnOK.Anchor = System.Windows.Forms.AnchorStyles.Right Or System.Windows.Forms.AnchorStyles.Bottom
+
+        Dim btnCancel As New System.Windows.Forms.Button
+        btnCancel.Text = "취소"
+        btnCancel.SetBounds(600, 498, 92, 32)
+        btnCancel.DialogResult = DialogResult.Cancel
+        btnCancel.Anchor = System.Windows.Forms.AnchorStyles.Right Or System.Windows.Forms.AnchorStyles.Bottom
+
+        frm.Controls.Add(lbl0)
+        frm.Controls.Add(lbl1)
+        frm.Controls.Add(clb)
+        frm.Controls.Add(btnOK)
+        frm.Controls.Add(btnCancel)
+        SetDefaultButtons(frm, btnOK, btnCancel)   ' Enter / Esc
+
+        Do
+            If frm.ShowDialog() <> DialogResult.OK Then Return False
+
+            chosen.Clear()
+            For Each ix As Integer In clb.CheckedIndices
+                chosen.Add(GrpId(groups(ix)))
+            Next
+
+            If chosen.Count = 0 Then
+                MessageBox.Show("묶음을 하나 이상 체크하세요.", "유닛 이름 일괄 변경")
+                Continue Do
+            End If
+
+            ok = True
+            Exit Do
+        Loop
+
+    Finally
+        frm.Dispose()
+    End Try
+
+    Return ok
+
 End Function
 
 
