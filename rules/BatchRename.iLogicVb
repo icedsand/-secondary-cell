@@ -119,6 +119,11 @@ Sub Main()
     Dim RENAME_TOP_ASM As Boolean = True   ' 최상위 조립도 이름도 바꾼다
     Dim DWG_ROOT       As String  = ""     ' 도면 검색 폴더. 비우면 조립도 폴더
 
+    ' 도면 이름을 그 도면이 그린 부품 이름과 같게 맞춘다.
+    ' 도면 이름이 규칙으로 안 바뀌더라도, 대상 부품 하나만 그린 도면이면
+    ' 그 부품의 새 이름을 그대로 쓴다.
+    Dim DWG_NAME_FOLLOWS_MODEL As Boolean = True
+
     ' 부품번호를 새 파일이름과 무조건 같게 맞춘다.
     ' False 로 두면 옛 부품번호에 칸 규칙만 적용한다(파일이름과 어긋날 수 있다).
     Dim PN_FOLLOWS_FILENAME As Boolean = True
@@ -278,8 +283,10 @@ Sub Main()
     End If
 
     Dim targetPaths As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+    Dim newByOld As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase)
     For Each it As RenameItem In plan
         targetPaths.Add(it.OldPath)
+        If Not newByOld.ContainsKey(it.OldPath) Then newByOld.Add(it.OldPath, it.NewPath)
     Next
 
     ThisApplication.StatusBarText = "도면을 찾는 중..."
@@ -320,18 +327,18 @@ Sub Main()
                 End Try
             End If
 
-            ' 이 도면이 대상 부품을 하나라도 참조하는가
-            Dim uses As Boolean = False
+            ' 이 도면이 대상 부품을 하나라도 그리는가. 어떤 것들인지도 모은다.
+            Dim usedTargets As New List(Of String)
             Try
                 For Each rd As Document In oDwg.AllReferencedDocuments
                     If Not String.IsNullOrEmpty(rd.FullFileName) AndAlso _
                        targetPaths.Contains(rd.FullFileName) Then
-                        uses = True
-                        Exit For
+                        If Not usedTargets.Contains(rd.FullFileName) Then usedTargets.Add(rd.FullFileName)
                     End If
                 Next
             Catch
             End Try
+            Dim uses As Boolean = (usedTargets.Count > 0)
 
             If Not uses Then
                 ' 관계없는 도면은 도로 닫는다. 원래 열려있던 것은 그대로 둔다.
@@ -353,9 +360,24 @@ Sub Main()
             If nameHit Then
                 itd.NewPath = System.IO.Path.Combine( _
                                 System.IO.Path.GetDirectoryName(idwPath), dwgNew & ".idw")
+            ElseIf DWG_NAME_FOLLOWS_MODEL AndAlso usedTargets.Count = 1 Then
+                ' 이름 규칙으로는 안 바뀌지만 대상 부품 하나만 그린 도면이다.
+                ' 도면 이름은 그 부품 이름과 같아야 하므로 부품의 새 이름을 쓴다.
+                Dim modelNew As String = newByOld(usedTargets(0))
+                If modelNew <> "" Then
+                    itd.NewPath = System.IO.Path.Combine( _
+                                    System.IO.Path.GetDirectoryName(idwPath), _
+                                    System.IO.Path.GetFileNameWithoutExtension(modelNew) & ".idw")
+                Else
+                    itd.NewPath = ""
+                End If
             Else
-                ' 바뀔 칸이 없는 도면. 참조만 따라가고 이름은 그대로 둔다.
+                ' 여러 부품을 한 장에 그렸거나 짝을 정할 수 없다. 참조만 갱신한다.
                 itd.NewPath = ""
+                If usedTargets.Count > 1 Then
+                    skipped.Add(System.IO.Path.GetFileName(idwPath) & _
+                                "   (부품 " & usedTargets.Count & " 개를 그린 도면 - 이름 그대로, 참조만 갱신)")
+                End If
             End If
             dwgPlan.Add(itd)
         Next
@@ -712,6 +734,9 @@ Function CollectSegments(names As List(Of String), sep As String) As List(Of Str
         Dim parts As String() = nm.Split(New String() {sep}, StringSplitOptions.None)
         For i As Integer = 0 To parts.Length - 1
             If parts(i) = "" Then Continue For
+            ' 한글이 든 조각은 목록에 넣지 않는다. 부품/도면 이름 규칙은
+            ' 영문과 숫자로만 되어 있어서, 한글이 있으면 설명이지 코드가 아니다.
+            If HasHangul(parts(i)) Then Continue For
             Dim key As String = (i + 1).ToString("00") & "|" & parts(i)
             If count.ContainsKey(key) Then
                 count(key) = count(key) + 1
@@ -821,6 +846,25 @@ Function GrpCount(key As String) As String
     Dim p As String() = key.Split(New String() {"|"}, StringSplitOptions.None)
     If p.Length >= 4 Then Return p(3)
     Return "0"
+End Function
+
+
+' ============================================================================
+'  한글이 섞여 있는가
+'
+'  AscW 대신 Convert.ToInt32 를 쓴다. Microsoft.VisualBasic 을 안 거치면
+'  참조 문제로 컴파일이 깨질 일이 없다.
+'    AC00~D7A3  완성형 한글      1100~11FF  자모      3130~318F  호환 자모
+' ============================================================================
+Function HasHangul(s As String) As Boolean
+    If String.IsNullOrEmpty(s) Then Return False
+    For Each c As Char In s
+        Dim n As Integer = Convert.ToInt32(c)
+        If (n >= &HAC00 AndAlso n <= &HD7A3) OrElse _
+           (n >= &H1100 AndAlso n <= &H11FF) OrElse _
+           (n >= &H3130 AndAlso n <= &H318F) Then Return True
+    Next
+    Return False
 End Function
 
 
@@ -1078,6 +1122,10 @@ Function AskRules(topName As String, baseNames As List(Of String), _
                   segKeys As List(Of String), rules As List(Of SegRule), _
                   sep As String) As Boolean
 
+    ' 화면을 다시 그려도 체크와 검색어는 유지된다.
+    Dim checkedKeys As New List(Of String)
+    Dim filter As String = ""
+
     Do
         ' 지금 규칙으로 몇 개가 바뀌는지 세어 화면에 띄운다.
         ' 66 / 73 처럼 남는 수가 보이면 빠뜨린 조각을 찾아볼 수 있다.
@@ -1086,10 +1134,17 @@ Function AskRules(topName As String, baseNames As List(Of String), _
             If ApplyRules(nm, rules, sep) <> nm Then covered += 1
         Next
 
-        Dim checkedKeys As New List(Of String)
-        Dim r As DialogResult = ShowSegForm(topName, baseNames.Count, covered, segKeys, rules, checkedKeys)
+        Dim r As DialogResult = ShowSegForm(topName, baseNames.Count, covered, _
+                                            segKeys, rules, checkedKeys, filter)
 
         If r = DialogResult.Cancel Then Return False
+
+        ' 검색어만 바꿔서 다시 그린다 (찾기 / 전체보기)
+        If r = DialogResult.Yes Then Continue Do
+        If r = DialogResult.No Then
+            filter = ""
+            Continue Do
+        End If
 
         If r = DialogResult.Ignore Then
             rules.Clear()
@@ -1138,6 +1193,7 @@ Function AskRules(topName As String, baseNames As List(Of String), _
                     rules.Add(nr)
                 End If
             Next
+            checkedKeys.Clear()          ' 규칙을 만들었으니 체크를 비운다
             Continue Do
         End If
 
@@ -1161,7 +1217,7 @@ End Function
 ' ============================================================================
 Function ShowSegForm(topName As String, docCount As Integer, covered As Integer, _
                      segKeys As List(Of String), rules As List(Of SegRule), _
-                     checkedKeys As List(Of String)) As DialogResult
+                     checkedKeys As List(Of String), ByRef filter As String) As DialogResult
 
     Dim frm As New System.Windows.Forms.Form
     Dim res As DialogResult = DialogResult.Cancel
@@ -1181,19 +1237,49 @@ Function ShowSegForm(topName As String, docCount As Integer, covered As Integer,
         lbl0.SetBounds(12, 10, 680, 20)
 
         Dim lbl1 As New System.Windows.Forms.Label
-        lbl1.Text = "파일이름을 """ & "-" & """ 로 쪼갠 칸별 값입니다. [칸번호] 값 (파일수)" & vbCrLf & _
-                    "바꿀 것을 체크한 뒤 아래 버튼을 누르세요. 여러 개를 체크하면 한 값으로 모입니다. " & _
-                    "남는 수가 구매품 개수보다 많으면 빠뜨린 조각이 있는 것입니다."
+        lbl1.Text = "칸별 값입니다.  [칸번호] 값 (파일수)   한글이 든 조각은 코드가 아니므로 빼고 보여줍니다." & vbCrLf & _
+                    "바꿀 것을 체크한 뒤 [선택한 조각 바꾸기] 를 누르세요. 여러 개를 체크하면 한 값으로 모입니다."
         lbl1.SetBounds(12, 34, 680, 36)
 
+        ' --- 검색 줄 ---
+        Dim lblF As New System.Windows.Forms.Label
+        lblF.Text = "검색"
+        lblF.SetBounds(12, 76, 36, 20)
+
+        Dim txtFind As New System.Windows.Forms.TextBox
+        txtFind.SetBounds(52, 73, 300, 24)
+        txtFind.Text = filter
+
+        Dim btnFind As New System.Windows.Forms.Button
+        btnFind.Text = "찾기"
+        btnFind.SetBounds(360, 72, 76, 26)
+        btnFind.DialogResult = DialogResult.Yes
+
+        Dim btnAll As New System.Windows.Forms.Button
+        btnAll.Text = "전체보기"
+        btnAll.SetBounds(444, 72, 76, 26)
+        btnAll.DialogResult = DialogResult.No
+
+        Dim lblN As New System.Windows.Forms.Label
+        lblN.SetBounds(530, 76, 174, 20)
+
         Dim clb As New System.Windows.Forms.CheckedListBox
-        clb.SetBounds(12, 74, 680, 300)
+        clb.SetBounds(12, 104, 680, 270)
         clb.CheckOnClick = True
         clb.Anchor = System.Windows.Forms.AnchorStyles.Top Or System.Windows.Forms.AnchorStyles.Left Or _
                      System.Windows.Forms.AnchorStyles.Right Or System.Windows.Forms.AnchorStyles.Bottom
         SetMonoFont(clb)
 
+        ' 검색어가 있으면 그것이 든 조각만 보여준다. 체크는 화면에서 사라져도
+        ' checkedKeys 에 남아 있으므로 검색을 바꿔가며 골라도 풀리지 않는다.
+        Dim shown As New List(Of String)
         For Each k As String In segKeys
+            If filter <> "" AndAlso _
+               SegValue(k).IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0 Then Continue For
+            shown.Add(k)
+        Next
+
+        For Each k As String In shown
             Dim line As String = "[" & SegCol(k) & "]  " & SegValue(k).PadRight(28) & "  (" & SegCount(k) & ")"
             ' 이미 규칙이 걸린 조각은 표시해 둔다
             For Each rr As SegRule In rules
@@ -1202,8 +1288,11 @@ Function ShowSegForm(topName As String, docCount As Integer, covered As Integer,
                     Exit For
                 End If
             Next
-            clb.Items.Add(line, False)
+            clb.Items.Add(line, checkedKeys.Contains(k))
         Next
+
+        lblN.Text = shown.Count & " / " & segKeys.Count & " 개 표시" & _
+                    If(checkedKeys.Count > 0, "   체크 " & checkedKeys.Count, "")
 
         Dim btnMap As New System.Windows.Forms.Button
         btnMap.Text = "선택한 조각 바꾸기"
@@ -1246,6 +1335,11 @@ Function ShowSegForm(topName As String, docCount As Integer, covered As Integer,
 
         frm.Controls.Add(lbl0)
         frm.Controls.Add(lbl1)
+        frm.Controls.Add(lblF)
+        frm.Controls.Add(txtFind)
+        frm.Controls.Add(btnFind)
+        frm.Controls.Add(btnAll)
+        frm.Controls.Add(lblN)
         frm.Controls.Add(clb)
         frm.Controls.Add(btnMap)
         frm.Controls.Add(lbl2)
@@ -1253,14 +1347,21 @@ Function ShowSegForm(topName As String, docCount As Integer, covered As Integer,
         frm.Controls.Add(btnClear)
         frm.Controls.Add(btnOK)
         frm.Controls.Add(btnCancel)
-        SetDefaultButtons(frm, btnOK, btnCancel)   ' Enter / Esc
+        ' 검색창에 치고 Enter 를 누르면 [찾기] 가 되도록 한다.
+        ' [다음] 은 눌러서 넘어간다.
+        SetDefaultButtons(frm, btnFind, btnCancel)   ' Enter / Esc
 
         res = frm.ShowDialog()
 
-        checkedKeys.Clear()
-        For Each ix As Integer In clb.CheckedIndices
-            checkedKeys.Add(segKeys(ix))
+        ' 화면에 보였던 것만 갱신하고, 검색으로 가려져 있던 체크는 그대로 둔다.
+        For Each k As String In shown
+            checkedKeys.Remove(k)
         Next
+        For Each ix As Integer In clb.CheckedIndices
+            checkedKeys.Add(shown(ix))
+        Next
+
+        filter = txtFind.Text.Trim()
 
     Finally
         frm.Dispose()
@@ -1360,8 +1461,14 @@ Function ConfirmPlan(items As List(Of RenameItem), skipped As List(Of String), _
             If it.Conflict <> "" Then nConflict += 1
         Next
 
+        Dim nDwg As Integer = 0
+        For Each it As RenameItem In items
+            If it.IsDwg Then nDwg += 1
+        Next
+
         Dim lbl1 As New System.Windows.Forms.Label
-        lbl1.Text = "바꿀 파일 " & items.Count & " 개   (빼려면 체크를 끄세요)" & _
+        lbl1.Text = "바꿀 파일 " & items.Count & " 개   (모델 " & (items.Count - nDwg) & _
+                    " / 도면 " & nDwg & ")   빼려면 체크를 끄세요" & _
                     If(nConflict > 0, "   [!] 표시 " & nConflict & " 개는 충돌이라 체크가 꺼져 있습니다", "")
         lbl1.SetBounds(12, 10, 860, 20)
 
