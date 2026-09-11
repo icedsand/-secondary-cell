@@ -689,6 +689,7 @@ Sub Main()
 
         ' ---- 11. 옛 파일 정리 -----------------------------------------------
         Dim oldDir As String = ""
+        Dim oldBytes As Long = 0
         If MOVE_OLD_FILES AndAlso movedOld.Count > 0 Then
             oldDir = System.IO.Path.Combine(topDir, "_OLD_" & DateTime.Now.ToString("yyMMdd_HHmm"))
             Try
@@ -701,6 +702,10 @@ Sub Main()
                             If System.IO.File.Exists(dst) Then
                                 oLog.AppendLine("[보존] 같은 이름이 이미 _OLD 에 있어 그대로 둠 : " & System.IO.Path.GetFileName(op))
                             Else
+                                Try
+                                    oldBytes += New System.IO.FileInfo(op).Length
+                                Catch
+                                End Try
                                 System.IO.File.Move(op, dst)
                             End If
                         End If
@@ -708,7 +713,7 @@ Sub Main()
                         oLog.AppendLine("[보존실패] " & System.IO.Path.GetFileName(op) & " : " & ex.Message)
                     End Try
                 Next
-                oLog.AppendLine("옛 파일 " & movedOld.Count & " 개를 옮김 : " & oldDir)
+                oLog.AppendLine("옛 파일 " & movedOld.Count & " 개 (" & MBytes(oldBytes) & ") 를 옮김 : " & oldDir)
             Catch ex As Exception
                 oLog.AppendLine("[오류] _OLD 폴더를 만들지 못함 : " & ex.Message)
             End Try
@@ -737,9 +742,11 @@ Sub Main()
                    "   이름이 안 바뀐 파일은 부품번호도 건드리지 않았습니다." & vbCrLf
         End If
         msg &= vbCrLf
-        If oldDir <> "" Then msg &= "옛 파일 : " & oldDir & vbCrLf
+        If oldDir <> "" Then msg &= "옛 파일 : " & oldDir & "   (" & MBytes(oldBytes) & ")" & vbCrLf
         If logPath <> "" Then msg &= "로그    : " & logPath & vbCrLf
-        msg &= vbCrLf & "결과를 확인한 뒤 이상이 없으면 _OLD 폴더를 지우세요." & vbCrLf & _
+        msg &= vbCrLf & "이름을 제자리에서 바꾸는 것이 아니라 새 파일로 저장하는 방식이라," & vbCrLf & _
+               "옛 파일이 그대로 남습니다. 그것을 _OLD 폴더로 옮겨 둔 것입니다." & vbCrLf & _
+               "결과를 확인한 뒤 이상이 없으면 _OLD 폴더를 지우면 용량이 돌아옵니다." & vbCrLf & _
                "잘못됐으면 _OLD 의 파일을 되돌려 놓으면 됩니다."
 
         ' 실패가 있으면 로그 맨 위로 끌어올린다. 246 개 중 몇 개면 묻혀 버린다.
@@ -1145,6 +1152,18 @@ Function DigitsOf(s As String) As Long
         Return -1
     End Try
 
+End Function
+
+
+' ============================================================================
+'  바이트를 읽기 좋게.  _OLD 에 얼마가 묶여 있는지 보여주려는 것이다.
+' ============================================================================
+Function MBytes(n As Long) As String
+    If n <= 0 Then Return "0 MB"
+    Dim mb As Double = n / 1048576.0
+    If mb < 1.0 Then Return "1 MB 미만"
+    If mb < 1024.0 Then Return Math.Round(mb, 1).ToString() & " MB"
+    Return Math.Round(mb / 1024.0, 2).ToString() & " GB"
 End Function
 
 
