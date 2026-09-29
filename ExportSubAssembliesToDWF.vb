@@ -138,6 +138,8 @@ Sub Main()
             Dim data As Inventor.DataMedium = app.TransientObjects.CreateDataMedium()
             If dwfAddIn.HasSaveCopyAsOptions(d, ctx, opts) Then
                 opts.Value("Launch_Viewer") = 0
+                ' 게시 옵션: 전체 (급행/전체/사용자 정의 중 전체)
+                opts.Value("Publish_Mode") = Inventor.DWFPublishModeEnum.kCompleteDWFPublish
             End If
             data.FileName = outPath
             dwfAddIn.SaveCopyAs(d, ctx, opts, data)
