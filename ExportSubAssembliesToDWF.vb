@@ -57,7 +57,6 @@ While res = WF.DialogResult.Retry OrElse res = WF.DialogResult.Ignore
         btn.DialogResult = results(b)
         btn.Bounds = New SD.Rectangle(xs(b), 412, 85, 30)
         frm.Controls.Add(btn)
-        If b = 3 Then frm.CancelButton = btn
     Next
     res = frm.ShowDialog()
     For i As Integer = 0 To subDocs.Count - 1
