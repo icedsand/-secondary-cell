@@ -1,160 +1,121 @@
 AddReference "System.Windows.Forms"
 AddReference "System.Drawing"
-' iLogic 규칙: 전체조립도의 1단계 하위 조립체(iam)를 체크박스로 선택해 3D DWF(게시옵션 전체)로 사본 저장
-' 저장 위치: 전체조립도 폴더\dwf 변환(yyyy-MM-dd)  (이미 있으면 _2, _3 ...)
-' 사용법: 전체조립도(iam)를 연 상태에서 실행
-' Sub Main/Class 없이 일반 코드로 작성 (iLogic이 자동으로 감쌈).
-' iLogic이 Inventor 네임스페이스를 자동 Import 하므로 File/Path/Point 등 이름 충돌을 피하려고 전체 이름을 씀.
+Imports WF = System.Windows.Forms
+Imports SD = System.Drawing
+Imports IO = System.IO
+' ===== [1/2] 여기부터 =====
+' 전체조립도의 1단계 하위 조립체(iam)를 선택해 3D DWF(게시옵션: 전체)로 사본 저장
+' 저장: 전체조립도 폴더\dwf 변환(yyyy-MM-dd)  (이미 있으면 _2, _3 ...)
+' 마지막 줄은 "' ===== [2/2] 끝 =====" 입니다. 붙여넣은 뒤 마지막 줄이 있는지 확인하세요.
 
-Dim app As Inventor.Application = ThisApplication
-Dim topDoc As Inventor.AssemblyDocument = TryCast(app.ActiveDocument, Inventor.AssemblyDocument)
-If topDoc Is Nothing Then
-    System.Windows.Forms.MessageBox.Show("전체조립도(iam)를 활성화한 상태에서 실행하세요.", "DWF 변환")
-    Return
-End If
-If topDoc.FullFileName = "" OrElse Not System.IO.File.Exists(topDoc.FullFileName) Then
-    System.Windows.Forms.MessageBox.Show("전체조립도가 저장되지 않았습니다. 먼저 저장하세요.", "DWF 변환")
+Dim topDoc As AssemblyDocument = TryCast(ThisApplication.ActiveDocument, AssemblyDocument)
+If topDoc Is Nothing OrElse Not IO.File.Exists(topDoc.FullFileName) Then
+    WF.MessageBox.Show("저장된 전체조립도(iam)를 활성화한 상태에서 실행하세요.", "DWF 변환")
     Return
 End If
 
-' 1) 1단계 하위 조립체 수집 (중복 제거, 억제/가상 구성요소 제외)
-Dim subDocs As New System.Collections.Generic.List(Of Inventor.AssemblyDocument)
-Dim seen As New System.Collections.Generic.HashSet(Of String)(System.StringComparer.OrdinalIgnoreCase)
-For Each occ As Inventor.ComponentOccurrence In topDoc.ComponentDefinition.Occurrences
+' 1) 1단계 하위 조립체 수집 (억제 제외, 중복 제거)
+Dim subDocs As New List(Of AssemblyDocument)
+Dim names As New List(Of String)
+For Each occ As ComponentOccurrence In topDoc.ComponentDefinition.Occurrences
     If occ.Suppressed Then Continue For
-    If occ.DefinitionDocumentType <> Inventor.DocumentTypeEnum.kAssemblyDocumentObject Then Continue For
-    Dim sd As Inventor.AssemblyDocument = TryCast(occ.Definition.Document, Inventor.AssemblyDocument)
-    If sd Is Nothing OrElse sd.FullFileName = "" Then Continue For
-    If seen.Add(sd.FullFileName) Then subDocs.Add(sd)
+    Dim sd1 As AssemblyDocument = TryCast(occ.Definition.Document, AssemblyDocument)
+    If sd1 Is Nothing OrElse sd1.FullFileName = "" Then Continue For
+    If names.Contains(sd1.FullFileName.ToLower()) Then Continue For
+    names.Add(sd1.FullFileName.ToLower())
+    subDocs.Add(sd1)
 Next
 If subDocs.Count = 0 Then
-    System.Windows.Forms.MessageBox.Show("1단계 하위 조립체가 없습니다.", "DWF 변환")
+    WF.MessageBox.Show("1단계 하위 조립체가 없습니다.", "DWF 변환")
     Return
 End If
 
-' 2) 체크박스 목록창 (전체 선택/해제는 창을 닫았다 다시 여는 방식: 이벤트 핸들러 불필요)
+' 2) 체크박스 창 (전체 선택/해제 누르면 창이 다시 열림)
 Dim states(subDocs.Count - 1) As Boolean
-Dim res As System.Windows.Forms.DialogResult
-Do
-    Dim frm As New System.Windows.Forms.Form()
+Dim res As WF.DialogResult = WF.DialogResult.Retry
+While res = WF.DialogResult.Retry OrElse res = WF.DialogResult.Ignore
+    Dim frm As New WF.Form()
     frm.Text = "DWF 변환할 조립도 선택"
-    frm.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen
-    frm.Size = New System.Drawing.Size(480, 520)
-    frm.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog
+    frm.StartPosition = WF.FormStartPosition.CenterScreen
+    frm.ClientSize = New SD.Size(464, 454)
+    frm.FormBorderStyle = WF.FormBorderStyle.FixedDialog
     frm.MaximizeBox = False
     frm.MinimizeBox = False
-
-    Dim clb As New System.Windows.Forms.CheckedListBox()
+    Dim clb As New WF.CheckedListBox()
     clb.CheckOnClick = True
-    clb.Location = New System.Drawing.Point(12, 12)
-    clb.Size = New System.Drawing.Size(440, 390)
+    clb.Bounds = New SD.Rectangle(12, 12, 440, 390)
     For i As Integer = 0 To subDocs.Count - 1
-        clb.Items.Add(System.IO.Path.GetFileName(subDocs(i).FullFileName), states(i))
+        clb.Items.Add(IO.Path.GetFileName(subDocs(i).FullFileName), states(i))
     Next
-
-    Dim btnAll As New System.Windows.Forms.Button()
-    btnAll.Text = "전체 선택"
-    btnAll.Location = New System.Drawing.Point(12, 412)
-    btnAll.Size = New System.Drawing.Size(90, 30)
-    btnAll.DialogResult = System.Windows.Forms.DialogResult.Retry
-    Dim btnNone As New System.Windows.Forms.Button()
-    btnNone.Text = "전체 해제"
-    btnNone.Location = New System.Drawing.Point(108, 412)
-    btnNone.Size = New System.Drawing.Size(90, 30)
-    btnNone.DialogResult = System.Windows.Forms.DialogResult.Ignore
-    Dim btnOk As New System.Windows.Forms.Button()
-    btnOk.Text = "변환"
-    btnOk.Location = New System.Drawing.Point(280, 412)
-    btnOk.Size = New System.Drawing.Size(80, 30)
-    btnOk.DialogResult = System.Windows.Forms.DialogResult.OK
-    Dim btnCancel As New System.Windows.Forms.Button()
-    btnCancel.Text = "취소"
-    btnCancel.Location = New System.Drawing.Point(372, 412)
-    btnCancel.Size = New System.Drawing.Size(80, 30)
-    btnCancel.DialogResult = System.Windows.Forms.DialogResult.Cancel
-
     frm.Controls.Add(clb)
-    frm.Controls.Add(btnAll)
-    frm.Controls.Add(btnNone)
-    frm.Controls.Add(btnOk)
-    frm.Controls.Add(btnCancel)
-    frm.AcceptButton = btnOk
-    frm.CancelButton = btnCancel
-
+    Dim captions() As String = {"전체 선택", "전체 해제", "변환", "취소"}
+    Dim results() As WF.DialogResult = {WF.DialogResult.Retry, WF.DialogResult.Ignore, WF.DialogResult.OK, WF.DialogResult.Cancel}
+    Dim xs() As Integer = {12, 108, 280, 372}
+    For b As Integer = 0 To 3
+        Dim btn As New WF.Button()
+        btn.Text = captions(b)
+        btn.DialogResult = results(b)
+        btn.Bounds = New SD.Rectangle(xs(b), 412, 85, 30)
+        frm.Controls.Add(btn)
+        If b = 3 Then frm.CancelButton = btn
+    Next
     res = frm.ShowDialog()
     For i As Integer = 0 To subDocs.Count - 1
         states(i) = clb.GetItemChecked(i)
-        If res = System.Windows.Forms.DialogResult.Retry Then states(i) = True
-        If res = System.Windows.Forms.DialogResult.Ignore Then states(i) = False
+        If res = WF.DialogResult.Retry Then states(i) = True
+        If res = WF.DialogResult.Ignore Then states(i) = False
     Next
     frm.Dispose()
-Loop While res = System.Windows.Forms.DialogResult.Retry OrElse res = System.Windows.Forms.DialogResult.Ignore
-
-If res <> System.Windows.Forms.DialogResult.OK Then Return
-Dim selected As New System.Collections.Generic.List(Of Inventor.AssemblyDocument)
+End While
+If res <> WF.DialogResult.OK Then Return
+' ===== [1/2] 끝 =====
+' ===== [2/2] 여기부터 =====
+Dim selected As New List(Of AssemblyDocument)
 For i As Integer = 0 To subDocs.Count - 1
     If states(i) Then selected.Add(subDocs(i))
 Next
 If selected.Count = 0 Then
-    System.Windows.Forms.MessageBox.Show("선택된 조립도가 없습니다.", "DWF 변환")
+    WF.MessageBox.Show("선택된 조립도가 없습니다.", "DWF 변환")
     Return
 End If
 
-' 3) 출력 폴더: 전체조립도폴더\dwf 변환(yyyy-MM-dd)[_n]
-Dim baseDir As String = System.IO.Path.GetDirectoryName(topDoc.FullFileName)
-Dim folderName As String = "dwf 변환(" & System.DateTime.Now.ToString("yyyy-MM-dd") & ")"
-Dim outDir As String = System.IO.Path.Combine(baseDir, folderName)
+' 3) 출력 폴더
+Dim baseDir As String = IO.Path.GetDirectoryName(topDoc.FullFileName)
+Dim folderName As String = "dwf 변환(" & DateTime.Now.ToString("yyyy-MM-dd") & ")"
+Dim outDir As String = IO.Path.Combine(baseDir, folderName)
 Dim n As Integer = 2
-While System.IO.Directory.Exists(outDir)
-    outDir = System.IO.Path.Combine(baseDir, folderName & "_" & n)
+While IO.Directory.Exists(outDir)
+    outDir = IO.Path.Combine(baseDir, folderName & "_" & n)
     n += 1
 End While
-System.IO.Directory.CreateDirectory(outDir)
+IO.Directory.CreateDirectory(outDir)
 
-' 4) DWF 변환기 준비
-Dim dwfAddIn As Inventor.TranslatorAddIn = Nothing
-For Each ai As Inventor.ApplicationAddIn In app.ApplicationAddIns
-    If ai.ClassIdString = "{0AC6FD95-2F4D-42CE-8BE0-8AEA580399E4}" Then
-        dwfAddIn = ai
-        Exit For
-    End If
-Next
-If dwfAddIn Is Nothing Then
-    System.Windows.Forms.MessageBox.Show("DWF 변환 애드인을 찾을 수 없습니다.", "DWF 변환")
-    Return
-End If
+' 4) DWF 변환기
+Dim dwfAddIn As TranslatorAddIn = ThisApplication.ApplicationAddIns.ItemById("{0AC6FD95-2F4D-42CE-8BE0-8AEA580399E4}")
 If Not dwfAddIn.Activated Then dwfAddIn.Activate()
 
-' 5) 선택한 조립도를 DWF로 사본 저장
+' 5) DWF 사본 저장 (게시옵션: 전체)
 Dim okCount As Integer = 0
-Dim failList As New System.Collections.Generic.List(Of String)
-For Each d As Inventor.AssemblyDocument In selected
-    Dim fileName As String = System.IO.Path.GetFileNameWithoutExtension(d.FullFileName)
-    Dim outPath As String = System.IO.Path.Combine(outDir, fileName & ".dwf")
-    Dim k As Integer = 2
-    While System.IO.File.Exists(outPath)
-        outPath = System.IO.Path.Combine(outDir, fileName & "_" & k & ".dwf")
-        k += 1
-    End While
+Dim fails As String = ""
+For Each d As AssemblyDocument In selected
+    Dim fName As String = IO.Path.GetFileNameWithoutExtension(d.FullFileName)
     Try
-        Dim ctx As Inventor.TranslationContext = app.TransientObjects.CreateTranslationContext()
-        ctx.Type = Inventor.IOMechanismEnum.kFileBrowseIOMechanism
-        Dim opts As Inventor.NameValueMap = app.TransientObjects.CreateNameValueMap()
-        Dim data As Inventor.DataMedium = app.TransientObjects.CreateDataMedium()
+        Dim ctx As TranslationContext = ThisApplication.TransientObjects.CreateTranslationContext()
+        ctx.Type = IOMechanismEnum.kFileBrowseIOMechanism
+        Dim opts As NameValueMap = ThisApplication.TransientObjects.CreateNameValueMap()
+        Dim data As DataMedium = ThisApplication.TransientObjects.CreateDataMedium()
         If dwfAddIn.HasSaveCopyAsOptions(d, ctx, opts) Then
             opts.Value("Launch_Viewer") = 0
-            ' 게시 옵션: 전체 (급행/전체/사용자 정의 중 전체)
-            opts.Value("Publish_Mode") = Inventor.DWFPublishModeEnum.kCompleteDWFPublish
+            opts.Value("Publish_Mode") = DWFPublishModeEnum.kCompleteDWFPublish
         End If
-        data.FileName = outPath
+        data.FileName = IO.Path.Combine(outDir, fName & ".dwf")
         dwfAddIn.SaveCopyAs(d, ctx, opts, data)
         okCount += 1
-    Catch ex As System.Exception
-        failList.Add(fileName & " : " & ex.Message)
+    Catch ex As Exception
+        fails &= vbCrLf & fName & " : " & ex.Message
     End Try
 Next
 
-Dim msg As String = "완료: " & okCount & "개 / 실패: " & failList.Count & "개" & vbCrLf & outDir
-If failList.Count > 0 Then msg &= vbCrLf & vbCrLf & String.Join(vbCrLf, failList.ToArray())
-System.Windows.Forms.MessageBox.Show(msg, "DWF 변환")
+WF.MessageBox.Show("완료: " & okCount & "개 / 실패: " & (selected.Count - okCount) & "개" & vbCrLf & outDir & vbCrLf & fails, "DWF 변환")
 System.Diagnostics.Process.Start("explorer.exe", """" & outDir & """")
+' ===== [2/2] 끝 =====
