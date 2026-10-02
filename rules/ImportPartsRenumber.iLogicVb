@@ -1,0 +1,1820 @@
+' ============================================================================
+'  Inventor iLogic Rule : 가져온 부품 새 번호로 저장(made by pjh)
+'
+'  [언제 쓰나]
+'   다른 유닛 조립도에서 부품을 복사해 지금 조립도에 붙여넣으면, 그 부품은
+'   여전히 원래 유닛 폴더의 파일을 가리킨다. 리비전 생성 규칙으로 이름을
+'   바꾸면 새 파일도 원래 유닛 폴더에 만들어진다.
+'
+'   이 규칙은 붙여넣은 부품을
+'     · 지금 조립도의 부품 폴더로 복사하고
+'     · 그 폴더의 마지막 번호 다음 번호를 붙인다
+'
+'     예) 폴더의 마지막 부품이 GMKS-ST2601-ETR01-59 이면
+'         가져온 부품은 GMKS-ST2601-ETR01-60, -61, -62 ...
+'
+'  [사용법]
+'   1) 붙여넣은 부품이 있는 조립도에서 그 부품들을 선택
+'   2) 규칙 실행
+'   3) 저장 폴더 / 번호 확인  (다른 폴더를 고를 수 있다)
+'   4) 현품수정 확인 -> 새 번호 확인 / 수정 -> 최종 확인
+'
+'  [처리 순서] - 리비전 생성 규칙과 같다
+'   1) 원본 부품   -> 새 폴더 / 새 번호로 사본 저장
+'   2) 새 부품의 부품번호 수정 (+ 현품수정 표기)
+'   3) 원본 도면   -> 새 폴더 / 새 번호로 사본 저장
+'   4) 새 도면의 참조를 새 부품으로 대체
+'   5) 부품번호 토글로 타이틀블록 갱신
+'   6) 새 파일 저장
+'   7) 지금 조립도의 구성요소를 새 부품으로 대치
+'
+'  [리비전 생성 규칙과 다른 점]
+'   - 저장 폴더   : 원본 부품 폴더  ->  지금 조립도의 부품 폴더
+'   - 새 이름     : 리비전 문자 +1  ->  대상 폴더의 마지막 번호 +1
+'   - 조립도 대치 : 열려있는 모든 조립도 -> 지금 조립도만
+'       원래 유닛 조립도가 열려 있어도 그쪽은 건드리지 않는다.
+'       그쪽 부품까지 바뀌면 원래 유닛이 망가진다.
+'   - 부품(.ipt)만 처리한다. 하위 조립품은 구성 부품까지 옮기지 않으므로
+'     건너뛴다.
+'   - 이미 대상 폴더에 있는 부품은 건너뛴다 (SKIP_LOCAL_PARTS).
+'     창 선택으로 이 유닛 부품이 섞여 들어와도 번호가 바뀌지 않게.
+'
+'  [저장 폴더를 정하는 방법]
+'   조립도가 쓰는 부품 중 "조립도이름-번호" 로 된 것들이 가장 많이 들어 있는
+'   폴더를 고른다. 조립도가 GMKS-ST2601-ETR01.iam 이면 GMKS-ST2601-ETR01-NN
+'   부품들이 있는 폴더다. 그런 부품이 하나도 없으면 조립도 파일이 있는 폴더.
+'   실행할 때 보여주고, 틀렸으면 다른 폴더를 고를 수 있다.
+'
+'  [번호를 정하는 방법]
+'   대상 폴더의 .ipt / .iam / .idw / .dwg 파일 이름을 훑어
+'   "이름-숫자" 꼴인 것 중 가장 큰 숫자 + 1 을 쓴다.
+'   - 리비전 문자는 무시한다. ETR01-59A 가 있으면 59 로 본다 -> 다음은 60
+'   - 이름 체계는 조립도 이름과 같은 것을 우선, 없으면 폴더에서 가장 많은 것
+'   - 자릿수는 폴더의 기존 번호를 따른다 (59 -> 60, 059 -> 060)
+'   - 여러 개를 가져오면 원래 부품번호 순으로 정렬해 차례로 붙인다
+'   - 새 번호 편집창에서 얼마든지 고칠 수 있다
+'
+'  [안전 원칙] - 리비전 생성 규칙과 같다
+'   - 실행 전 전체 계획을 보여주고 확인받는다
+'   - 같은 이름 파일이 이미 있으면 중단한다 (덮어쓰지 않는다)
+'   - 원본 파일은 절대 수정하지 않는다
+'   - 조립도는 저장하지 않는다 (확인 후 직접 저장)
+'   - 새로 만든 파일은 저장한다
+'   - 취소하면 규칙이 연 도면을 도로 닫는다
+'
+'  [Inventor 2026 주의]
+'   - 정규식(Regex)을 쓰지 않는다. 최신 .NET 에서는 별도 어셈블리라
+'     iLogic 참조 목록에 없을 수 있다. 번호는 손으로 잘라 읽는다.
+'   - Using 문을 쓰지 않는다. IDisposable 로의 인터페이스 변환이라
+'     AcceptButton 과 같은 컴파일 오류가 날 수 있다.
+'   - Enter / Esc 버튼은 리플렉션으로 지정한다 (SetDefaultButtons)
+'
+'  [iLogic 문법 주의]
+'   Inventor 네임스페이스에도 Path / File / Environment 타입이 있으므로
+'   System.IO.Path 처럼 반드시 풀네임으로 씁니다.
+'   Sub / Function 바깥에는 Const, Dim 선언을 둘 수 없습니다.
+' ============================================================================
+
+
+Sub Main()
+
+    ' ── 설정 ────────────────────────────────────────────────────────────────
+    Dim MIN_HYPHENS      As Integer = 2      ' 사내 도면번호 판별용 최소 하이픈 수
+    Dim NUM_WIDTH_MIN    As Integer = 2      ' 새 번호 최소 자릿수 (2 -> 01, 60)
+    Dim SKIP_LOCAL_PARTS As Boolean = True   ' 이미 대상 폴더에 있는 부품은 건너뜀
+
+    ' 현품수정 표기 - BOM 설명(Description) 칸 끝에 붙는다
+    Dim FIELD_MOD_TAG    As String  = "(현품수정)"
+    Dim ASK_FIELD_MOD    As Boolean = True   ' False=선택창을 건너뜀 (현재 상태 유지)
+
+    Dim SAVE_NEW_FILES   As Boolean = True   ' 새 ipt / idw 만 저장 (조립도는 저장 안 함)
+    Dim SHOW_NEW_MODEL   As Boolean = True   ' 새 모델을 화면에 표시
+    Dim WRITE_LOG        As Boolean = True   ' 바탕화면에 로그 남기기
+    ' ────────────────────────────────────────────────────────────────────────
+
+    Dim TTL As String = "가져온 부품 새 번호로 저장"
+
+    '--- 1) 지금 조립도와 선택 확인 ------------------------------------------
+    Dim oAct As Inventor.Document = Nothing
+    Try
+        oAct = ThisApplication.ActiveDocument
+    Catch
+        oAct = Nothing
+    End Try
+
+    If oAct Is Nothing OrElse _
+       oAct.DocumentType <> Inventor.DocumentTypeEnum.kAssemblyDocumentObject Then
+        MessageBox.Show("붙여넣은 부품이 있는 조립도를 연 상태에서 실행하세요." & vbCrLf & _
+                        "조립도에서 그 부품들을 선택한 뒤 실행합니다.", TTL)
+        Return
+    End If
+
+    Dim oAsm As Inventor.AssemblyDocument = CType(oAct, Inventor.AssemblyDocument)
+
+    Dim asmPath As String = ""
+    Try
+        asmPath = oAsm.FullFileName
+    Catch
+    End Try
+
+    If String.IsNullOrEmpty(asmPath) Then
+        MessageBox.Show("조립도를 먼저 저장하세요." & vbCrLf & _
+                        "저장 폴더를 정하려면 조립도 파일의 위치가 필요합니다.", TTL)
+        Return
+    End If
+
+    Dim asmName As String = System.IO.Path.GetFileName(asmPath)
+    Dim asmBase As String = System.IO.Path.GetFileNameWithoutExtension(asmPath)
+
+    ' 선택 내용을 먼저 복사해 둔다.
+    ' 아래에서 도면을 여는 순간 활성 문서가 바뀌므로,
+    ' SelectSet 을 열거하는 도중에 파일을 열면 안 된다.
+    Dim selOccs As New List(Of Inventor.ComponentOccurrence)
+    Try
+        For Each obj As Object In oAsm.SelectSet
+            Dim sOcc As Inventor.ComponentOccurrence = TryCast(obj, Inventor.ComponentOccurrence)
+            If sOcc IsNot Nothing Then selOccs.Add(sOcc)
+        Next
+    Catch
+    End Try
+
+    If selOccs.Count = 0 Then
+        MessageBox.Show("가져온 부품을 조립도에서 선택한 뒤 실행하세요." & vbCrLf & vbCrLf & _
+                        "선택한 부품을 이 조립도의 부품 폴더로 옮기고" & vbCrLf & _
+                        "그 폴더의 다음 번호를 붙입니다.", TTL)
+        Return
+    End If
+
+    '--- 2) 선택한 부품의 모델 (중복 제거) ----------------------------------
+    Dim selMdls As New List(Of Inventor.Document)
+    Dim seenMdl As New List(Of String)
+    Dim skipped As New List(Of String)
+
+    For Each so As Inventor.ComponentOccurrence In selOccs
+
+        Dim md As Inventor.Document = Nothing
+        Try
+            md = CType(so.Definition.Document, Inventor.Document)
+        Catch
+            md = Nothing
+        End Try
+        If md Is Nothing Then Continue For
+
+        Dim mp As String = ""
+        Try
+            mp = md.FullFileName
+        Catch
+        End Try
+        If String.IsNullOrEmpty(mp) Then Continue For
+
+        ' 같은 부품을 여러 개 붙여넣었을 수 있다
+        If ContainsPath(seenMdl, mp) Then Continue For
+        seenMdl.Add(mp)
+
+        If md.DocumentType <> Inventor.DocumentTypeEnum.kPartDocumentObject Then
+            skipped.Add(System.IO.Path.GetFileName(mp) & _
+                        "  (하위 조립품은 건너뜀 - 구성 부품까지 옮기지 않기 때문)")
+            Continue For
+        End If
+
+        selMdls.Add(md)
+    Next
+
+    If selMdls.Count = 0 Then
+        Dim nm0 As String = "처리할 부품이 없습니다."
+        If skipped.Count > 0 Then
+            nm0 &= vbCrLf & vbCrLf & String.Join(vbCrLf, skipped.ToArray())
+        End If
+        MessageBox.Show(nm0, TTL)
+        Return
+    End If
+
+    '--- 3) 저장 폴더와 번호 체계 결정 --------------------------------------
+    '     조립도가 쓰는 "조립도이름-NN" 부품이 가장 많이 있는 폴더를 기본으로
+    '     잡는다. 그런 부품이 없으면 조립도 파일이 있는 폴더다.
+    Dim tgtDir As String = GuessPartsFolder(oAsm, asmBase, seenMdl)
+
+    Dim stem     As String  = asmBase
+    Dim maxNum   As Integer = 0
+    Dim width    As Integer = NUM_WIDTH_MIN
+    Dim lastName As String  = ""
+
+    Do
+        ScanNumbering(tgtDir, asmBase, NUM_WIDTH_MIN, stem, maxNum, width, lastName)
+
+        ' 이미 이 폴더에 있는 부품은 옮길 대상이 아니다
+        Dim nMove  As Integer = 0
+        Dim nLocal As Integer = 0
+        For Each md As Inventor.Document In selMdls
+            If SKIP_LOCAL_PARTS AndAlso _
+               SameFolder(System.IO.Path.GetDirectoryName(md.FullFileName), tgtDir) Then
+                nLocal += 1
+            Else
+                nMove += 1
+            End If
+        Next
+
+        Dim info As String = "가져온 부품을 저장할 폴더와 번호입니다." & vbCrLf & vbCrLf & _
+                             "   폴더        : " & tgtDir & vbCrLf & _
+                             "   번호 형식   : " & stem & "-" & New String("#"c, width) & vbCrLf
+
+        If lastName = "" Then
+            info &= "   마지막 번호 : (없음 - " & FormatNum(1, width) & " 번부터 시작)" & vbCrLf
+        Else
+            info &= "   마지막 번호 : " & lastName & vbCrLf
+        End If
+
+        If nMove > 0 Then
+            info &= "   새 번호     : " & stem & "-" & FormatNum(maxNum + 1, width)
+            If nMove > 1 Then
+                info &= "  ~  " & stem & "-" & FormatNum(maxNum + nMove, width) & _
+                        "   (" & nMove & "개)"
+            End If
+            info &= vbCrLf
+        Else
+            info &= "   새 번호     : (옮길 부품 없음)" & vbCrLf
+        End If
+
+        If nLocal > 0 Then
+            info &= vbCrLf & "※ 이미 이 폴더에 있는 부품 " & nLocal & "개는 건너뜁니다." & vbCrLf
+        End If
+
+        If Not IsUnderWorkspace(tgtDir) Then
+            info &= vbCrLf & "※ 이 폴더는 지금 프로젝트(IPJ) 작업공간 밖에 있습니다." & vbCrLf & _
+                    "   저장은 되지만 나중에 인벤터가 파일을 못 찾을 수 있습니다." & vbCrLf
+        End If
+
+        info &= vbCrLf & "[예]     이 폴더에 이 번호로 저장" & vbCrLf & _
+                         "[아니오]  다른 폴더 선택" & vbCrLf & _
+                         "[취소]   규칙 실행 취소"
+
+        Dim qf As System.Windows.Forms.DialogResult = _
+            MessageBox.Show(info, TTL & " - 저장 폴더", MessageBoxButtons.YesNoCancel)
+
+        If qf = DialogResult.Yes Then
+            If nMove = 0 Then
+                MessageBox.Show("옮길 부품이 없습니다." & vbCrLf & _
+                                "선택한 부품이 모두 이미 이 폴더에 있습니다.", TTL)
+                Return
+            End If
+            Exit Do
+        End If
+
+        If qf <> DialogResult.No Then Return      ' 취소 - 아직 아무것도 열지 않았다
+
+        Dim chosen As String = PickFolder(tgtDir)
+        If chosen <> "" Then tgtDir = NormDir(chosen)
+    Loop
+
+    '--- 4) 후보 수집 : 모델 -> 같은 이름 도면 ------------------------------
+    Dim drawings     As New List(Of Inventor.DrawingDocument)
+    Dim models       As New List(Of Inventor.Document)
+    Dim noDwg        As New List(Of String)
+
+    ' 규칙이 직접 연 도면. 중간에 취소하면 이것만 도로 닫는다.
+    Dim openedByRule As New List(Of Inventor.DrawingDocument)
+
+    For Each md As Inventor.Document In selMdls
+
+        Dim mp  As String = md.FullFileName
+        Dim mfn As String = System.IO.Path.GetFileName(mp)
+
+        If SKIP_LOCAL_PARTS AndAlso SameFolder(System.IO.Path.GetDirectoryName(mp), tgtDir) Then
+            skipped.Add(mfn & "  (이미 대상 폴더에 있음)")
+            Continue For
+        End If
+
+        Dim curPN As String = ReadPN(md)
+        If String.IsNullOrWhiteSpace(curPN) Then
+            skipped.Add(mfn & "  (부품번호를 읽지 못함)")
+            Continue For
+        End If
+
+        ' 사내 도면번호 형식이 아니면 제외 (규격품 보호)
+        Dim hy As Integer = 0
+        For Each ch As Char In curPN
+            If ch = "-"c Then hy += 1
+        Next
+        If hy < MIN_HYPHENS Then
+            skipped.Add(curPN & "  (하이픈 " & hy & "개 - 사내 도면번호 형식 아님)")
+            Continue For
+        End If
+
+        Dim dwgPath As String = FindDrawingFor(mp)
+        If dwgPath = "" Then
+            noDwg.Add(System.IO.Path.GetFileNameWithoutExtension(mp))
+            Continue For
+        End If
+
+        Dim justOpened As Boolean = False
+        Dim oDrw As Inventor.DrawingDocument = OpenDrawingDoc(dwgPath, justOpened)
+        If oDrw Is Nothing Then
+            skipped.Add(System.IO.Path.GetFileName(dwgPath) & "  (도면을 열지 못함)")
+            Continue For
+        End If
+        If justOpened Then openedByRule.Add(oDrw)
+
+        ' 도면이 이 모델 하나만 참조해야 한다
+        Dim refCnt As Integer = -1
+        Dim refOk  As Boolean = False
+        Try
+            refCnt = oDrw.ReferencedDocuments.Count
+            If refCnt = 1 Then
+                Dim rfn As String = System.IO.Path.GetFileName( _
+                    oDrw.ReferencedDocuments.Item(1).FullFileName)
+                refOk = String.Equals(rfn, mfn, StringComparison.OrdinalIgnoreCase)
+            End If
+        Catch
+        End Try
+
+        If Not refOk Then
+            Dim dn As String = System.IO.Path.GetFileName(dwgPath)
+            If refCnt = 1 Then
+                skipped.Add(dn & "  (도면이 다른 모델을 참조함)")
+            ElseIf refCnt >= 0 Then
+                skipped.Add(dn & "  (참조 모델이 " & refCnt & "개 - 1개인 도면만 처리)")
+            Else
+                skipped.Add(dn & "  (참조를 읽지 못함)")
+            End If
+            Continue For
+        End If
+
+        drawings.Add(oDrw)
+        models.Add(md)
+    Next
+
+    If drawings.Count = 0 Then
+        Dim nm As String = "처리할 부품이 없습니다."
+        If noDwg.Count > 0 Then
+            nm &= vbCrLf & vbCrLf & "[도면 파일을 찾지 못함]" & vbCrLf & _
+                  String.Join(vbCrLf, noDwg.ToArray()) & vbCrLf & _
+                  "(모델과 같은 폴더에 같은 이름의 .idw / .dwg 가 있어야 합니다)"
+        End If
+        If skipped.Count > 0 Then
+            nm &= vbCrLf & vbCrLf & "[제외]" & vbCrLf & String.Join(vbCrLf, skipped.ToArray())
+        End If
+        CloseOpenedDrawings(openedByRule)
+        MessageBox.Show(nm, TTL)
+        Return
+    End If
+
+    '--- 5) 새 번호 부여 - 원래 부품번호 순서대로 ---------------------------
+    '     창으로 여러 개 고르면 선택 순서가 뒤죽박죽이므로 원래 부품번호 순으로
+    '     정렬해 번호를 매긴다.   예) ETA01-03 -> 60,  ETA01-07 -> 61
+    Dim srcPNs As New List(Of String)
+    For Each m As Inventor.Document In models
+        srcPNs.Add(ReadPN(m))
+    Next
+
+    Dim order As New List(Of Integer)
+    For i As Integer = 0 To models.Count - 1
+        order.Add(i)
+    Next
+    order.Sort(Function(a As Integer, b As Integer) String.Compare( _
+        srcPNs(a), srcPNs(b), StringComparison.OrdinalIgnoreCase))
+
+    Dim sDrw   As New List(Of Inventor.DrawingDocument)
+    Dim sMdl   As New List(Of Inventor.Document)
+    Dim curPNs As New List(Of String)
+    For Each k As Integer In order
+        sDrw.Add(drawings(k))
+        sMdl.Add(models(k))
+        curPNs.Add(srcPNs(k))
+    Next
+    drawings = sDrw
+    models = sMdl
+
+    Dim newPNs As New List(Of String)
+    For i As Integer = 0 To models.Count - 1
+        newPNs.Add(stem & "-" & FormatNum(maxNum + 1 + i, width))
+    Next
+
+    '--- 6) 조립도 대치 범위 - 지금 조립도만 --------------------------------
+    '     파일을 만들기 전에 물어본다. 만든 뒤에 취소하면 되돌릴 수 없기 때문.
+    '     원래 유닛 조립도가 열려 있어도 그쪽은 건드리지 않는다.
+    '     asmPlan(i) : 0=전체 대치  1=선택만 대치  2=건너뛰기
+    Dim asmPlan As New List(Of Integer)
+    Dim asmNote As String = ""
+
+    For i As Integer = 0 To models.Count - 1
+
+        Dim mode  As Integer = 0
+        Dim oldP  As String  = models(i).FullFileName
+        Dim pnm   As String  = curPNs(i)
+        Dim total As Integer = 0
+        Dim mine  As Integer = 0
+
+        CountInAssembly(oAsm, oldP, selOccs, asmPath, total, mine)
+
+        If total = 0 Then
+
+            ' 최상위에 없다 - 하위 조립품 안의 부품을 고른 경우
+            asmNote &= "   " & pnm & " : 조립도 최상위에서 찾지 못해 대치되지 않음" & vbCrLf
+
+        ElseIf total > 1 AndAlso mine > 0 AndAlso mine < total Then
+
+            Dim q2 As System.Windows.Forms.DialogResult = MessageBox.Show( _
+                pnm & " 부품이" & vbCrLf & _
+                "이 조립도 [" & asmName & "] 에 " & total & "개 배치되어 있고," & vbCrLf & _
+                "그중 " & mine & "개를 선택하셨습니다." & vbCrLf & vbCrLf & _
+                "[예]     선택한 " & mine & "개만 대치" & vbCrLf & _
+                "[아니오]  " & total & "개 전부 대치" & vbCrLf & _
+                "[취소]   규칙 실행을 취소합니다 (파일도 만들지 않음)", _
+                "조립도 대치 범위", MessageBoxButtons.YesNoCancel)
+
+            If q2 = DialogResult.Yes Then
+                mode = 1
+                asmNote &= "   " & pnm & " : 선택한 " & mine & " / " & total & "개만 대치" & vbCrLf
+            ElseIf q2 = DialogResult.No Then
+                mode = 0
+                asmNote &= "   " & pnm & " : " & total & "개 전부 대치" & vbCrLf
+            Else
+                CloseOpenedDrawings(openedByRule)
+                MessageBox.Show("규칙 실행을 취소했습니다." & vbCrLf & _
+                                "만들어진 파일은 없습니다.", TTL)
+                Return
+            End If
+
+        ElseIf total > 1 AndAlso mine = 0 Then
+
+            ' 어느 배치를 고른 것인지 특정하지 못했다. 조용히 전부 대치하지 않는다.
+            Dim q3 As System.Windows.Forms.DialogResult = MessageBox.Show( _
+                pnm & " 부품이" & vbCrLf & _
+                "이 조립도 [" & asmName & "] 에 " & total & "개 배치되어 있습니다." & vbCrLf & _
+                "선택하신 것이 그중 어느 배치인지는 특정하지 못했습니다." & vbCrLf & vbCrLf & _
+                "[예]     " & total & "개 전부 대치" & vbCrLf & _
+                "[아니오]  조립도는 그대로 두고 파일만 생성" & vbCrLf & _
+                "[취소]   규칙 실행을 취소합니다 (파일도 만들지 않음)", _
+                "조립도 대치 범위", MessageBoxButtons.YesNoCancel)
+
+            If q3 = DialogResult.Yes Then
+                mode = 0
+                asmNote &= "   " & pnm & " : " & total & "개 전부 대치" & vbCrLf
+            ElseIf q3 = DialogResult.No Then
+                mode = 2
+                asmNote &= "   " & pnm & " : 조립도 대치 안 함 (파일만 생성)" & vbCrLf
+            Else
+                CloseOpenedDrawings(openedByRule)
+                MessageBox.Show("규칙 실행을 취소했습니다." & vbCrLf & _
+                                "만들어진 파일은 없습니다.", TTL)
+                Return
+            End If
+
+        End If
+
+        asmPlan.Add(mode)
+    Next
+
+    '--- 7) 현품수정 대상 선택 ----------------------------------------------
+    '     기본값은 "현재 상태 유지" 다. 선택창을 건너뛰어도 표기가 지워지지 않는다.
+    Dim isFieldMod As New List(Of Boolean)
+    For Each m As Inventor.Document In models
+        isFieldMod.Add(ReadProp(m, "Description").IndexOf(FIELD_MOD_TAG, StringComparison.Ordinal) >= 0)
+    Next
+
+    If ASK_FIELD_MOD Then
+
+        Dim subNames As New List(Of String)
+        Dim preChk   As New List(Of Boolean)
+        Dim nTag     As Integer = 0
+
+        For i As Integer = 0 To models.Count - 1
+            Dim lb As String = curPNs(i) & "  →  " & newPNs(i) & _
+                               "   [" & ReadProp(models(i), "Description") & "]"
+            If isFieldMod(i) Then
+                lb &= "   ← 현재 붙어있음"
+                nTag += 1
+            End If
+            subNames.Add(lb)
+            preChk.Add(isFieldMod(i))
+        Next
+
+        Dim msg2 As String = "현품수정 항목을 확인하세요. 체크된 항목의 설명에 " & _
+                             FIELD_MOD_TAG & " 가 붙습니다."
+        If nTag > 0 Then
+            msg2 &= "   (이미 붙어있는 " & nTag & "건은 체크된 상태입니다. 해제하면 제거됩니다)"
+        End If
+
+        Dim dummy As Boolean = False
+        Dim picked2 As List(Of Integer) = PickListPre(subNames, msg2, preChk, "", dummy)
+
+        If picked2 Is Nothing Then
+            CloseOpenedDrawings(openedByRule)
+            Return
+        End If
+
+        For i As Integer = 0 To isFieldMod.Count - 1
+            isFieldMod(i) = False
+        Next
+        For Each k As Integer In picked2
+            isFieldMod(k) = True
+        Next
+    End If
+
+    '--- 8) 새 번호 확인 및 수정 (자동 계산값을 미리 채워서 보여줌) ---------
+    '     빈칸 / 금지문자 / 중복 / 대상 폴더의 기존 파일 충돌을 바로 잡는다
+    Dim mdlExts As New List(Of String)
+    Dim drwExts As New List(Of String)
+    For i As Integer = 0 To models.Count - 1
+        mdlExts.Add(System.IO.Path.GetExtension(models(i).FullFileName))
+        drwExts.Add(System.IO.Path.GetExtension(drawings(i).FullFileName))
+    Next
+
+    If Not EditNewNumbers(curPNs, mdlExts, drwExts, tgtDir, newPNs) Then
+        CloseOpenedDrawings(openedByRule)
+        Return
+    End If
+
+    '--- 9) 계획 수립 및 충돌 검사 -------------------------------------------
+    Dim plan       As String = ""
+    Dim conflicts  As New List(Of String)
+    Dim newIptList As New List(Of String)
+    Dim newIdwList As New List(Of String)
+    Dim oldIptList As New List(Of String)
+
+    For i As Integer = 0 To models.Count - 1
+
+        Dim newIpt As String = System.IO.Path.Combine(tgtDir, newPNs(i) & mdlExts(i))
+        Dim newIdw As String = System.IO.Path.Combine(tgtDir, newPNs(i) & drwExts(i))
+
+        newIptList.Add(newIpt)
+        newIdwList.Add(newIdw)
+
+        ' 실행 중에는 문서가 닫힐 수 있으므로 지금 값을 붙잡아 둔다
+        oldIptList.Add(models(i).FullFileName)
+
+        ' 최종 안전망 - 편집창을 통과했더라도 한 번 더 본다
+        If System.IO.File.Exists(newIpt) Then conflicts.Add(System.IO.Path.GetFileName(newIpt))
+        If System.IO.File.Exists(newIdw) Then conflicts.Add(System.IO.Path.GetFileName(newIdw))
+
+        plan &= "● " & curPNs(i) & "  →  " & newPNs(i) & vbCrLf
+        plan &= "   원래 위치 : " & System.IO.Path.GetDirectoryName(models(i).FullFileName) & vbCrLf
+
+        Dim curD As String = ReadProp(models(i), "Description")
+        Dim tgtD As String = ApplyTag(curD, FIELD_MOD_TAG, isFieldMod(i))
+
+        If tgtD <> curD Then
+            plan &= "   설명 : " & curD & "  →  " & tgtD
+            If isFieldMod(i) Then
+                plan &= "   (현품수정 표기)" & vbCrLf
+            Else
+                plan &= "   (현품수정 표기 제거)" & vbCrLf
+            End If
+        End If
+    Next
+
+    If conflicts.Count > 0 Then
+        CloseOpenedDrawings(openedByRule)
+        MessageBox.Show("같은 이름의 파일이 이미 있습니다. 중단합니다." & vbCrLf & _
+                        "(덮어쓰지 않습니다)" & vbCrLf & vbCrLf & _
+                        String.Join(vbCrLf, conflicts.ToArray()), TTL & " - 중단")
+        Return
+    End If
+
+    '--- 10) 최종 확인 -------------------------------------------------------
+    Dim ask As String = "아래대로 가져온 부품을 새 번호로 저장합니다. (" & models.Count & "건)" & vbCrLf & vbCrLf & _
+                        "저장 폴더 : " & tgtDir & vbCrLf & vbCrLf & _
+                        plan & vbCrLf & _
+                        "원본 파일은 수정하지 않습니다." & vbCrLf & _
+                        "이 조립도(" & asmName & ")의 구성요소만 새 부품으로 대치합니다." & vbCrLf & _
+                        "다른 조립도는 열려 있어도 건드리지 않습니다." & vbCrLf
+
+    If asmNote <> "" Then ask &= vbCrLf & "[대치 범위]" & vbCrLf & asmNote
+
+    If skipped.Count > 0 OrElse noDwg.Count > 0 Then
+        ask &= vbCrLf & "[제외 " & (skipped.Count + noDwg.Count) & "건]" & vbCrLf
+        For Each sk As String In skipped
+            ask &= "   " & sk & vbCrLf
+        Next
+        For Each nd As String In noDwg
+            ask &= "   " & nd & "  (도면 파일을 찾지 못함)" & vbCrLf
+        Next
+    End If
+
+    If SAVE_NEW_FILES Then
+        ask &= vbCrLf & "※ 새로 만든 파일(ipt / idw)은 저장됩니다." & vbCrLf & _
+               "   조립도는 저장하지 않으니 확인 후 직접 저장하세요."
+    Else
+        ask &= vbCrLf & "※ 저장은 하지 않습니다. 확인 후 직접 저장하세요." & vbCrLf & _
+               "   저장하지 않으면 새 파일의 부품번호가 이전 값으로 남습니다."
+    End If
+
+    If MessageBox.Show(ask, TTL & " - 최종 확인", _
+                       MessageBoxButtons.OKCancel) <> DialogResult.OK Then
+        CloseOpenedDrawings(openedByRule)
+        Return
+    End If
+
+    '--- 11) 실행 ------------------------------------------------------------
+    Dim logTxt As String = ""
+    Dim okCount As Integer = 0
+    Dim orphan As New List(Of String)          ' 만들다 만 파일
+    Dim prevSilent As Boolean = ThisApplication.SilentOperation
+
+    Try
+        ThisApplication.SilentOperation = True
+
+        For i As Integer = 0 To models.Count - 1
+
+            Dim oldPN  As String = curPNs(i)
+            Dim newPN  As String = newPNs(i)
+            Dim newIpt As String = newIptList(i)
+            Dim newIdw As String = newIdwList(i)
+            Dim oldIpt As String = oldIptList(i)
+
+            logTxt &= vbCrLf & "━━ " & oldPN & " → " & newPN & " ━━" & vbCrLf
+
+            Dim newModel As Inventor.Document = Nothing
+            Dim newDrw   As Inventor.DrawingDocument = Nothing
+
+            ' ── 1단계 : 모델 사본 저장 (새 폴더) ──
+            Try
+                models(i).SaveAs(newIpt, True)      ' True = 사본으로 저장, 원본 유지
+                logTxt &= "  1) 모델 사본 : 성공" & vbCrLf
+            Catch ex As Exception
+                logTxt &= "  1) 모델 사본 : 실패 → " & ex.Message & vbCrLf
+                logTxt &= Hint(ex.Message)
+                Continue For
+            End Try
+
+            ' ── 2단계 : 새 모델 열고 부품번호 (+ 현품수정 표기) 수정 ──
+            Try
+                newModel = ThisApplication.Documents.Open(newIpt, SHOW_NEW_MODEL)
+                WritePN(newModel, newPN)
+                logTxt &= "  2) 부품번호 수정 : 성공" & vbCrLf
+
+                Dim oldD As String = ReadProp(newModel, "Description")
+                Dim newD As String = ApplyTag(oldD, FIELD_MOD_TAG, isFieldMod(i))
+
+                If newD = oldD Then
+                    If isFieldMod(i) Then
+                        logTxt &= "  2-1) 현품수정 표기 : 이미 있음 (변경 없음)" & vbCrLf
+                    End If
+                Else
+                    WriteProp(newModel, "Description", newD)
+                    If isFieldMod(i) Then
+                        logTxt &= "  2-1) 현품수정 표기 추가 : " & oldD & " → " & newD & vbCrLf
+                    Else
+                        logTxt &= "  2-1) 현품수정 표기 제거 : " & oldD & " → " & newD & vbCrLf
+                    End If
+                End If
+
+            Catch ex As Exception
+                logTxt &= "  2) 부품번호 수정 : 실패 → " & ex.Message & vbCrLf
+                TryCloseDoc(newModel)
+                orphan.Add(newIpt)
+                Continue For
+            End Try
+
+            ' ── 3단계 : 도면 사본 저장 (새 폴더) ──
+            Try
+                drawings(i).SaveAs(newIdw, True)
+                logTxt &= "  3) 도면 사본 : 성공" & vbCrLf
+            Catch ex As Exception
+                logTxt &= "  3) 도면 사본 : 실패 → " & ex.Message & vbCrLf
+                logTxt &= Hint(ex.Message)
+                TryCloseDoc(newModel)
+                orphan.Add(newIpt)
+                Continue For
+            End Try
+
+            ' ── 4단계 : 새 도면 열고 참조 대체 ──
+            Try
+                newDrw = CType(ThisApplication.Documents.Open(newIdw, True), Inventor.DrawingDocument)
+
+                ' 대체하면 컬렉션이 바뀌므로 먼저 복사해 둔다
+                Dim fds As New List(Of Inventor.FileDescriptor)
+                For Each fd As Inventor.FileDescriptor In newDrw.File.ReferencedFileDescriptors
+                    fds.Add(fd)
+                Next
+
+                Dim replaced As Integer = 0
+                For Each fd As Inventor.FileDescriptor In fds
+                    Try
+                        If String.Equals(fd.FullFileName, oldIpt, StringComparison.OrdinalIgnoreCase) Then
+                            fd.ReplaceReference(newIpt)
+                            replaced += 1
+                        End If
+                    Catch
+                    End Try
+                Next
+
+                ' 2차 시도 - 경로 표기가 달라(매핑 드라이브 / UNC) 못 찾은 경우
+                If replaced = 0 Then
+                    Dim oldBase As String = System.IO.Path.GetFileName(oldIpt)
+                    For Each fd As Inventor.FileDescriptor In fds
+                        Try
+                            Dim fb As String = System.IO.Path.GetFileName(fd.FullFileName)
+                            If String.Equals(fb, oldBase, StringComparison.OrdinalIgnoreCase) AndAlso _
+                               Not String.Equals(fd.FullFileName, newIpt, StringComparison.OrdinalIgnoreCase) Then
+                                fd.ReplaceReference(newIpt)
+                                replaced += 1
+                            End If
+                        Catch
+                        End Try
+                    Next
+                    If replaced > 0 Then
+                        logTxt &= "  4) 참조 대체 : 경로 표기가 달라 파일명으로 찾아 대체함" & vbCrLf
+                    End If
+                End If
+
+                If replaced = 0 Then
+                    logTxt &= "  4) 참조 대체 : ★ 대상 없음 - 도면이 어느 모델을 보는지 직접 확인하세요" & vbCrLf
+                Else
+                    logTxt &= "  4) 참조 대체 : 성공 (" & replaced & "건)" & vbCrLf
+                End If
+
+                newDrw.Update()
+
+            Catch ex As Exception
+                logTxt &= "  4) 참조 대체 : 실패 → " & ex.Message & vbCrLf
+                TryCloseDoc(newDrw)
+                TryCloseDoc(newModel)
+                orphan.Add(newIpt)
+                orphan.Add(newIdw)
+                Continue For
+            End Try
+
+            ' ── 5단계 : 부품번호 토글로 타이틀블록 갱신 ──
+            Try
+                Dim cur As String = ReadPN(newModel)
+                Dim restored As Boolean = False
+                Try
+                    WritePN(newModel, cur & "#")
+                    WritePN(newModel, cur)
+                    restored = True
+                Finally
+                    If Not restored Then
+                        Try
+                            WritePN(newModel, cur)
+                        Catch
+                        End Try
+                    End If
+                End Try
+
+                If String.Equals(ReadPN(newModel), cur, StringComparison.Ordinal) Then
+                    newDrw.Update()
+                    logTxt &= "  5) 타이틀블록 갱신 : 성공" & vbCrLf
+                Else
+                    logTxt &= "  5) 타이틀블록 갱신 : ★ 부품번호 복원 실패 - 직접 확인 필요" & vbCrLf
+                End If
+
+            Catch ex As Exception
+                logTxt &= "  5) 타이틀블록 갱신 : 실패 → " & ex.Message & vbCrLf
+            End Try
+
+            ' ── 6단계 : 새로 만든 파일 저장 ──
+            '    모델을 먼저 저장해야 도면이 확정된 참조를 보게 된다.
+            If SAVE_NEW_FILES Then
+                Dim savedM As Boolean = False
+                Try
+                    newModel.Save()
+                    savedM = True
+                Catch ex As Exception
+                    logTxt &= "  6) 모델 저장 : 실패 → " & ex.Message & vbCrLf
+                    logTxt &= Hint(ex.Message)
+                End Try
+
+                Try
+                    newDrw.Save()
+                    If savedM Then
+                        logTxt &= "  6) 새 파일 저장 : 성공 (모델 + 도면)" & vbCrLf
+                    Else
+                        logTxt &= "  6) 도면 저장 : 성공 (모델은 실패 - 부품번호 미반영 상태)" & vbCrLf
+                    End If
+                Catch ex As Exception
+                    logTxt &= "  6) 도면 저장 : 실패 → " & ex.Message & vbCrLf
+                    logTxt &= Hint(ex.Message)
+                End Try
+            Else
+                logTxt &= "  6) 새 파일 저장 : 건너뜀 (설정) - ★ 직접 저장해야 부품번호가 반영됩니다" & vbCrLf
+            End If
+
+            ' ── 7단계 : 지금 조립도에서만 구성요소 대치 ──
+            If asmPlan(i) = 2 Then
+                logTxt &= "  7) 조립도 대치 : 건너뜀 (사용자 선택)" & vbCrLf
+            Else
+                Dim onlySel As Boolean = (asmPlan(i) = 1)
+                Dim failCnt As Integer = 0
+                Dim hit As Integer = ReplaceInAssembly(oAsm, oldIpt, newIpt, selOccs, asmPath, _
+                                                       onlySel, failCnt)
+
+                If hit < 0 Then
+                    logTxt &= "  7) 조립도 대치 : 오류 발생" & vbCrLf
+                ElseIf hit = 0 Then
+                    logTxt &= "  7) 조립도 대치 : 대상 없음 (조립도 최상위에 이 부품이 없음)" & vbCrLf
+                ElseIf onlySel Then
+                    logTxt &= "  7) 조립도 대치 : 선택한 " & hit & "개만 대치" & vbCrLf
+                Else
+                    logTxt &= "  7) 조립도 대치 : 성공 (" & hit & "개 구성요소)" & vbCrLf
+                End If
+                If failCnt > 0 Then
+                    logTxt &= "     ┗ ★ " & failCnt & "개는 대치하지 못함 - 직접 확인하세요" & vbCrLf
+                End If
+            End If
+
+            okCount += 1
+
+        Next
+
+    Catch ex As Exception
+        logTxt &= vbCrLf & "★ 전체 처리 오류 : " & ex.Message & vbCrLf
+
+    Finally
+        ThisApplication.SilentOperation = prevSilent
+    End Try
+
+    '--- 12) 결과 보고 -------------------------------------------------------
+    Dim msg As String = "가져온 부품 저장 완료  (" & okCount & " / " & models.Count & "건)" & vbCrLf & _
+                        "저장 폴더 : " & tgtDir & vbCrLf & logTxt
+
+    If orphan.Count > 0 Then
+        msg &= vbCrLf & "[중간에 실패해 디스크에 남은 파일]" & vbCrLf & _
+               String.Join(vbCrLf, orphan.ToArray()) & vbCrLf & _
+               "다시 실행하기 전에 지우거나 확인하세요." & vbCrLf
+    End If
+
+    If SAVE_NEW_FILES Then
+        msg &= vbCrLf & "※ 새 파일은 저장되었습니다. 조립도는 저장하지 않았습니다." & vbCrLf & _
+               "   조립도를 확인한 뒤 저장하세요."
+    Else
+        msg &= vbCrLf & "※ 아직 저장되지 않았습니다." & vbCrLf & _
+               "   도면번호와 조립도를 확인한 뒤 저장하세요."
+    End If
+
+    If WRITE_LOG Then
+        Try
+            Dim lf As String = System.IO.Path.Combine( _
+                System.Environment.GetFolderPath(System.Environment.SpecialFolder.DesktopDirectory), _
+                "가져온부품_로그.txt")
+            System.IO.File.WriteAllText(lf, msg, System.Text.Encoding.UTF8)
+            msg &= vbCrLf & vbCrLf & "※ 바탕화면에 로그 저장됨 : 가져온부품_로그.txt"
+        Catch ex As Exception
+            msg &= vbCrLf & vbCrLf & "※ 로그 저장 실패 : " & ex.Message
+        End Try
+    End If
+
+    MessageBox.Show(msg, TTL)
+
+End Sub
+
+' ============================================================================
+'  지금 조립도의 부품 폴더를 추정한다
+'
+'  조립도가 GMKS-ST2601-ETR01.iam 이면, 조립도가 참조하는 문서 중
+'  "GMKS-ST2601-ETR01-" 로 시작하는 파일들이 가장 많이 들어 있는 폴더를 고른다.
+'  붙여넣은 부품(exclude)은 세지 않는다. 그건 다른 유닛 폴더에 있다.
+'  그런 파일이 하나도 없으면 조립도 파일이 있는 폴더를 돌려준다.
+' ============================================================================
+Function GuessPartsFolder(oAsm As Inventor.AssemblyDocument, asmBase As String, _
+                          exclude As List(Of String)) As String
+
+    Dim asmDir As String = NormDir(System.IO.Path.GetDirectoryName(oAsm.FullFileName))
+    Dim pre    As String = asmBase & "-"
+
+    Dim dirs As New List(Of String)
+    Dim cnts As New List(Of Integer)
+
+    Try
+        For Each d As Inventor.Document In oAsm.AllReferencedDocuments
+
+            Dim fp As String = ""
+            Try
+                fp = d.FullFileName
+            Catch
+            End Try
+            If String.IsNullOrEmpty(fp) Then Continue For
+            If ContainsPath(exclude, fp) Then Continue For
+
+            Dim bn As String = System.IO.Path.GetFileNameWithoutExtension(fp)
+            If Not bn.StartsWith(pre, StringComparison.OrdinalIgnoreCase) Then Continue For
+
+            Dim dr As String = NormDir(System.IO.Path.GetDirectoryName(fp))
+            Dim k As Integer = IndexOfPath(dirs, dr)
+            If k < 0 Then
+                dirs.Add(dr)
+                cnts.Add(1)
+            Else
+                cnts(k) = cnts(k) + 1
+            End If
+        Next
+    Catch
+    End Try
+
+    If dirs.Count = 0 Then Return asmDir
+
+    Dim best As Integer = 0
+    For i As Integer = 1 To dirs.Count - 1
+        If cnts(i) > cnts(best) Then best = i
+    Next
+
+    Return dirs(best)
+
+End Function
+
+
+' ============================================================================
+'  폴더의 번호 체계를 읽는다
+'
+'  폴더의 .ipt / .iam / .idw / .dwg 파일 이름 중 "이름-숫자[리비전]" 꼴을 모아
+'    stem     : 번호 앞부분          예) GMKS-ST2601-ETR01
+'    maxNum   : 가장 큰 번호         예) 59
+'    width    : 번호 자릿수          예) 2
+'    lastName : 가장 큰 번호의 이름  예) GMKS-ST2601-ETR01-59A
+'  를 돌려준다.
+'
+'  이름 체계가 여럿이면
+'    1순위 : 조립도 이름과 같은 것 (preferStem)
+'    2순위 : 폴더에서 가장 많이 쓰인 것
+'  하나도 없으면 stem=preferStem, maxNum=0 (01 부터 시작).
+' ============================================================================
+Sub ScanNumbering(folder As String, preferStem As String, minWidth As Integer, _
+                  ByRef stem As String, ByRef maxNum As Integer, _
+                  ByRef width As Integer, ByRef lastName As String)
+
+    stem = preferStem
+    maxNum = 0
+    width = minWidth
+    lastName = ""
+
+    Dim eBase As New List(Of String)
+    Dim eStem As New List(Of String)
+    Dim eNum  As New List(Of Integer)
+    Dim eDig  As New List(Of Integer)
+
+    Dim files As String() = Nothing
+    Try
+        files = System.IO.Directory.GetFiles(folder)
+    Catch
+        Return
+    End Try
+
+    For Each f As String In files
+
+        Dim ext As String = System.IO.Path.GetExtension(f).ToLowerInvariant()
+        Dim isCad As Boolean = (ext = ".ipt" OrElse ext = ".iam" OrElse _
+                                ext = ".idw" OrElse ext = ".dwg")
+        If Not isCad Then Continue For
+
+        Dim bn As String = System.IO.Path.GetFileNameWithoutExtension(f)
+        Dim st As String = ""
+        Dim nu As Integer = 0
+        Dim dg As String = ""
+        If Not ParseNumbered(bn, st, nu, dg) Then Continue For
+
+        eBase.Add(bn)
+        eStem.Add(st)
+        eNum.Add(nu)
+        eDig.Add(dg.Length)
+    Next
+
+    If eStem.Count = 0 Then Return
+
+    ' 어떤 이름 체계를 따를지 정한다
+    Dim chosen As String = ""
+    For Each s2 As String In eStem
+        If String.Equals(s2, preferStem, StringComparison.OrdinalIgnoreCase) Then
+            chosen = preferStem
+            Exit For
+        End If
+    Next
+
+    If chosen = "" Then
+        Dim bestCnt As Integer = 0
+        For i As Integer = 0 To eStem.Count - 1
+            Dim c As Integer = 0
+            For j As Integer = 0 To eStem.Count - 1
+                If String.Equals(eStem(i), eStem(j), StringComparison.OrdinalIgnoreCase) Then c += 1
+            Next
+            If c > bestCnt Then
+                bestCnt = c
+                chosen = eStem(i)
+            End If
+        Next
+    End If
+
+    stem = chosen
+
+    For i As Integer = 0 To eStem.Count - 1
+        If Not String.Equals(eStem(i), chosen, StringComparison.OrdinalIgnoreCase) Then Continue For
+
+        If eDig(i) > width Then width = eDig(i)
+
+        ' 같은 번호면 (59, 59A) 뒤에 오는 이름을 보여준다
+        If eNum(i) > maxNum OrElse _
+           (eNum(i) = maxNum AndAlso _
+            String.Compare(eBase(i), lastName, StringComparison.OrdinalIgnoreCase) > 0) Then
+            maxNum = eNum(i)
+            lastName = eBase(i)
+        End If
+    Next
+
+End Sub
+
+
+' ============================================================================
+'  "이름-숫자[리비전]" 꼴의 파일 이름을 나눈다
+'
+'   GMKS-ST2601-ETR01-59    ->  stem=GMKS-ST2601-ETR01  num=59  digits="59"
+'   GMKS-ST2601-ETR01-59A   ->  stem=GMKS-ST2601-ETR01  num=59  digits="59"
+'   GMKS-ST2601-ETR01       ->  False  (마지막 칸이 숫자가 아님 - 조립도 이름)
+'
+'  정규식을 쓰지 않는다. 최신 .NET 에서는 별도 어셈블리라 iLogic 참조 목록에
+'  없을 수 있고, 그러면 또 컴파일이 깨진다.
+'  Char.IsDigit 도 쓰지 않는다. 전각 숫자 같은 것까지 숫자로 본다.
+' ============================================================================
+Function ParseNumbered(baseName As String, ByRef stem As String, _
+                       ByRef num As Integer, ByRef digits As String) As Boolean
+
+    stem = ""
+    num = 0
+    digits = ""
+
+    If String.IsNullOrWhiteSpace(baseName) Then Return False
+    Dim s As String = baseName.Trim()
+
+    ' 끝의 리비전 문자 (A~Z) 를 건너뛴다
+    Dim e As Integer = s.Length - 1
+    While e >= 0 AndAlso s.Chars(e) >= "A"c AndAlso s.Chars(e) <= "Z"c
+        e -= 1
+    End While
+    If e < 0 Then Return False
+
+    ' 그 앞의 숫자
+    Dim b As Integer = e
+    While b >= 0 AndAlso s.Chars(b) >= "0"c AndAlso s.Chars(b) <= "9"c
+        b -= 1
+    End While
+
+    If b = e Then Return False               ' 숫자가 없다
+    If b < 1 Then Return False               ' 하이픈 앞에 이름이 있어야 한다
+    If s.Chars(b) <> "-"c Then Return False  ' 숫자 바로 앞은 하이픈이어야 한다
+
+    digits = s.Substring(b + 1, e - b)
+    If digits.Length > 9 Then Return False
+    If Not Integer.TryParse(digits, num) Then Return False
+
+    stem = s.Substring(0, b)
+    Return True
+
+End Function
+
+
+' ============================================================================
+'  번호를 자릿수에 맞춰 0 으로 채운다    FormatNum(7, 2) -> "07"
+' ============================================================================
+Function FormatNum(n As Integer, w As Integer) As String
+    Return n.ToString().PadLeft(w, "0"c)
+End Function
+
+
+' ============================================================================
+'  폴더 경로 정리 - 끝의 \ 를 떼고 전체 경로로 바꾼다
+' ============================================================================
+Function NormDir(p As String) As String
+    If String.IsNullOrEmpty(p) Then Return ""
+    Dim r As String = p
+    Try
+        r = System.IO.Path.GetFullPath(p)
+    Catch
+    End Try
+    Return r.TrimEnd("\"c, "/"c)
+End Function
+
+
+' ============================================================================
+'  두 폴더가 같은지 (대소문자 무시)
+' ============================================================================
+Function SameFolder(a As String, b As String) As Boolean
+    Return String.Equals(NormDir(a), NormDir(b), StringComparison.OrdinalIgnoreCase)
+End Function
+
+
+' ============================================================================
+'  경로 목록에서 위치 찾기 (대소문자 무시). 없으면 -1
+' ============================================================================
+Function IndexOfPath(list As List(Of String), p As String) As Integer
+    For i As Integer = 0 To list.Count - 1
+        If String.Equals(list(i), p, StringComparison.OrdinalIgnoreCase) Then Return i
+    Next
+    Return -1
+End Function
+
+
+' ============================================================================
+'  폴더가 지금 프로젝트(IPJ) 작업공간 안에 있는지
+'  알 수 없으면 True (괜히 경고하지 않는다)
+' ============================================================================
+Function IsUnderWorkspace(dir As String) As Boolean
+    Try
+        Dim ws As String = ThisApplication.DesignProjectManager.ActiveDesignProject.WorkspacePath
+        If String.IsNullOrWhiteSpace(ws) Then Return True
+        If Not System.IO.Path.IsPathRooted(ws) Then Return True
+
+        Dim a As String = NormDir(dir) & "\"
+        Dim b As String = NormDir(ws) & "\"
+        Return a.StartsWith(b, StringComparison.OrdinalIgnoreCase)
+    Catch
+        Return True
+    End Try
+End Function
+
+
+' ============================================================================
+'  다른 저장 폴더를 고른다. 취소하면 "" 를 돌려준다.
+'
+'  Using 문을 쓰지 않는다. Using 은 IDisposable 로의 인터페이스 변환이라
+'  AcceptButton 과 같은 이유로 Inventor 2026 에서 컴파일이 깨질 수 있다.
+'  폴더 창을 못 띄우면 경로를 직접 입력받는다.
+' ============================================================================
+Function PickFolder(startDir As String) As String
+
+    Dim fbd As System.Windows.Forms.FolderBrowserDialog = Nothing
+
+    Try
+        fbd = New System.Windows.Forms.FolderBrowserDialog()
+        fbd.Description = "가져온 부품을 저장할 폴더를 선택하세요."
+        fbd.ShowNewFolderButton = True
+        If System.IO.Directory.Exists(startDir) Then fbd.SelectedPath = startDir
+
+        If fbd.ShowDialog() = System.Windows.Forms.DialogResult.OK Then
+            Return fbd.SelectedPath
+        End If
+        Return ""
+
+    Catch
+        ' 아래에서 직접 입력받는다
+
+    Finally
+        If fbd IsNot Nothing Then
+            Try
+                fbd.Dispose()
+            Catch
+            End Try
+        End If
+    End Try
+
+    Dim typed As String = InputBox("저장할 폴더 경로를 입력하세요.", "저장 폴더", startDir)
+    If String.IsNullOrWhiteSpace(typed) Then Return ""
+    typed = typed.Trim()
+
+    If Not System.IO.Directory.Exists(typed) Then
+        MessageBox.Show("폴더가 없습니다." & vbCrLf & typed, "저장 폴더")
+        Return ""
+    End If
+
+    Return typed
+
+End Function
+
+
+' ============================================================================
+'  이 조립도 최상위에서 해당 부품의 배치 수와 그중 선택된 수를 센다
+'  (다른 조립도는 보지 않는다)
+' ============================================================================
+Sub CountInAssembly(oAsm As Inventor.AssemblyDocument, oldPath As String, _
+                    selOccs As List(Of Inventor.ComponentOccurrence), _
+                    asmPath As String, _
+                    ByRef total As Integer, ByRef mine As Integer)
+
+    total = 0
+    mine = 0
+
+    Try
+        For Each occ As Inventor.ComponentOccurrence In oAsm.ComponentDefinition.Occurrences
+            Try
+                If String.Equals(occ.Definition.Document.FullFileName, oldPath, _
+                                 StringComparison.OrdinalIgnoreCase) Then
+                    total += 1
+                    If IsSelected(occ, selOccs, asmPath, asmPath) Then mine += 1
+                End If
+            Catch
+            End Try
+        Next
+    Catch
+    End Try
+
+End Sub
+
+
+' ============================================================================
+'  이 조립도 최상위에서만 oldPath 부품을 newPath 로 대치한다
+'
+'  원래 유닛 조립도가 열려 있어도 건드리지 않는다. 리비전 생성 규칙은 열려있는
+'  모든 조립도를 대치하는데, 여기서 그렇게 하면 원래 유닛의 부품까지 새 유닛
+'  번호로 바뀌어 버린다.
+'
+'  반환 : 대치한 구성요소 수 / 오류 시 -1.  failCnt 에 실패 개수.
+' ============================================================================
+Function ReplaceInAssembly(oAsm As Inventor.AssemblyDocument, _
+                           oldPath As String, newPath As String, _
+                           selOccs As List(Of Inventor.ComponentOccurrence), _
+                           asmPath As String, onlySelected As Boolean, _
+                           ByRef failCnt As Integer) As Integer
+
+    failCnt = 0
+
+    ' 대치 중 컬렉션이 변하므로 대상을 먼저 모아둔다
+    Dim victims As New List(Of Inventor.ComponentOccurrence)
+
+    Try
+        For Each occ As Inventor.ComponentOccurrence In oAsm.ComponentDefinition.Occurrences
+            Try
+                If String.Equals(occ.Definition.Document.FullFileName, oldPath, _
+                                 StringComparison.OrdinalIgnoreCase) Then
+                    If (Not onlySelected) OrElse IsSelected(occ, selOccs, asmPath, asmPath) Then
+                        victims.Add(occ)
+                    End If
+                End If
+            Catch
+            End Try
+        Next
+    Catch
+        Return -1
+    End Try
+
+    Dim done As Integer = 0
+
+    For Each v As Inventor.ComponentOccurrence In victims
+        Try
+            v.Replace(newPath, False)      ' 하나씩 - 개수를 정확히 셀 수 있다
+            done += 1
+        Catch
+            failCnt += 1
+        End Try
+    Next
+
+    Return done
+
+End Function
+
+
+' ============================================================================
+'  새 번호를 한 창에서 모두 편집한다
+'  왼쪽에 원래 번호, 오른쪽 입력칸에 자동으로 정한 새 번호가 채워져 있다.
+'
+'  확인을 누르면 아래를 검사하고, 문제가 있으면 창을 닫지 않는다.
+'    - 파일명에 쓸 수 없는 문자
+'    - 원래 부품번호와 같음  (같은 이름이 두 폴더에 생기면 인벤터가 헷갈린다)
+'    - 목록 안에서 중복
+'    - 대상 폴더에 같은 이름의 파일이 이미 있음
+'  빈칸은 자동으로 정한 번호를 그대로 쓴다.
+'
+'  반환 : 확인=True (editPNs 갱신) / 취소=False
+' ============================================================================
+Function EditNewNumbers(curPNs As List(Of String), _
+                        mdlExts As List(Of String), _
+                        drwExts As List(Of String), _
+                        tgtDir As String, _
+                        ByRef editPNs As List(Of String)) As Boolean
+
+    Dim n As Integer = curPNs.Count
+
+    ' 자동 번호 보관 - 빈칸일 때 되돌릴 기준
+    Dim autoPNs As New List(Of String)
+    For i As Integer = 0 To n - 1
+        autoPNs.Add(editPNs(i))
+    Next
+
+    Dim rowH As Integer = 30
+    Dim listH As Integer = n * rowH
+    If listH > 400 Then listH = 400
+    If listH < 40 Then listH = 40
+
+    Dim frm As New System.Windows.Forms.Form
+    Dim ok As Boolean = False
+
+    Try
+        frm.Text = "새 번호 확인"
+        frm.Width = 720
+        frm.Height = listH + 166
+        frm.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen
+        frm.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog
+        frm.MinimizeBox = False
+        frm.MaximizeBox = False
+        frm.TopMost = True
+
+        Dim lbl As New System.Windows.Forms.Label
+        lbl.Text = "자동으로 정한 새 번호입니다. 필요하면 오른쪽 칸에서 수정하세요." & vbCrLf & _
+                   "저장 폴더 : " & tgtDir
+        lbl.SetBounds(12, 12, 680, 36)
+        frm.Controls.Add(lbl)
+
+        ' 스크롤 가능한 영역
+        Dim pnl As New System.Windows.Forms.Panel
+        pnl.SetBounds(12, 54, 686, listH)
+        pnl.AutoScroll = True
+        frm.Controls.Add(pnl)
+
+        Dim boxes As New List(Of System.Windows.Forms.TextBox)
+
+        For i As Integer = 0 To n - 1
+
+            Dim src As New System.Windows.Forms.Label
+            src.Text = curPNs(i) & "   →"
+            src.SetBounds(4, i * rowH + 6, 300, 20)
+            pnl.Controls.Add(src)
+
+            Dim tb As New System.Windows.Forms.TextBox
+            tb.Text = editPNs(i)
+            tb.SetBounds(310, i * rowH + 3, 340, 24)
+            pnl.Controls.Add(tb)
+
+            boxes.Add(tb)
+        Next
+
+        Dim btnOK As New System.Windows.Forms.Button
+        btnOK.Text = "확인"
+        btnOK.SetBounds(494, listH + 68, 92, 32)
+        btnOK.DialogResult = System.Windows.Forms.DialogResult.OK
+        frm.Controls.Add(btnOK)
+
+        Dim btnCancel As New System.Windows.Forms.Button
+        btnCancel.Text = "취소"
+        btnCancel.SetBounds(598, listH + 68, 92, 32)
+        btnCancel.DialogResult = System.Windows.Forms.DialogResult.Cancel
+        frm.Controls.Add(btnCancel)
+
+        SetDefaultButtons(frm, btnOK, btnCancel)   ' Enter / Esc
+
+        Dim bad As Char() = System.IO.Path.GetInvalidFileNameChars()
+
+        ' 검사를 통과할 때까지 다시 보여준다
+        Do
+            Dim res As System.Windows.Forms.DialogResult = frm.ShowDialog()
+            If res <> System.Windows.Forms.DialogResult.OK Then Exit Do
+
+            Dim vals As New List(Of String)
+            Dim err  As String = ""
+
+            For i As Integer = 0 To n - 1
+                Dim v As String = boxes(i).Text
+                If v Is Nothing Then v = ""
+                v = v.Trim()
+                If v = "" Then v = autoPNs(i)     ' 빈칸이면 자동 번호
+                vals.Add(v)
+            Next
+
+            For i As Integer = 0 To n - 1
+
+                Dim v As String = vals(i)
+
+                If v = "" Then
+                    err &= "· " & curPNs(i) & " : 새 번호가 비어 있습니다" & vbCrLf
+                    Continue For
+                End If
+
+                If v.IndexOfAny(bad) >= 0 Then
+                    err &= "· " & v & " : 파일명에 쓸 수 없는 문자가 있습니다" & vbCrLf
+                    Continue For
+                End If
+
+                If String.Equals(v, curPNs(i), StringComparison.OrdinalIgnoreCase) Then
+                    err &= "· " & v & " : 원래 부품번호와 같습니다" & vbCrLf
+                    Continue For
+                End If
+
+                For j As Integer = 0 To i - 1
+                    If String.Equals(v, vals(j), StringComparison.OrdinalIgnoreCase) Then
+                        err &= "· " & v & " : 목록 안에서 중복됩니다 (" & (j + 1) & "번, " & (i + 1) & "번)" & vbCrLf
+                        Exit For
+                    End If
+                Next
+
+                Try
+                    If System.IO.File.Exists(System.IO.Path.Combine(tgtDir, v & mdlExts(i))) Then
+                        err &= "· " & v & mdlExts(i) & " : 대상 폴더에 같은 이름의 파일이 이미 있습니다" & vbCrLf
+                    End If
+                    If System.IO.File.Exists(System.IO.Path.Combine(tgtDir, v & drwExts(i))) Then
+                        err &= "· " & v & drwExts(i) & " : 대상 폴더에 같은 이름의 파일이 이미 있습니다" & vbCrLf
+                    End If
+                Catch
+                    err &= "· " & v & " : 경로를 만들 수 없습니다" & vbCrLf
+                End Try
+
+            Next
+
+            If err = "" Then
+                For i As Integer = 0 To n - 1
+                    editPNs(i) = vals(i)
+                Next
+                ok = True
+                Exit Do
+            End If
+
+            MessageBox.Show("아래 항목을 고쳐 주세요." & vbCrLf & vbCrLf & err, "새 번호 확인")
+        Loop
+
+    Finally
+        frm.Dispose()
+    End Try
+
+    Return ok
+
+End Function
+
+
+' ############################################################################
+'  아래는 리비전 생성 규칙과 똑같은 함수들이다.
+'  주석의 [E] [M] [N] [O] 같은 표시는 리비전 생성 규칙의 머리말에 설명되어 있다.
+' ############################################################################
+' ============================================================================
+'  해당 배치가 사용자가 선택한 것인지 판정
+'
+'  [E] 배치 이름(Part1:1)은 한 조립도 안에서만 고유하다. 이름만 비교하면
+'      다른 조립도에 있는 동명 배치까지 선택된 것으로 판정된다.
+'
+'  [M] 앞선 수정에서는 occ.Parent.Document 로 소속 조립도를 알아냈다.
+'      그런데 선택한 개체와 열거한 개체가 서로 다른 값을 내놓으면 판정이
+'      통째로 실패해 선택된 개수가 0 이 되고, 그 결과
+'      "선택한 것만 대치 / 전부 대치" 질문이 아예 뜨지 않은 채
+'      조용히 전부 대치로 넘어갔다.
+'
+'      이제 소속 문서를 구성요소에게 되묻지 않는다.
+'        · 열거 중인 개체의 소속 = 지금 훑고 있는 조립도 문서 (asmPath)
+'        · 선택한 개체의 소속     = 실행 시점의 활성 문서 (selOwner)
+'      둘 다 호출하는 쪽이 확실히 아는 값이므로 판정이 흔들리지 않는다.
+' ============================================================================
+Function IsSelected(v As Inventor.ComponentOccurrence, _
+                    selOccs As List(Of Inventor.ComponentOccurrence), _
+                    asmPath As String, selOwner As String) As Boolean
+
+    If selOccs Is Nothing OrElse selOccs.Count = 0 Then Return False
+
+    ' 같은 개체를 가리키면 그것으로 끝.
+    ' COM 은 같은 대상이라도 래퍼가 달라 실패할 수 있어 이름 비교가 더 필요하다.
+    For Each sel As Inventor.ComponentOccurrence In selOccs
+        Try
+            If v Is sel Then Return True
+        Catch
+        End Try
+    Next
+
+    ' 이름 비교는 선택이 이루어진 그 조립도 안에서만 유효하다.
+    ' 소속을 알 수 없을 때(selOwner 가 빈 값)는 예전처럼 이름만으로 판정한다.
+    If selOwner <> "" AndAlso asmPath <> "" AndAlso _
+       Not String.Equals(asmPath, selOwner, StringComparison.OrdinalIgnoreCase) Then
+        Return False
+    End If
+
+    Dim vn As String = ""
+    Try
+        vn = v.Name
+    Catch
+        Return False
+    End Try
+    If vn = "" Then Return False
+
+    For Each sel As Inventor.ComponentOccurrence In selOccs
+        Try
+            If String.Equals(vn, sel.Name, StringComparison.Ordinal) Then Return True
+        Catch
+        End Try
+    Next
+
+    Return False
+
+End Function
+
+
+' ============================================================================
+'  부품번호 읽기 / 쓰기
+'  읽기에 실패하면 "" 를 돌려준다 (예전의 "읽기실패" 문자열 판정은 위험했다)
+' ============================================================================
+Function ReadPN(d As Inventor.Document) As String
+    Try
+        Return CStr(d.PropertySets.Item("Design Tracking Properties").Item("Part Number").Value)
+    Catch
+        Return ""
+    End Try
+End Function
+
+
+Sub WritePN(d As Inventor.Document, v As String)
+    d.PropertySets.Item("Design Tracking Properties").Item("Part Number").Value = v
+End Sub
+
+
+' ============================================================================
+'  경로 목록에 해당 경로가 있는지 (대소문자 무시)
+' ============================================================================
+Function ContainsPath(list As List(Of String), p As String) As Boolean
+    If list Is Nothing OrElse String.IsNullOrEmpty(p) Then Return False
+    For Each s As String In list
+        If String.Equals(s, p, StringComparison.OrdinalIgnoreCase) Then Return True
+    Next
+    Return False
+End Function
+
+
+' ============================================================================
+'  규칙이 직접 연 도면을 도로 닫는다.  [N]
+'  취소했을 때 실행 전 상태로 되돌리기 위한 것이다.
+'  원래 열려있던 도면은 목록에 없으므로 건드리지 않는다.
+'  아직 아무것도 고치지 않은 문서들이라 저장 없이 닫아도 잃을 것이 없다.
+' ============================================================================
+Sub CloseOpenedDrawings(opened As List(Of Inventor.DrawingDocument))
+
+    If opened Is Nothing Then Return
+
+    For Each d As Inventor.DrawingDocument In opened
+        Try
+            d.Close(True)      ' True = 저장하지 않고 닫기
+        Catch
+        End Try
+    Next
+
+    opened.Clear()
+
+End Sub
+
+
+' ============================================================================
+'  Enter / Esc 기본 버튼 지정                                           [O]
+'
+'  Inventor 2026 의 iLogic 은 최신 .NET 으로 컴파일한다. 그 WinForms 에서는
+'  Control 이 System.Private.Windows.Core 안의 내부 인터페이스
+'  (IHandle(Of ), IPersist.Interface) 를 구현하도록 바뀌었다.
+'
+'      frm.AcceptButton = btnOK
+'
+'  이 한 줄은 Button 을 IButtonControl 로 바꾸는 인터페이스 변환이다.
+'  컴파일러는 변환이 되는지 보려고 Button 이 구현한 인터페이스를 전부 훑는데,
+'  그 목록에 참조되지 않은 어셈블리의 타입이 끼어 있어 컴파일이 깨진다.
+'  iLogic 은 그 어셈블리를 참조하지 않는다.
+'
+'      "System.Private.Windows.Core ... 어셈블리에 대한 참조를 찾을 수 없습니다"
+'
+'  Text / Width / DialogResult 같은 값 대입은 인터페이스 변환이 아니라서
+'  멀쩡하다. 그래서 딱 이 두 줄만 오류가 났다.
+'
+'  리플렉션으로 넘기면 컴파일 시점에 인터페이스 목록을 들여다보지 않으므로
+'  문제가 사라진다. 실행 시점에는 어셈블리가 이미 메모리에 있어 정상 동작한다.
+'  혹시 실패하더라도 두 버튼에 DialogResult 가 이미 지정되어 있어
+'  마우스 클릭과 창 닫기(X)로는 그대로 동작한다.
+' ============================================================================
+Sub SetDefaultButtons(frm As System.Windows.Forms.Form, _
+                      okBtn As System.Windows.Forms.Button, _
+                      cancelBtn As System.Windows.Forms.Button)
+
+    ' Enter -> 확인
+    Try
+        frm.GetType().GetProperty("AcceptButton").SetValue(frm, okBtn)
+    Catch
+    End Try
+
+    ' Esc -> 취소
+    Try
+        frm.GetType().GetProperty("CancelButton").SetValue(frm, cancelBtn)
+    Catch
+    End Try
+
+End Sub
+
+
+' ============================================================================
+'  문서를 조용히 닫는다 (실패해도 무시)
+' ============================================================================
+Sub TryCloseDoc(d As Inventor.Document)
+    If d Is Nothing Then Return
+    Try
+        d.Close(True)      ' True = 저장하지 않고 닫기
+    Catch
+    End Try
+End Sub
+
+
+' ============================================================================
+'  모델 파일과 같은 이름의 도면 파일을 찾는다
+'  (도면 파일명은 항상 모델과 같다는 사내 규칙에 기반)
+'  찾으면 전체 경로를, 없으면 "" 를 반환한다
+' ============================================================================
+Function FindDrawingFor(modelPath As String) As String
+
+    Try
+        Dim dir  As String = System.IO.Path.GetDirectoryName(modelPath)
+        Dim base As String = System.IO.Path.GetFileNameWithoutExtension(modelPath)
+
+        Dim c1 As String = System.IO.Path.Combine(dir, base & ".idw")
+        If System.IO.File.Exists(c1) Then Return c1
+
+        Dim c2 As String = System.IO.Path.Combine(dir, base & ".dwg")
+        If System.IO.File.Exists(c2) Then Return c2
+    Catch
+    End Try
+
+    Return ""
+
+End Function
+
+
+' ============================================================================
+'  도면 파일을 연다. 이미 열려있으면 그 문서를 그대로 반환한다.
+'  실패하면 Nothing 을 반환한다.
+'
+'  justOpened : 이 호출이 직접 연 것이면 True.
+'               취소했을 때 규칙이 연 도면만 골라 닫기 위해 필요하다.  [N]
+' ============================================================================
+Function OpenDrawingDoc(dwgPath As String, ByRef justOpened As Boolean) As Inventor.DrawingDocument
+
+    justOpened = False
+
+    ' 이미 열려있는지 먼저 확인
+    Try
+        For Each oDoc As Inventor.Document In ThisApplication.Documents
+            If oDoc.DocumentType <> Inventor.DocumentTypeEnum.kDrawingDocumentObject Then Continue For
+            Try
+                If String.Equals(oDoc.FullFileName, dwgPath, StringComparison.OrdinalIgnoreCase) Then
+                    Return CType(oDoc, Inventor.DrawingDocument)
+                End If
+            Catch
+            End Try
+        Next
+    Catch
+    End Try
+
+    ' 없으면 새로 연다 (화면에 표시)
+    Try
+        Dim d As Inventor.DrawingDocument = _
+            CType(ThisApplication.Documents.Open(dwgPath, True), Inventor.DrawingDocument)
+        justOpened = True
+        Return d
+    Catch
+        Return Nothing
+    End Try
+
+End Function
+
+
+' ============================================================================
+'  오류 메시지에서 원인을 추정해 대처법을 덧붙인다
+'  COM 오류 코드만으로는 원인을 알기 어려우므로 안내를 제공한다
+' ============================================================================
+Function Hint(errMsg As String) As String
+
+    If errMsg Is Nothing Then Return ""
+
+    ' E_INVALIDARG : 지워진 파일의 참조가 메모리에 남아있을 때 자주 발생
+    If errMsg.IndexOf("0x80070057", StringComparison.OrdinalIgnoreCase) >= 0 _
+       OrElse errMsg.IndexOf("E_INVALIDARG", StringComparison.OrdinalIgnoreCase) >= 0 _
+       OrElse errMsg.IndexOf("매개 변수가 틀립니다", StringComparison.Ordinal) >= 0 Then
+
+        Return "     ┗ 대처 : 인벤터를 완전히 종료했다가 다시 켠 뒤 시도하세요." & vbCrLf & _
+               "            이전에 만든 리비전 파일을 지웠거나 참조가 깨진 상태에서" & vbCrLf & _
+               "            자주 발생합니다. 파일을 지워도 인벤터는 그 참조를" & vbCrLf & _
+               "            메모리에 계속 들고 있기 때문입니다." & vbCrLf
+    End If
+
+    ' 접근 거부 / 읽기 전용
+    If errMsg.IndexOf("0x80070005", StringComparison.OrdinalIgnoreCase) >= 0 _
+       OrElse errMsg.IndexOf("액세스", StringComparison.Ordinal) >= 0 _
+       OrElse errMsg.IndexOf("denied", StringComparison.OrdinalIgnoreCase) >= 0 Then
+
+        Return "     ┗ 대처 : 파일이 읽기 전용이거나 권한이 없습니다." & vbCrLf & _
+               "            Vault 체크아웃 상태와 폴더 쓰기 권한을 확인하세요." & vbCrLf
+    End If
+
+    ' 파일 사용 중
+    If errMsg.IndexOf("0x80070020", StringComparison.OrdinalIgnoreCase) >= 0 _
+       OrElse errMsg.IndexOf("사용 중", StringComparison.Ordinal) >= 0 Then
+
+        Return "     ┗ 대처 : 다른 프로그램이 파일을 사용 중입니다." & vbCrLf & _
+               "            해당 파일을 쓰는 프로그램을 닫고 다시 시도하세요." & vbCrLf
+    End If
+
+    Return ""
+
+End Function
+
+
+' ============================================================================
+'  임의 iProperty 읽기 / 쓰기  (Description 등)
+' ============================================================================
+Function ReadProp(d As Inventor.Document, pname As String) As String
+    Try
+        Return CStr(d.PropertySets.Item("Design Tracking Properties").Item(pname).Value)
+    Catch
+        Return ""
+    End Try
+End Function
+
+
+Sub WriteProp(d As Inventor.Document, pname As String, v As String)
+    d.PropertySets.Item("Design Tracking Properties").Item(pname).Value = v
+End Sub
+
+
+' ============================================================================
+'  설명의 태그 상태를 목표대로 맞춘다 (양방향)
+'
+'   want=True  : 태그가 없으면 끝에 붙인다. 이미 있으면 그대로 둔다.
+'   want=False : 태그가 있으면 모두 떼어낸다. 없으면 그대로 둔다.
+'
+'  이전 리비전에서 붙은 (현품수정) 이 다음 리비전까지 따라오는 것을 막는다.
+'  태그가 중간에 있든 끝에 있든, 여러 번 붙어 있든 모두 제거한다.
+' ============================================================================
+Function ApplyTag(src As String, tag As String, want As Boolean) As String
+
+    If src Is Nothing Then src = ""
+    If String.IsNullOrEmpty(tag) Then Return src
+
+    If want Then
+        ' 붙이기 - 이미 있으면 그대로
+        If src.IndexOf(tag, StringComparison.Ordinal) >= 0 Then Return src
+        Return src.TrimEnd() & tag
+    End If
+
+    ' 떼기 - 여러 번 붙어 있어도 전부 제거
+    Dim res As String = src
+    Do While res.IndexOf(tag, StringComparison.Ordinal) >= 0
+        res = res.Replace(tag, "")
+    Loop
+
+    ' 태그를 떼면서 생긴 두 칸 공백을 정리한다
+    Do While res.IndexOf("  ", StringComparison.Ordinal) >= 0
+        res = res.Replace("  ", " ")
+    Loop
+
+    Return res.Trim()
+
+End Function
+
+
+' ============================================================================
+'  체크박스 목록 - 항목마다 초기 체크 상태를 따로 지정한다
+'  (기존 PickList 는 전체 일괄 체크만 가능)
+'  반환 : 선택된 인덱스 목록 / 취소하면 Nothing
+' ============================================================================
+Function PickListPre(names As List(Of String), prompt As String, _
+                     preChecked As List(Of Boolean), _
+                     checkText As String, ByRef checkValue As Boolean) As List(Of Integer)
+
+    Dim frm As New System.Windows.Forms.Form
+    Dim picked As List(Of Integer) = Nothing
+
+    Try
+        frm.Text = "가져온 부품 새 번호로 저장"
+        frm.Width  = 720
+        frm.Height = 480
+        frm.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen
+        frm.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog
+        frm.MinimizeBox = False
+        frm.MaximizeBox = False
+        frm.TopMost = True
+
+        Dim lbl As New System.Windows.Forms.Label
+        lbl.Text = prompt
+        lbl.SetBounds(12, 12, 686, 36)
+
+        Dim clb As New System.Windows.Forms.CheckedListBox
+        clb.SetBounds(12, 52, 686, 326)
+        clb.CheckOnClick = True
+
+        For i As Integer = 0 To names.Count - 1
+            Dim ck As Boolean = False
+            If preChecked IsNot Nothing AndAlso i < preChecked.Count Then ck = preChecked(i)
+            clb.Items.Add(names(i), ck)
+        Next
+
+        Dim chk As System.Windows.Forms.CheckBox = Nothing
+        If checkText <> "" Then
+            chk = New System.Windows.Forms.CheckBox
+            chk.Text = checkText
+            chk.Checked = checkValue
+            chk.SetBounds(12, 398, 320, 24)
+            frm.Controls.Add(chk)
+        End If
+
+        Dim btnOK As New System.Windows.Forms.Button
+        btnOK.Text = "확인"
+        btnOK.SetBounds(494, 392, 92, 32)
+        btnOK.DialogResult = System.Windows.Forms.DialogResult.OK
+
+        Dim btnCancel As New System.Windows.Forms.Button
+        btnCancel.Text = "취소"
+        btnCancel.SetBounds(598, 392, 92, 32)
+        btnCancel.DialogResult = System.Windows.Forms.DialogResult.Cancel
+
+        frm.Controls.Add(lbl)
+        frm.Controls.Add(clb)
+        frm.Controls.Add(btnOK)
+        frm.Controls.Add(btnCancel)
+        SetDefaultButtons(frm, btnOK, btnCancel)   ' [O] Enter / Esc
+
+        Dim result As System.Windows.Forms.DialogResult = frm.ShowDialog()
+
+        If result = System.Windows.Forms.DialogResult.OK Then
+            picked = New List(Of Integer)
+            For Each ix As Integer In clb.CheckedIndices
+                picked.Add(ix)
+            Next
+            If chk IsNot Nothing Then checkValue = chk.Checked
+        End If
+
+    Finally
+        frm.Dispose()
+    End Try
+
+    Return picked
+
+End Function
