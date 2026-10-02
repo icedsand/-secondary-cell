@@ -1,5 +1,7 @@
 ' ============================================================================
-'  Inventor iLogic Rule : 가져온 부품 새 번호로 저장(made by pjh)
+'  Inventor iLogic Rule : 부품편입(made by pjh)
+'
+'   다른 유닛의 부품을 이 유닛 소속으로 받아들이고 이 유닛 번호를 새로 준다.
 '
 '  [언제 쓰나]
 '   다른 유닛 조립도에서 부품을 복사해 지금 조립도에 붙여넣으면, 그 부품은
@@ -69,6 +71,11 @@
 '     AcceptButton 과 같은 컴파일 오류가 날 수 있다.
 '   - Enter / Esc 버튼은 리플렉션으로 지정한다 (SetDefaultButtons)
 '
+'  [변수 이름 주의]
+'   VB 는 대소문자를 구분하지 않는다. eNum 은 Enum, eNd 는 End 로 읽힌다.
+'   예약어와 철자가 같은 이름은 대소문자를 바꿔도 쓸 수 없다.
+'   (처음 판에서 eNum 변수 하나 때문에 컴파일 오류가 40줄 넘게 났다)
+'
 '  [iLogic 문법 주의]
 '   Inventor 네임스페이스에도 Path / File / Environment 타입이 있으므로
 '   System.IO.Path 처럼 반드시 풀네임으로 씁니다.
@@ -92,7 +99,7 @@ Sub Main()
     Dim WRITE_LOG        As Boolean = True   ' 바탕화면에 로그 남기기
     ' ────────────────────────────────────────────────────────────────────────
 
-    Dim TTL As String = "가져온 부품 새 번호로 저장"
+    Dim TTL As String = "부품편입"
 
     '--- 1) 지금 조립도와 선택 확인 ------------------------------------------
     Dim oAct As Inventor.Document = Nothing
@@ -825,7 +832,7 @@ Sub Main()
     End Try
 
     '--- 12) 결과 보고 -------------------------------------------------------
-    Dim msg As String = "가져온 부품 저장 완료  (" & okCount & " / " & models.Count & "건)" & vbCrLf & _
+    Dim msg As String = "부품편입 완료  (" & okCount & " / " & models.Count & "건)" & vbCrLf & _
                         "저장 폴더 : " & tgtDir & vbCrLf & logTxt
 
     If orphan.Count > 0 Then
@@ -846,9 +853,9 @@ Sub Main()
         Try
             Dim lf As String = System.IO.Path.Combine( _
                 System.Environment.GetFolderPath(System.Environment.SpecialFolder.DesktopDirectory), _
-                "가져온부품_로그.txt")
+                "부품편입_로그.txt")
             System.IO.File.WriteAllText(lf, msg, System.Text.Encoding.UTF8)
-            msg &= vbCrLf & vbCrLf & "※ 바탕화면에 로그 저장됨 : 가져온부품_로그.txt"
+            msg &= vbCrLf & vbCrLf & "※ 바탕화면에 로그 저장됨 : 부품편입_로그.txt"
         Catch ex As Exception
             msg &= vbCrLf & vbCrLf & "※ 로그 저장 실패 : " & ex.Message
         End Try
@@ -939,7 +946,7 @@ Sub ScanNumbering(folder As String, preferStem As String, minWidth As Integer, _
 
     Dim eBase As New List(Of String)
     Dim eStem As New List(Of String)
-    Dim eNum  As New List(Of Integer)
+    Dim eNo  As New List(Of Integer)
     Dim eDig  As New List(Of Integer)
 
     Dim files As String() = Nothing
@@ -964,7 +971,7 @@ Sub ScanNumbering(folder As String, preferStem As String, minWidth As Integer, _
 
         eBase.Add(bn)
         eStem.Add(st)
-        eNum.Add(nu)
+        eNo.Add(nu)
         eDig.Add(dg.Length)
     Next
 
@@ -1001,10 +1008,10 @@ Sub ScanNumbering(folder As String, preferStem As String, minWidth As Integer, _
         If eDig(i) > width Then width = eDig(i)
 
         ' 같은 번호면 (59, 59A) 뒤에 오는 이름을 보여준다
-        If eNum(i) > maxNum OrElse _
-           (eNum(i) = maxNum AndAlso _
+        If eNo(i) > maxNum OrElse _
+           (eNo(i) = maxNum AndAlso _
             String.Compare(eBase(i), lastName, StringComparison.OrdinalIgnoreCase) > 0) Then
-            maxNum = eNum(i)
+            maxNum = eNo(i)
             lastName = eBase(i)
         End If
     Next
@@ -1753,7 +1760,7 @@ Function PickListPre(names As List(Of String), prompt As String, _
     Dim picked As List(Of Integer) = Nothing
 
     Try
-        frm.Text = "가져온 부품 새 번호로 저장"
+        frm.Text = "부품편입"
         frm.Width  = 720
         frm.Height = 480
         frm.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen
