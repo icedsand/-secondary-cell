@@ -1,0 +1,450 @@
+' ============================================================================
+'  Inventor iLogic Rule : 캐시 정리(made by pjh)
+'
+'  [문제]
+'   리비전을 만든 뒤 탐색기에서 그 파일을 지우면 인벤터 메모리에는 그 문서가
+'   그대로 남아 있다. 같은 이름으로 다시 만들려 하면 메모리에 남은 문서와
+'   부딪혀 SaveAs 가 실패한다 (0x80070057 / 매개 변수가 틀립니다).
+'   그래서 지금까지는 인벤터를 껐다 켜야 했다.
+'
+'  [왜 남아 있나]
+'   인벤터는 문서 탭을 닫아도, 다른 열린 문서가 그 파일을 참조하고 있으면
+'   메모리에서 내리지 않는다. 리비전 생성 규칙은 조립도의 구성요소를 새 부품으로
+'   바꾸므로, 조립도가 열려 있는 동안 새 부품은 탭을 닫아도 숨은 채로 남는다.
+'
+'  [이 규칙이 하는 일]
+'   1) 메모리에 올라와 있지만 디스크에서는 지워진 문서를 찾는다
+'   2) 아무도 쓰지 않는 것은 저장하지 않고 닫는다 (메모리에서 내린다)
+'      지워진 도면이 지워진 부품을 참조하는 경우처럼, 지워진 것끼리 물려 있으면
+'      참조하는 쪽부터 차례로 닫는다.
+'   3) 아직 지워지지 않은 문서가 쓰고 있는 것은 어떤 문서인지 알려준다
+'      -> 그 문서 하나만 저장하지 않고 닫았다 다시 열면 된다.
+'         인벤터 전체를 껐다 켤 필요는 없다.
+'
+'  [안전]
+'   - 디스크에 파일이 있는 문서는 건드리지 않는다
+'   - 폴더째 보이지 않는 문서도 건드리지 않는다. 네트워크 드라이브가 잠깐
+'     끊겼을 때 모든 문서가 "지워진 것" 처럼 보이는 것을 막기 위해서다.
+'   - 닫기 전에 목록을 보여주고 확인받는다.
+'     화면에 열린 탭이나 저장 안 된 변경이 있는 것은 따로 표시한다.
+'   - 저장하지 않고 닫는다. 파일이 이미 지워졌으므로 저장하면 지운 파일이
+'     되살아난다.
+'
+'  [Inventor 2026 주의]
+'   폼을 쓰지 않고 MessageBox 만 쓴다. 이번 이관에서 깨진 구문
+'   (AcceptButton, Registry, Regex, Using) 을 하나도 쓰지 않는다.
+'
+'  [iLogic 문법 주의]
+'   Inventor 네임스페이스에도 Path / File 타입이 있으므로
+'   System.IO.Path 처럼 반드시 풀네임으로 씁니다.
+'   Sub / Function 바깥에는 Const, Dim 선언을 둘 수 없습니다.
+' ============================================================================
+
+
+Sub Main()
+
+    ' ── 설정 ────────────────────────────────────────────────────────────────
+    Dim LIST_MAX As Integer = 25     ' 확인 창에 보여줄 목록 최대 줄 수
+    ' ────────────────────────────────────────────────────────────────────────
+
+    Dim TTL As String = "캐시 정리"
+
+    '--- 1) 메모리의 문서 중 디스크에서 지워진 것 찾기 ----------------------
+    Dim ghosts As New List(Of Inventor.Document)
+    Dim gPaths As New List(Of String)
+
+    For Each d As Inventor.Document In SnapshotDocs()
+
+        Dim fp As String = DocPath(d)
+        If fp = "" Then Continue For               ' 아직 한 번도 저장 안 한 새 문서
+
+        If IndexOfPath(gPaths, fp) >= 0 Then Continue For
+
+        If IsGhostPath(fp) Then
+            ghosts.Add(d)
+            gPaths.Add(fp)
+        End If
+    Next
+
+    If ghosts.Count = 0 Then
+        MessageBox.Show("메모리에 남아 있는 지워진 파일이 없습니다." & vbCrLf & vbCrLf & _
+                        "같은 이름으로 만들기가 계속 실패하면" & vbCrLf & _
+                        "그 이름의 파일이 실제로 폴더에 남아 있는지 확인하세요.", TTL)
+        Return
+    End If
+
+    '--- 2) 지워진 문서를 누가 참조하고 있나 --------------------------------
+    '     users(i) : ghosts(i) 를 직접 참조하는 문서들의 경로
+    '     경로로 붙잡아 둔다. 닫힌 문서 개체는 나중에 건드리면 예외가 난다.
+    Dim users As New List(Of List(Of String))
+    For i As Integer = 0 To ghosts.Count - 1
+        users.Add(New List(Of String))
+    Next
+
+    For Each d As Inventor.Document In SnapshotDocs()
+
+        Dim dp As String = DocPath(d)
+
+        Try
+            For Each r As Inventor.Document In d.ReferencedDocuments
+                Dim k As Integer = IndexOfPath(gPaths, DocPath(r))
+                If k < 0 Then Continue For
+                If String.Equals(dp, gPaths(k), StringComparison.OrdinalIgnoreCase) Then Continue For
+                If IndexOfPath(users(k), dp) < 0 Then users(k).Add(dp)
+            Next
+        Catch
+        End Try
+    Next
+
+    '--- 3) 어떤 것을 닫을 수 있나 ------------------------------------------
+    '     지워지지 않은 문서가 쓰고 있으면 닫을 수 없다.
+    '     지워진 문서만 쓰고 있으면, 그것들이 닫을 수 있는 한 함께 닫는다.
+    Dim canClose As New List(Of Boolean)
+    For i As Integer = 0 To ghosts.Count - 1
+        canClose.Add(True)
+    Next
+
+    Dim changed As Boolean = True
+    Do While changed
+        changed = False
+        For i As Integer = 0 To ghosts.Count - 1
+            If Not canClose(i) Then Continue For
+            For Each up As String In users(i)
+                Dim ui As Integer = IndexOfPath(gPaths, up)
+                If ui < 0 OrElse Not canClose(ui) Then
+                    canClose(i) = False
+                    changed = True
+                    Exit For
+                End If
+            Next
+        Next
+    Loop
+
+    '--- 4) 확인 창 ----------------------------------------------------------
+    Dim okLines  As New List(Of String)
+    Dim blkLines As New List(Of String)
+    Dim holders  As New List(Of String)     ' 닫았다 다시 열어야 할 화면의 문서
+    Dim nOk      As Integer = 0
+    Dim nBlk     As Integer = 0
+
+    For i As Integer = 0 To ghosts.Count - 1
+
+        Dim nm As String = System.IO.Path.GetFileName(gPaths(i))
+
+        If canClose(i) Then
+            nOk += 1
+            Dim tag As String = ""
+            If IsShownDoc(ghosts(i)) Then tag &= "   (화면에 열려 있음)"
+            If IsDirtyDoc(ghosts(i)) Then tag &= "   (저장 안 된 변경 있음 - 닫으면 사라짐)"
+            okLines.Add("   " & nm & tag)
+        Else
+            nBlk += 1
+            blkLines.Add("   " & nm)
+
+            ' 이 문서를 붙잡고 있는, 화면에 열린 문서를 찾는다
+            Dim hs As List(Of String) = ShownHolders(gPaths(i), gPaths)
+            If hs.Count = 0 Then
+                For Each up As String In users(i)
+                    If IndexOfPath(gPaths, up) < 0 Then hs.Add(up)
+                Next
+            End If
+
+            For Each h As String In hs
+                blkLines.Add("        ← 쓰는 문서 : " & System.IO.Path.GetFileName(h))
+                If IndexOfPath(holders, h) < 0 Then holders.Add(h)
+            Next
+        End If
+    Next
+
+    Dim msg As String = "메모리에 남아 있는 지워진 파일을 찾았습니다." & vbCrLf
+
+    If nOk > 0 Then
+        msg &= vbCrLf & "[바로 정리할 수 있음 - " & nOk & "개]" & vbCrLf & _
+               ShortList(okLines, LIST_MAX)
+    End If
+
+    If nBlk > 0 Then
+        msg &= vbCrLf & "[아직 다른 문서가 쓰고 있어 정리할 수 없음 - " & nBlk & "개]" & vbCrLf & _
+               ShortList(blkLines, LIST_MAX) & vbCrLf & _
+               "→ 위 '쓰는 문서' 를 저장하지 않고 닫았다가 다시 연 뒤" & vbCrLf & _
+               "   이 규칙을 한 번 더 실행하세요. 인벤터를 껐다 켤 필요는 없습니다." & vbCrLf & _
+               "   그 문서에 저장할 작업이 있으면, 지운 부품을 원래 부품으로" & vbCrLf & _
+               "   대치한 뒤 이 규칙을 다시 실행하세요." & vbCrLf
+    End If
+
+    If nOk = 0 Then
+        MessageBox.Show(msg, TTL)
+        Return
+    End If
+
+    msg &= vbCrLf & "[확인] 정리할 수 있는 " & nOk & "개를 저장하지 않고 닫습니다" & vbCrLf & _
+                    "[취소] 아무것도 하지 않습니다"
+
+    If MessageBox.Show(msg, TTL & " - 확인", MessageBoxButtons.OKCancel) <> DialogResult.OK Then
+        Return
+    End If
+
+    '--- 5) 닫기 - 참조하는 쪽부터 ------------------------------------------
+    '     지워진 도면이 지워진 부품을 참조하면 도면을 먼저 닫아야 부품이 풀린다.
+    Dim done     As New List(Of Boolean)
+    Dim failList As New List(Of String)
+    For i As Integer = 0 To ghosts.Count - 1
+        done.Add(False)
+    Next
+
+    Dim prevSilent As Boolean = ThisApplication.SilentOperation
+
+    Try
+        ThisApplication.SilentOperation = True
+
+        Dim progress As Boolean = True
+        Dim round    As Integer = 0
+
+        Do While progress AndAlso round <= ghosts.Count
+            progress = False
+            round += 1
+
+            For i As Integer = 0 To ghosts.Count - 1
+
+                If Not canClose(i) OrElse done(i) Then Continue For
+
+                ' 아직 안 닫힌 사용자가 있으면 다음 차례로 미룬다
+                Dim waiting As Boolean = False
+                For Each up As String In users(i)
+                    Dim ui As Integer = IndexOfPath(gPaths, up)
+                    If ui >= 0 AndAlso Not done(ui) Then
+                        waiting = True
+                        Exit For
+                    End If
+                Next
+                If waiting Then Continue For
+
+                ' 참조하던 쪽을 닫는 순간 인벤터가 알아서 내렸을 수도 있다
+                If Not IsLoaded(gPaths(i)) Then
+                    done(i) = True
+                    progress = True
+                    Continue For
+                End If
+
+                Try
+                    ghosts(i).Close(True)        ' True = 저장하지 않고 닫기
+                    done(i) = True
+                    progress = True
+                Catch ex As Exception
+                    If Not IsLoaded(gPaths(i)) Then
+                        done(i) = True           ' 예외는 났지만 내려가 있다
+                        progress = True
+                    Else
+                        failList.Add(System.IO.Path.GetFileName(gPaths(i)) & " : " & ex.Message)
+                        done(i) = True           ' 같은 것을 다시 시도하지 않는다
+                    End If
+                End Try
+            Next
+        Loop
+
+    Catch ex As Exception
+        failList.Add("전체 처리 오류 : " & ex.Message)
+
+    Finally
+        ThisApplication.SilentOperation = prevSilent
+    End Try
+
+    '--- 6) 결과 확인 - 실제로 메모리에서 내려갔는지 다시 본다 --------------
+    Dim cleared As New List(Of String)
+    Dim stuck   As New List(Of String)
+
+    For i As Integer = 0 To ghosts.Count - 1
+        If Not canClose(i) Then Continue For
+        Dim nm As String = System.IO.Path.GetFileName(gPaths(i))
+        If IsLoaded(gPaths(i)) Then
+            stuck.Add("   " & nm)
+        Else
+            cleared.Add("   " & nm)
+        End If
+    Next
+
+    Dim res As String = "캐시 정리 완료" & vbCrLf & vbCrLf & _
+                        "정리됨 : " & cleared.Count & " / " & nOk & "개" & vbCrLf
+
+    If cleared.Count > 0 Then
+        res &= ShortList(cleared, LIST_MAX)
+    End If
+
+    If stuck.Count > 0 Then
+        res &= vbCrLf & "[아직 메모리에 남아 있음]" & vbCrLf & ShortList(stuck, LIST_MAX)
+    End If
+
+    If failList.Count > 0 Then
+        res &= vbCrLf & "[오류]" & vbCrLf & String.Join(vbCrLf, failList.ToArray()) & vbCrLf
+    End If
+
+    If nBlk > 0 Then
+        res &= vbCrLf & "※ 다른 문서가 쓰고 있는 " & nBlk & "개는 그대로 두었습니다." & vbCrLf & _
+               "   쓰는 문서를 저장하지 않고 닫았다 다시 연 뒤 이 규칙을 한 번 더 실행하세요." & vbCrLf
+        For Each h As String In holders
+            res &= "      · " & System.IO.Path.GetFileName(h) & vbCrLf
+        Next
+    End If
+
+    If cleared.Count > 0 Then
+        res &= vbCrLf & "이제 같은 이름으로 다시 만들 수 있습니다."
+    End If
+
+    MessageBox.Show(res, TTL)
+
+End Sub
+
+
+' ============================================================================
+'  지금 메모리에 올라와 있는 문서 목록을 복사해 둔다
+'  문서를 닫으면 ThisApplication.Documents 가 바뀌므로 열거 도중에 닫으면 안 된다.
+' ============================================================================
+Function SnapshotDocs() As List(Of Inventor.Document)
+
+    Dim lst As New List(Of Inventor.Document)
+
+    Try
+        For Each d As Inventor.Document In ThisApplication.Documents
+            lst.Add(d)
+        Next
+    Catch
+    End Try
+
+    Return lst
+
+End Function
+
+
+' ============================================================================
+'  문서의 전체 경로. 읽지 못하거나 저장 안 된 새 문서면 ""
+' ============================================================================
+Function DocPath(d As Inventor.Document) As String
+    Try
+        Dim p As String = d.FullFileName
+        If p Is Nothing Then Return ""
+        Return p
+    Catch
+        Return ""
+    End Try
+End Function
+
+
+' ============================================================================
+'  디스크에서 지워진 파일인지
+'
+'  폴더는 있는데 파일만 없을 때만 "지워진 것" 으로 본다.
+'  폴더째 안 보이면 네트워크 드라이브가 끊겼거나 접근이 안 되는 것일 수 있으므로
+'  지워졌다고 단정하지 않는다. 그렇지 않으면 네트워크가 잠깐 끊긴 사이에
+'  모든 문서를 닫아 버릴 수 있다.
+' ============================================================================
+Function IsGhostPath(fp As String) As Boolean
+    Try
+        If System.IO.File.Exists(fp) Then Return False
+        Dim dir As String = System.IO.Path.GetDirectoryName(fp)
+        If String.IsNullOrEmpty(dir) Then Return False
+        Return System.IO.Directory.Exists(dir)
+    Catch
+        Return False
+    End Try
+End Function
+
+
+' ============================================================================
+'  해당 경로의 문서가 아직 메모리에 있는지
+' ============================================================================
+Function IsLoaded(fp As String) As Boolean
+    For Each d As Inventor.Document In SnapshotDocs()
+        If String.Equals(DocPath(d), fp, StringComparison.OrdinalIgnoreCase) Then Return True
+    Next
+    Return False
+End Function
+
+
+' ============================================================================
+'  화면에 탭으로 열려 있는 문서인지 (창이 하나라도 있으면)
+' ============================================================================
+Function IsShownDoc(d As Inventor.Document) As Boolean
+    Try
+        Return d.Views.Count > 0
+    Catch
+        Return False
+    End Try
+End Function
+
+
+' ============================================================================
+'  저장 안 된 변경이 있는지
+' ============================================================================
+Function IsDirtyDoc(d As Inventor.Document) As Boolean
+    Try
+        Return d.Dirty
+    Catch
+        Return False
+    End Try
+End Function
+
+
+' ============================================================================
+'  지워진 문서(fp)를 하위 어딘가에서라도 참조하고 있는, 화면에 열린 문서들
+'
+'  하위 조립품이 지워진 부품을 쓰고 있으면, 사용자가 닫아야 할 것은 숨어 있는
+'  하위 조립품이 아니라 화면에 열려 있는 상위 조립도다.
+'  지워진 문서끼리는 서로 붙잡고 있어도 이 규칙이 함께 닫으므로 세지 않는다.
+' ============================================================================
+Function ShownHolders(fp As String, ghostPaths As List(Of String)) As List(Of String)
+
+    Dim lst As New List(Of String)
+
+    For Each d As Inventor.Document In SnapshotDocs()
+
+        If Not IsShownDoc(d) Then Continue For
+
+        Dim dp As String = DocPath(d)
+        If IndexOfPath(ghostPaths, dp) >= 0 Then Continue For
+
+        Try
+            For Each r As Inventor.Document In d.AllReferencedDocuments
+                If String.Equals(DocPath(r), fp, StringComparison.OrdinalIgnoreCase) Then
+                    If IndexOfPath(lst, dp) < 0 Then lst.Add(dp)
+                    Exit For
+                End If
+            Next
+        Catch
+        End Try
+    Next
+
+    Return lst
+
+End Function
+
+
+' ============================================================================
+'  경로 목록에서 위치 찾기 (대소문자 무시). 없으면 -1
+' ============================================================================
+Function IndexOfPath(list As List(Of String), p As String) As Integer
+    If list Is Nothing OrElse String.IsNullOrEmpty(p) Then Return -1
+    For i As Integer = 0 To list.Count - 1
+        If String.Equals(list(i), p, StringComparison.OrdinalIgnoreCase) Then Return i
+    Next
+    Return -1
+End Function
+
+
+' ============================================================================
+'  목록이 길면 앞부분만 보여주고 "외 N개" 를 붙인다
+' ============================================================================
+Function ShortList(lines As List(Of String), maxLines As Integer) As String
+
+    If lines.Count <= maxLines Then
+        Return String.Join(vbCrLf, lines.ToArray()) & vbCrLf
+    End If
+
+    Dim head As New List(Of String)
+    For i As Integer = 0 To maxLines - 1
+        head.Add(lines(i))
+    Next
+
+    Return String.Join(vbCrLf, head.ToArray()) & vbCrLf & _
+           "   ... 외 " & (lines.Count - maxLines) & "개" & vbCrLf
+
+End Function

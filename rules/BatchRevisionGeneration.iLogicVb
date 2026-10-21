@@ -1385,10 +1385,10 @@ Function Hint(errMsg As String) As String
        OrElse errMsg.IndexOf("E_INVALIDARG", StringComparison.OrdinalIgnoreCase) >= 0 _
        OrElse errMsg.IndexOf("매개 변수가 틀립니다", StringComparison.Ordinal) >= 0 Then
 
-        Return "     ┗ 대처 : 인벤터를 완전히 종료했다가 다시 켠 뒤 시도하세요." & vbCrLf & _
-               "            이전에 만든 리비전 파일을 지웠거나 참조가 깨진 상태에서" & vbCrLf & _
-               "            자주 발생합니다. 파일을 지워도 인벤터는 그 참조를" & vbCrLf & _
-               "            메모리에 계속 들고 있기 때문입니다." & vbCrLf
+        Return "     ┗ 대처 : 캐시 정리 규칙을 실행한 뒤 다시 시도하세요." & vbCrLf & _
+               "            이전에 만든 파일을 탐색기에서 지웠을 때 자주 발생합니다." & vbCrLf & _
+               "            파일을 지워도 인벤터는 그 문서를 메모리에 계속 들고 있어" & vbCrLf & _
+               "            같은 이름과 부딪힙니다. 인벤터를 껐다 켤 필요는 없습니다." & vbCrLf
     End If
 
     ' 접근 거부 / 읽기 전용
