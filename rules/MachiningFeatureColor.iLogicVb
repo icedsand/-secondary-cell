@@ -957,7 +957,7 @@ Sub RestoreOriginal(pd As PartDocument, obj As Object, setName As String)
     If srcVal = CInt(AppearanceSourceTypeEnum.kOverrideAppearance) Then
         ' 원래 따로 지정한 색이 있었으면 그 색으로
         Dim a As Asset = FindAsset(pd, aName)
-        If a IsNot Nothing AndAlso Not aName.StartsWith("HFC_") Then
+        If a IsNot Nothing AndAlso Not IsMyAsset(a, -1) Then
             obj.Appearance = a
             done = True
         End If
@@ -1086,6 +1086,9 @@ End Function
 '   그래서 되돌린 뒤 다시 칠하면 아무것도 칠해지지 않았다.
 '   -> 이제 [원래대로] 는 색을 지우지 않고 남겨 두었다가 다시 쓴다.
 '   -> 같은 이름을 만들 수 없으면 HFC_TAP_2 처럼 뒤에 번호를 붙여 만든다.
+'   -> 인벤터는 표시 이름(가공색 - 탭)이 겹쳐도 만들기를 거부한다 (0x80070057).
+'      그래서 남은 색은 Name 과 DisplayName 둘 다로 찾고, 새로 만들 때는
+'      표시 이름에도 번호를 붙인다 ("가공색 - 탭 (2)").
 ' ============================================================================
 Function GetAsset(pd As PartDocument, k As Integer, rgbs As Integer(,), _
                   forceNew As Boolean, errs As List(Of String)) As Asset
@@ -1096,23 +1099,29 @@ Function GetAsset(pd As PartDocument, k As Integer, rgbs As Integer(,), _
 
     ' 1) 남아 있는 것 다시 쓰기 (forceNew 면 건너뛴다 - 남은 것이 망가진 경우)
     If Not forceNew Then
-        a = FindMyAsset(pd, nm)
+        a = FindMyAsset(pd, k)
         If a IsNot Nothing Then
             If SetAssetColor(a, k, rgbs, errs, pd) Then Return a
         End If
     End If
 
-    ' 2) 새로 만들기 - 이름이 막혀 있거나 이미 있으면 번호를 붙인다
-    For n As Integer = 1 To 9
+    ' 2) 새로 만들기
+    '    이름뿐 아니라 표시 이름도 문서 안에서 겹치면 안 된다 (겹치면 0x80070057).
+    '    둘 다 겹치지 않는 번호를 찾아 만든다.
+    For n As Integer = 1 To 20
         Dim tryName As String = nm
-        If n > 1 Then tryName = nm & "_" & n
-        If FindAsset(pd, tryName) IsNot Nothing Then Continue For
+        Dim tryDisp As String = disp
+        If n > 1 Then
+            tryName = nm & "_" & n
+            tryDisp = disp & " (" & n & ")"
+        End If
+        If AssetNameUsed(pd, tryName, tryDisp) Then Continue For
 
         Try
-            a = pd.Assets.Add(AssetTypeEnum.kAssetTypeAppearance, "Generic", tryName, disp)
+            a = pd.Assets.Add(AssetTypeEnum.kAssetTypeAppearance, "Generic", tryName, tryDisp)
         Catch ex As Exception
             a = Nothing
-            AddErr(errs, "색 만들기", ex.Message, pd)
+            AddErr(errs, "색 만들기", ex.Message & " [" & tryName & " / " & tryDisp & "]", pd)
         End Try
 
         If a IsNot Nothing AndAlso SetAssetColor(a, k, rgbs, errs, pd) Then Return a
@@ -1123,17 +1132,71 @@ Function GetAsset(pd As PartDocument, k As Integer, rgbs As Integer(,), _
 End Function
 
 
-' HFC_TAP 또는 HFC_TAP_2 ... 중 처음 것
-Function FindMyAsset(pd As PartDocument, nm As String) As Asset
+' ============================================================================
+'  이 rule 이 만든 색인지
+'  인벤터가 Add 에 준 이름(HFC_TAP)을 그대로 Name 으로 쓰지 않을 수 있으므로
+'  Name 과 DisplayName(가공색 - 탭) 둘 다 본다.
+'  k = -1 이면 종류와 관계없이 이 rule 의 색인지만 본다.
+' ============================================================================
+Function IsMyAsset(a As Asset, k As Integer) As Boolean
+
+    Dim an As String = ""
+    Dim dn As String = ""
+    Try
+        an = a.Name
+    Catch
+    End Try
+    Try
+        dn = a.DisplayName
+    Catch
+    End Try
+
+    If k < 0 Then
+        Return an.StartsWith("HFC_", StringComparison.OrdinalIgnoreCase) OrElse _
+               dn.StartsWith("가공색 - ")
+    End If
+
+    Dim nm As String = "HFC_" & ClassKey(k)
+    Dim disp As String = "가공색 - " & ClassLabel(k)
+
+    If String.Equals(an, nm, StringComparison.OrdinalIgnoreCase) Then Return True
+    If an.StartsWith(nm & "_", StringComparison.OrdinalIgnoreCase) Then Return True
+    If dn = disp Then Return True
+    If dn.StartsWith(disp & " (") Then Return True
+    Return False
+
+End Function
+
+
+' 이 종류의 색 중 처음 것
+Function FindMyAsset(pd As PartDocument, k As Integer) As Asset
     Try
         For Each a As Asset In pd.AppearanceAssets
-            Dim an As String = a.Name
-            If String.Equals(an, nm, StringComparison.OrdinalIgnoreCase) OrElse _
-               an.StartsWith(nm & "_", StringComparison.OrdinalIgnoreCase) Then Return a
+            If IsMyAsset(a, k) Then Return a
         Next
     Catch
     End Try
     Return Nothing
+End Function
+
+
+' 이름이나 표시 이름이 이미 쓰이고 있는지
+Function AssetNameUsed(pd As PartDocument, nm As String, disp As String) As Boolean
+    Try
+        For Each a As Asset In pd.AppearanceAssets
+            Dim an As String = ""
+            Dim dn As String = ""
+            Try
+                an = a.Name
+                dn = a.DisplayName
+            Catch
+            End Try
+            If String.Equals(an, nm, StringComparison.OrdinalIgnoreCase) Then Return True
+            If String.Equals(dn, disp, StringComparison.OrdinalIgnoreCase) Then Return True
+        Next
+    Catch
+    End Try
+    Return False
 End Function
 
 
