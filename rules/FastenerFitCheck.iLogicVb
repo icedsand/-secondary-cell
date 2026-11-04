@@ -6,8 +6,8 @@
 '
 '  [사용법]
 '   1) 최상위 조립도를 열고 규칙 실행 (하위 조립도까지 전부 검사)
-'   2) 끝나면 요약 창이 뜨고, 오류 구멍은 화면에서 선택되어 있다
-'   3) 자세한 내용은  <조립도 폴더>\체결검사\  의 로그 (csv 는 엑셀로 열림)
+'   2) 끝나면 결과 로그(txt)가 메모장으로 열리고, 오류 구멍은 화면에서 선택되어 있다
+'   3) 로그는  <조립도 폴더>\체결검사\  에 남는다 (csv 는 엑셀용 전체 목록)
 '
 '  [무엇을 검사하나]
 '   맞닿은 두 부품에서 구멍 축이 일치하고 구멍 끝이 서로 붙어 있으면
@@ -79,7 +79,6 @@ Sub Main()
     Dim LOG_INFO       As Boolean = True    ' 로그에 "참고" 항목도 남김
     Dim SELECT_ERRORS  As Boolean = True    ' 끝나면 오류 구멍을 화면에서 선택해 둠
     Dim LOG_DIR_NAME   As String  = "체결검사"
-    Dim LIST_MAX       As Integer = 15      ' 요약 창에 보여줄 줄 수
     Dim DEBUG_HOLES    As Boolean = False   ' True = 찾은 구멍 전체 목록을 로그 폴더에 따로 남김
                                             '        (오탐 원인 확인용)
 
@@ -497,7 +496,10 @@ Sub Main()
         notes.Add("※ 막힌 구멍 검사는 꺼져 있습니다 (CHECK_BLOCKED).")
     End If
     If readFail.Count > 0 Then
-        notes.Add("※ 읽지 못한 부품 " & readFail.Count & "개 - 로그 참고")
+        notes.Add("※ 읽지 못한 부품 " & readFail.Count & "개 - 맨 아래 참고")
+    End If
+    If SELECT_ERRORS AndAlso cnt(0) > 0 Then
+        notes.Add("※ 오류 구멍 면은 인벤터 화면에서 선택해 두었습니다.")
     End If
 
     Dim logDir As String = System.IO.Path.Combine(asmDir, LOG_DIR_NAME)
@@ -525,6 +527,7 @@ Sub Main()
                 LOG_DIR_NAME)
             System.IO.Directory.CreateDirectory(dsk)
             logDir = dsk
+            notes.Add("※ 조립도 폴더에 쓰지 못해 바탕화면에 저장했습니다 (" & ShortText(saveErr, 80) & ")")
             csvPath = System.IO.Path.Combine(dsk, "체결검사_" & asmBase & "_" & stamp & ".csv")
             txtPath = System.IO.Path.Combine(dsk, "체결검사_" & asmBase & "_" & stamp & ".txt")
             WriteLogs(csvPath, txtPath, results, head, notes, readFail, LOG_OK, LOG_INFO)
@@ -543,57 +546,30 @@ Sub Main()
     End If
 
     '--- 9) 오류 구멍 선택 ---------------------------------------------------
-    Dim nSel As Integer = 0
     If SELECT_ERRORS AndAlso cnt(0) > 0 Then
-        nSel = SelectProblems(oAsm, results, insts, occs)
+        SelectProblems(oAsm, results, insts, occs)
     End If
 
-    '--- 10) 요약 창 ---------------------------------------------------------
-    Dim msg As String = String.Join(vbCrLf, head.ToArray()) & vbCrLf
+    '--- 10) 로그를 메모장으로 연다 -----------------------------------------
+    If txtPath <> "" Then
+        Try
+            System.Diagnostics.Process.Start("notepad.exe", """" & txtPath & """")
+            Return
+        Catch
+        End Try
+    End If
 
+    ' 메모장을 못 열었거나 로그를 못 남긴 경우만 창으로 알린다
+    Dim msg As String = String.Join(vbCrLf, head.ToArray()) & vbCrLf
     For Each nt As String In notes
         msg &= nt & vbCrLf
     Next
-
-    Dim shown As Integer = 0
-    For Each rs As Res In results
-        If rs.Lv > 1 Then Exit For
-        If shown >= LIST_MAX Then
-            msg &= "   ... 나머지는 로그 참고" & vbCrLf
-            Exit For
-        End If
-        If shown = 0 Then msg &= vbCrLf
-        msg &= "[" & LvName(rs.Lv) & "] " & ShortText(rs.Msg, 90) & vbCrLf & _
-               "        " & ShortText(rs.Who, 110) & vbCrLf
-        shown += 1
-    Next
-
-    If cnt(0) + cnt(1) = 0 Then
-        msg &= vbCrLf & "오류 / 경고가 없습니다." & vbCrLf
-    End If
-
-    If nSel > 0 Then
-        msg &= vbCrLf & "※ 오류 구멍 면을 화면에서 선택해 두었습니다." & vbCrLf
-    End If
-
-    If csvPath <> "" Then
-        If saveErr <> "" Then
-            msg &= vbCrLf & "※ 조립도 폴더에 쓰지 못해 바탕화면에 저장했습니다." & vbCrLf & _
-                   "   (" & ShortText(saveErr, 80) & ")" & vbCrLf
-        End If
-        msg &= vbCrLf & "로그 : " & csvPath & vbCrLf & vbCrLf & _
-               "로그 폴더를 열까요?"
-
-        If MessageBox.Show(msg, TTL, MessageBoxButtons.YesNo) = DialogResult.Yes Then
-            Try
-                System.Diagnostics.Process.Start("explorer.exe", """" & logDir & """")
-            Catch
-            End Try
-        End If
+    If txtPath <> "" Then
+        msg &= vbCrLf & "로그 : " & txtPath
     Else
         msg &= vbCrLf & "※ 로그 저장 실패 : " & saveErr
-        MessageBox.Show(msg, TTL)
     End If
+    MessageBox.Show(msg, TTL)
 
 End Sub
 
@@ -614,7 +590,7 @@ Function ST_BLOCKED() As Integer
     Return 3           ' 다른 부품 면에 막힘
 End Function
 Function ST_FASTENER() As Integer
-    Return 4           ' 볼트 / 너트 모델이 들어가 있음
+    Return 4           ' 볼트 / 핀 / 축이 끼워져 있음
 End Function
 Function ST_CLOSED() As Integer
     Return 5           ' 자기 부품 안쪽 (막힌 구멍 바닥)
@@ -684,6 +660,8 @@ End Function
 
 ' 지름 d 가 통과구멍으로 맞는 호칭 (2급에 가장 가까운 것), 없으면 0
 Function ClearOf(d As Double, spec As List(Of Double())) As Double
+    ' 호칭경 그대로인 지름(Ø6.00 등)은 축 / 핀 / 부시 구멍으로 본다
+    If NominalOf(d, spec) > 0 Then Return 0
     Dim best As Double = 0
     Dim bestErr As Double = Double.MaxValue
     For Each row As Double() In spec
@@ -1448,6 +1426,15 @@ Sub TestEnd(it As Inst, e As Integer, occs As List(Of OccRec), _
     End If
     If Not rayOk Then Return
 
+    ' 구멍 안을 다른 부품이 채우고 있으면 (축, 핀, 볼트) 막힌 게 아니라 끼워진 것
+    Dim din As Double = Math.Min(0.5, (it.H.T1 - it.H.T0) / 2)
+    Dim pin() As Double = {ep(0) - it.D(0) * sgn * din, ep(1) - it.D(1) * sgn * din, ep(2) - it.D(2) * sgn * din}
+    If InsideAny(pin, dir, occs, it.O, tg, rayOk) >= 0 Then
+        it.St(e) = ST_FASTENER()
+        Return
+    End If
+    If Not rayOk Then Return
+
     Dim k As Integer = InsideAny(pt, dir, occs, it.O, tg, rayOk)
     If Not rayOk Then Return
 
@@ -1659,7 +1646,7 @@ Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
         For Each p As Integer In endsArr
             Dim hp As HoleRec = hs(p)
             If hp.Info IsNot Nothing Then Continue For      ' 구멍 피처인데 탭이 아님 -> 탭 아님
-            If hp.CbEnd >= 0 OrElse hp.CsEnd >= 0 Then Continue For
+            If HeadEnd(hp) >= 0 Then Continue For             ' 볼트 머리 자리가 있으면 탭 아님
 
             Dim cands As New List(Of Double)
             Dim strong As New List(Of Boolean)
@@ -1710,7 +1697,7 @@ Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
 
         Dim anyCb As Boolean = False
         For Each hp As HoleRec In hs
-            If hp.CbEnd >= 0 OrElse hp.CsEnd >= 0 Then anyCb = True
+            If HeadEnd(hp) >= 0 Then anyCb = True
         Next
 
         Dim dmin As Double = Double.MaxValue, dmax As Double = 0
@@ -1811,7 +1798,7 @@ Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
     Else
         Dim cbLow As Boolean = False, cbHigh As Boolean = False
         For p As Integer = 0 To n - 1
-            If hs(p).CbEnd >= 0 OrElse hs(p).CsEnd >= 0 Then
+            If HeadEnd(hs(p)) >= 0 Then
                 If p < tapPos Then cbLow = True
                 If p > tapPos Then cbHigh = True
             End If
@@ -1959,17 +1946,14 @@ Function EvalBlocked(it As Inst, occs As List(Of OccRec), spec As List(Of Double
         If it.St(e) = ST_OPEN() OrElse it.St(e) = ST_FASTENER() OrElse it.St(e) = ST_NONE() Then anyOpen = True
     Next
 
-    Dim headEnd As Integer = -1
-    If h.CbEnd >= 0 Then
-        headEnd = h.CbEnd
-    ElseIf h.CsEnd >= 0 Then
-        headEnd = h.CsEnd
-    End If
+    ' 볼트 머리 자리(카운터보어 / 접시)가 있고 통과구멍 크기일 때만 "탭 없음" 으로 본다.
+    ' 리니어부시 내경(Ø6.00)처럼 호칭경 그대로인 구멍의 단차는 볼트 자리가 아니다.
+    Dim hEnd As Integer = HeadEnd(h)
 
-    If headEnd >= 0 Then
-        If it.St(1 - headEnd) = ST_BLOCKED() Then
+    If hEnd >= 0 AndAlso ClearOfH(h, spec) > 0 Then
+        If it.St(1 - hEnd) = ST_BLOCKED() Then
             rs.Lv = 0
-            rs.Msg = "카운터보어(접시) 구멍 밑에 탭이 없음 - " & occs(it.Blk(1 - headEnd)).Name & " 면에 막힘 (피치·위치 확인)"
+            rs.Msg = "카운터보어(접시) 구멍 밑에 탭이 없음 - " & occs(it.Blk(1 - hEnd)).Name & " 면에 막힘 (피치·위치 확인)"
         Else
             rs.Lv = 2
             rs.Msg = "카운터보어(접시) 쪽이 " & blk & " 에 덮여 있음 (볼트를 넣을 수 있는지 확인)"
@@ -2024,7 +2008,20 @@ End Function
 Function ClearOfH(h As HoleRec, spec As List(Of Double())) As Double
     If h.Info IsNot Nothing AndAlso h.Info.ClearN > 0 Then Return h.Info.ClearN
     If h.Info IsNot Nothing AndAlso h.Info.IsTap Then Return 0
+    ' 형상만 있는 구멍이 탭 크기에도 들면 (Ø2.46 = M3 탭 내경 / M2 통과) 단정하지 않는다
+    If h.Info Is Nothing AndAlso HeadEnd(h) < 0 AndAlso GeoTapSizes(h.PassD, spec).Count > 0 Then Return 0
     Return ClearOf(h.PassD, spec)
+End Function
+
+
+' 볼트 머리 자리(카운터보어, 접시)가 있는 끝. 없으면 -1
+' 탭 입구 모따기(접시 지름이 구멍의 1.5배 미만)는 머리 자리가 아니다.
+'   M3 탭 내경 Ø2.46 + 모따기 Ø3   -> 모따기 (탭)
+'   M3 접시볼트 Ø3.4 + 접시 Ø6.3   -> 머리 자리
+Function HeadEnd(h As HoleRec) As Integer
+    If h.CbEnd >= 0 Then Return h.CbEnd
+    If h.CsEnd >= 0 AndAlso h.CsD >= h.PassD * 1.5 Then Return h.CsEnd
+    Return -1
 End Function
 
 
@@ -2034,7 +2031,7 @@ Function TapSizeOf(h As HoleRec, spec As List(Of Double())) As Double
         If h.Info.IsTap Then Return h.Info.TapN
         Return 0
     End If
-    If h.CbEnd >= 0 OrElse h.CsEnd >= 0 Then Return 0
+    If HeadEnd(h) >= 0 Then Return 0
     Dim gts As List(Of Double) = GeoTapSizes(h.PassD, spec)
     If gts.Count > 0 Then Return gts(gts.Count - 1)
     Return 0
@@ -2062,7 +2059,13 @@ Function HoleDesc(h As HoleRec) As String
     End If
 
     If h.CbEnd >= 0 Then s &= " + 카운터보어 Ø" & F(h.CbD) & " 깊이 " & F(h.CbDepth)
-    If h.CsEnd >= 0 Then s &= " + 접시 Ø" & F(h.CsD)
+    If h.CsEnd >= 0 Then
+        If HeadEnd(h) = h.CsEnd Then
+            s &= " + 접시 Ø" & F(h.CsD)
+        Else
+            s &= " + 모따기 Ø" & F(h.CsD)
+        End If
+    End If
     Return s
 
 End Function
@@ -2192,7 +2195,7 @@ Sub WriteLogs(csvPath As String, txtPath As String, results As List(Of Res), _
               logOk As Boolean, logInfo As Boolean)
 
     Dim csv As New System.Text.StringBuilder
-    csv.AppendLine("번호,판정,종류,내용,구멍 (축 방향 순서) / 부품,X(mm),Y(mm),Z(mm),부품 경로")
+    csv.AppendLine("번호,판정,종류,내용,구멍 (축 방향 순서) / 부품,부품 경로")
 
     Dim txt As New System.Text.StringBuilder
     For Each ln As String In head
@@ -2202,7 +2205,6 @@ Sub WriteLogs(csvPath As String, txtPath As String, results As List(Of Res), _
         txt.AppendLine(ln)
     Next
     txt.AppendLine("")
-    txt.AppendLine("좌표는 최상위 조립도 원점 기준 (mm) 입니다.")
     txt.AppendLine("판정 기준은 JIS/KS 표준, 렌치볼트 기준입니다. (규칙 안 SpecTable)")
     txt.AppendLine("'형상' 은 구멍 피처 정보가 없어 지름으로 추정한 구멍입니다.")
     txt.AppendLine("")
@@ -2223,7 +2225,7 @@ Sub WriteLogs(csvPath As String, txtPath As String, results As List(Of Res), _
         Next
 
         csv.AppendLine(no & "," & CsvQ(LvName(rs.Lv)) & "," & CsvQ(rs.Kind) & "," & CsvQ(rs.Msg) & "," & _
-                       CsvQ(rs.Who) & "," & F(rs.X) & "," & F(rs.Y) & "," & F(rs.Z) & "," & _
+                       CsvQ(rs.Who) & "," & _
                        CsvQ(String.Join(" | ", paths.ToArray())))
 
         If rs.Lv <= 2 Then
@@ -2234,7 +2236,6 @@ Sub WriteLogs(csvPath As String, txtPath As String, results As List(Of Res), _
             End If
             txt.AppendLine(no & ". [" & rs.Kind & "] " & rs.Msg)
             txt.AppendLine("     " & rs.Who)
-            txt.AppendLine("     위치 X " & F(rs.X) & "  Y " & F(rs.Y) & "  Z " & F(rs.Z))
         End If
     Next
 
@@ -2287,7 +2288,7 @@ Function StName(st As Integer) As String
         Case 1 : Return "짝"
         Case 2 : Return "어긋남"
         Case 3 : Return "막힘"
-        Case 4 : Return "볼트"
+        Case 4 : Return "끼워짐"
         Case 5 : Return "바닥"
         Case 6 : Return "열림"
     End Select
