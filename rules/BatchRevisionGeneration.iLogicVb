@@ -1,185 +1,30 @@
 ' ============================================================================
-'  Inventor iLogic Rule : 부품 리비전 일괄 생성   [검증 / 디버깅 반영판]
-'
-'  [처리 순서]
-'   1) 06A.ipt  ->  06B.ipt  사본 저장 (같은 폴더)
-'   2) 06B.ipt 의 부품번호를 06B 로 수정 (+ 현품수정 표기 반영)
-'   3) 06A.idw  ->  06B.idw  사본 저장
-'   4) 06B.idw 의 참조를 06B.ipt 로 대체   (모형 참조 대체)
-'   5) 부품번호 토글로 타이틀블록 갱신
-'   6) 새로 만든 ipt / idw 저장           ★ 추가
-'   7) 열려있는 조립도에서 06A 를 06B 로 대치
-'
-'  [안전 원칙]
-'   - 실행 전 전체 계획을 보여주고 확인받는다
-'   - 같은 이름 파일이 이미 있으면 그 항목은 중단한다 (덮어쓰지 않는다)
-'   - 원본 06A 파일은 절대 수정하지 않는다
-'   - 조립도는 저장하지 않는다 (확인 후 직접 저장)
-'   - 새로 만든 06B 파일은 저장한다  ★ 변경 : 아래 [B] 참고
-'   - 실패 시 어디까지 진행됐는지 단계별로 보고한다
-'
-'  [iLogic 문법 주의]
-'   Inventor 네임스페이스에도 Path / File / Environment 타입이 있으므로
-'   System.IO.Path 처럼 반드시 풀네임으로 씁니다.
-'   Sub / Function 바깥에는 Const, Dim 선언을 둘 수 없습니다.
-'
-' ----------------------------------------------------------------------------
-'  [이번 판에서 고친 것]
-'
-'   [A] 선택 목록을 열거하는 도중에 도면을 열던 문제
-'       SelectSet 을 훑으면서 그 안에서 Documents.Open 을 호출하면
-'       열거 중인 컬렉션이 바뀌어 일부 부품이 조용히 누락된다.
-'       -> 선택 내용을 먼저 List 로 복사한 뒤 도면을 연다.
-'
-'   [B] 새 모델이 안 보이게 열린 채 저장되지 않던 문제  (가장 위험했던 부분)
-'       SaveAs(사본) 으로 만들어진 06B.ipt 는 디스크에 "06A" 부품번호로
-'       기록된다. 부품번호 수정은 메모리에서만 일어나므로, 사용자가 저장하지
-'       않으면 파일명은 06B 인데 부품번호는 06A 인 파일이 남는다.
-'       게다가 그 문서는 Open(..., False) 로 숨겨져 있어 저장할 수도 없었다.
-'       -> 새로 만든 파일만 저장한다. 원본과 조립도는 그대로 둔다.
-'          (SAVE_NEW_FILES / SHOW_NEW_MODEL 설정으로 끌 수 있음)
-'
-'   [C] ASK_FIELD_MOD = False 로 두면 (현품수정) 이 전부 지워지던 문제
-'       선택창을 건너뛰면 isFieldMod 가 모두 False 여서 ApplyTag 가
-'       기존 태그를 제거해 버렸다.
-'       -> 선택창을 건너뛸 때는 현재 설명의 상태를 그대로 물려받는다.
-'
-'   [D] 새 부품번호 중복 / 잘못된 문자를 걸러내지 않던 문제
-'       편집창에서 두 항목에 같은 번호를 넣으면 뒤엣것이 앞엣것을 덮어썼다.
-'       -> 편집창에서 빈칸 / 금지문자 / 중복 / 기존 파일 충돌을 즉시 검사하고
-'          고칠 때까지 창을 닫지 않는다.
-'
-'   [E] 다른 조립도의 같은 이름 구성요소까지 대치하던 문제
-'       IsSelected 가 occ.Name 만 비교해서, 서로 다른 조립도에 있는
-'       "Part1:1" 이 같은 것으로 판정됐다.
-'       -> 소속 문서 경로 + 이름을 묶어서 비교한다.
-'
-'   [F] 도면 참조를 바꾸면서 그 컬렉션을 열거하던 문제
-'       ReplaceReference 는 ReferencedFileDescriptors 를 변경하므로
-'       열거 도중 호출하면 나머지가 건너뛰어질 수 있다.
-'       -> 먼저 List 로 복사한 뒤 대체한다.
-'       -> 경로가 달라(매핑 드라이브 / UNC) 못 찾을 때를 대비해
-'          파일명이 같은 참조를 찾는 2차 시도를 넣었다.
-'
-'   [G] 대치 개수를 실제보다 크게 세던 문제
-'       Replace(newPath, True) 한 번 부르고 victims.Count 를 더했다.
-'       실패한 것까지 성공으로 계산될 수 있었다.
-'       -> 하나씩 Replace(newPath, False) 하고 실제 성공한 것만 센다.
-'
-'   [H] 배치 수를 "가장 많은 조립도 하나" 기준으로만 세던 문제
-'       부품이 여러 조립도(하위 조립도 포함)에 흩어져 있으면 숫자가 틀렸다.
-'       -> 열려있는 모든 조립도를 합산하고, 조립도 이름을 함께 보여준다.
-'
-'   [I] 목록에서 조용히 사라지던 항목들
-'       하이픈 개수 미달 / 부품번호 형식 불일치 / 리비전 문자 해석 실패는
-'       아무 설명 없이 Continue For 로 빠졌다.
-'       -> 제외 사유를 모아서 보고한다.
-'
-'   [J] 실패 시 열린 문서와 만들다 만 파일이 방치되던 문제
-'       -> 실패하면 새로 연 문서를 닫고, 디스크에 남은 파일을 보고한다.
-'
-'   [L] 같은 모델을 참조하는 도면이 둘 이상 열려 있을 때 배치가 통째로
-'       중단되던 문제
-'       첫 항목을 조립도에서 대치하면 인벤터가 더 이상 참조되지 않는 원본
-'       모델 문서를 닫는다. 그 뒤 다음 항목에서 models(ix).FullFileName 을
-'       읽다가 예외가 나고, 그 예외는 항목 단위가 아니라 바깥 Try 에서
-'       잡히므로 남은 항목이 전부 처리되지 않았다.
-'       -> 모델 기준으로 중복 도면을 걸러내고,
-'          실행에 필요한 경로 / 부품번호는 실행 전에 미리 붙잡아 둔다.
-'
-'   [M] [E] 를 고치면서 "선택한 것만 대치" 질문이 아예 뜨지 않게 된 문제
-'       [E] 에서 occ.Parent.Document 로 구성요소의 소속 조립도를 알아내
-'       비교했다. 그런데 선택한 개체와 열거한 개체가 이 값을 서로 다르게
-'       내놓으면 판정이 통째로 실패해 선택된 개수가 0 이 된다.
-'       그러면 mine > 0 조건에 걸려 질문이 뜨지 않고, 아무 말 없이
-'       전체 대치로 넘어가 버린다.
-'       -> 소속 문서를 구성요소에게 되묻지 않는다. 열거 중인 개체의 소속은
-'          지금 훑고 있는 조립도 문서이고, 선택한 개체의 소속은 실행 시점의
-'          활성 문서다. 둘 다 호출하는 쪽이 확실히 아는 값이다.
-'       -> 그래도 배치를 특정하지 못하면 조용히 넘어가지 않고 묻는다.
-'          되돌릴 수 없는 작업의 기본값은 "묻기" 여야 한다.
-'
-'   [N] 대치 범위 창에서 취소를 눌러도 파일이 만들어지던 문제  (요청)
-'       [취소] 가 "조립도 대치는 하지 않음 (파일만 생성)" 이었다.
-'       취소라고 적힌 버튼이 작업을 계속하는 것은 기대와 어긋난다.
-'       -> 취소는 규칙 실행 자체를 중단한다. 파일도 만들지 않는다.
-'          이 창은 파일을 만들기 전에 뜨므로 되돌릴 것이 없다.
-'       -> 규칙이 직접 연 도면은 도로 닫아 실행 전 상태로 돌린다.
-'          원래 열려있던 도면은 건드리지 않는다.
-'       -> "파일만 생성" 은 배치를 특정하지 못했을 때 뜨는 창에 남겨두었다.
-'          조립도 대치를 아예 끄려면 REPLACE_IN_ASM = False 로 둔다.
-'       -> 다른 취소 지점(도면 선택 / 현품수정 / 부품번호 편집 / 최종 확인)
-'          에서도 규칙이 연 도면을 똑같이 닫는다.
-'
-'   [O] Inventor 2026 (26.4) 으로 올리면서 컴파일이 깨진 문제
-'       iLogic 컴파일 대상이 .NET Framework 4.x 에서 최신 .NET 으로 바뀌었다.
-'       frm.AcceptButton / frm.CancelButton 대입이 인터페이스 변환이라,
-'       컴파일러가 Button 의 인터페이스 목록을 훑다가 참조되지 않은
-'       System.Private.Windows.Core 의 타입을 만나 실패한다.
-'       -> 리플렉션으로 넘긴다. 자세한 설명은 SetDefaultButtons 참고.
-'       (이 규칙은 레지스트리를 쓰지 않으므로 Vault 26 전환과는 무관하다)
-'
-'   [R] 다음 리비전이 이미 있으면 아예 손을 댈 수 없던 문제  (요청)
-'       01-15 를 골랐는데 01-15A 가 이미 폴더에 있으면 그 부품이 목록에서
-'       통째로 빠졌다. "최신 리비전을 열고 실행하세요" 라는 안내만 나왔다.
-'       -> 이제 이미 있는 것 중 가장 높은 리비전을 찾아 그 다음 번호를
-'          목표로 잡고, 진행할지 물어본다.
-'            01-15A 가 있으면  ->  01-15B 로 만들지 묻는다
-'          [예] 만든다  [아니오] 이 부품만 건너뛴다  [취소] 규칙 중단
-'       -> 복사 원본은 지금 고른 01-15 이다. 01-15A 가 아니다.
-'          01-15A 에서 바뀐 내용은 따라오지 않으므로 창에 그 사실을 적는다.
-'       -> 중간 리비전을 지운 경우(01-15B 없이 01-15A, 01-15C)도 대비해
-'          한 칸 비었다고 멈추지 않는다. LatestExistingRev 참고.
-'
-'   [K] 그 밖에
-'       - ActiveDocument 접근을 Try 로 감쌌다 (문서가 하나도 없을 때 대비)
-'       - 폼을 Try / Finally 로 확실히 Dispose 한다
-'       - 도면 경로 목록과 부품 이름 목록을 섞어 쓰던 것을 분리했다
-'       - DocumentTypeEnum 을 풀네임으로 적었다
+'부품 리비전 일괄 생성(made by pjh)
 ' ============================================================================
 
-
 Sub Main()
+    Dim SKIP_LETTERS   As String  = ""        ' 리비전에서 제외할 알파벳. 예) "IOQSXZ"
+    Dim REPLACE_IN_ASM As Boolean = True      ' 열려있는 조립도에서 구성요소 대치
+    Dim MIN_HYPHENS    As Integer = 2         ' 사내 도면번호 판별용 최소 하이픈 수
 
-    ' ── 설정 ────────────────────────────────────────────────────────────────
-    Dim SKIP_LETTERS   As String  = ""     ' 리비전에서 제외할 알파벳. 예) "IOQSXZ"
-    Dim REPLACE_IN_ASM As Boolean = True   ' 열려있는 조립도에서 구성요소 대치
-    Dim MIN_HYPHENS    As Integer = 2      ' 사내 도면번호 판별용 최소 하이픈 수
-
-    ' 현품수정 표기 - BOM 설명(Description) 칸 끝에 붙는다
-    '   예) Suction Box BK-2  ->  Suction Box BK-2(현품수정)
     Dim FIELD_MOD_TAG  As String  = "(현품수정)"
-    Dim ASK_FIELD_MOD  As Boolean = True   ' False=현품수정 선택창을 건너뜀
-    Dim WRITE_LOG_DEF  As Boolean = True   ' 로그 남기기 체크박스의 기본값
+    Dim ASK_FIELD_MOD  As Boolean = True      ' False=현품수정 선택창을 건너뜀
+    Dim WRITE_LOG_DEF  As Boolean = True      ' 로그 남기기 체크박스의 기본값
 
-    ' 새로 만든 파일 처리 - [B] 참고
-    '   SAVE_NEW_FILES=False 로 두면 예전처럼 저장하지 않는다. 다만 그 경우
-    '   06B.ipt 의 부품번호가 디스크에 반영되지 않은 상태로 남으므로
-    '   반드시 사용자가 직접 저장해야 한다.
-    Dim SAVE_NEW_FILES As Boolean = True   ' 새 ipt / idw 만 저장 (조립도는 저장 안 함)
-    Dim SHOW_NEW_MODEL As Boolean = True   ' 새 모델을 화면에 표시
-    ' ────────────────────────────────────────────────────────────────────────
+    Dim SAVE_NEW_FILES As Boolean = True      ' 새 ipt / idw 만 저장 (조립도는 저장 안 함)
+    Dim SHOW_NEW_MODEL As Boolean = True      ' 새 모델을 화면에 표시
 
-    '--- 1) 대상 도면 수집 ---------------------------------------------------
-    '     열려있는 도면 중 "부품 1개만 참조하는" 것을 대상으로 한다
     Dim drawings As New List(Of Inventor.DrawingDocument)
     Dim models   As New List(Of Inventor.Document)
     Dim names    As New List(Of String)
     Dim newPNs   As New List(Of String)
-    Dim noDwg    As New List(Of String)   ' 도면 파일을 못 찾은 부품
-    Dim existed  As New List(Of String)   ' 이미 있는 최신 리비전 (없으면 "")  [R]
-    Dim skipped  As New List(Of String)   ' 그 밖의 사유로 제외된 것  [I]
+    Dim noDwg    As New List(Of String)
+    Dim existed  As New List(Of String)
+    Dim skipped  As New List(Of String)
 
-    '--- 1-1) 작업 방식 결정 -------------------------------------------------
-    '     조립도에서 부품을 선택한 상태면 그 부품들의 도면을 자동으로 찾는다.
-    '     선택이 없으면 기존처럼 열려있는 도면 목록에서 고른다.
-    '
-    '     [A] 선택 내용을 먼저 복사해 둔다.
-    '         아래에서 도면을 여는 순간 활성 문서가 바뀌므로,
-    '         SelectSet 을 열거하는 도중에 파일을 열면 안 된다.
     Dim selOccs   As New List(Of Inventor.ComponentOccurrence)
     Dim oAct      As Inventor.Document = Nothing
-    Dim selOwner  As String = ""          ' 선택이 이루어진 조립도의 경로  [M]
+    Dim selOwner  As String = ""
 
     Try
         oAct = ThisApplication.ActiveDocument
@@ -197,8 +42,6 @@ Sub Main()
         Catch
         End Try
 
-        ' 선택은 활성 문서에서만 이루어진다. 이 값은 확실히 알 수 있으므로
-        ' 구성요소에게 소속을 되묻지 않는다.  [M]
         Try
             selOwner = oAct.FullFileName
         Catch
@@ -206,23 +49,16 @@ Sub Main()
         End Try
     End If
 
-    ' 조립도에서 부품을 선택한 채 실행했다면 그것이 곧 사용자의 의도다.
-    ' 별도로 묻지 않고 선택한 부품으로 진행한다.
     Dim useSelection As Boolean = (selOccs.Count > 0)
 
-    '--- 1-2) 후보 도면 수집 -------------------------------------------------
     Dim candidates As New List(Of Inventor.DrawingDocument)
-    Dim seenDwg    As New List(Of String)   ' 이미 처리한 도면 경로       [K]
-    Dim seenMdl    As New List(Of String)   ' 이미 처리한 모델 경로       [K]
+    Dim seenDwg    As New List(Of String)
+    Dim seenMdl    As New List(Of String)
 
-    ' 규칙이 직접 연 도면. 중간에 취소하면 이것만 도로 닫는다.  [N]
-    ' 원래 열려있던 도면은 건드리지 않는다.
     Dim openedByRule As New List(Of Inventor.DrawingDocument)
 
     If useSelection Then
 
-        ' 선택한 구성요소 -> 모델 -> 같은 이름의 도면 파일을 찾아 연다
-        ' (SelectSet 열거는 이미 끝났으므로 여기서 파일을 열어도 안전하다)
         For Each occ As Inventor.ComponentOccurrence In selOccs
 
             Dim mdlPath As String = ""
@@ -232,7 +68,6 @@ Sub Main()
             End Try
             If String.IsNullOrEmpty(mdlPath) Then Continue For
 
-            ' 같은 부품이 여러 개 배치되어 있을 수 있으므로 모델 기준으로 중복 제거
             If ContainsPath(seenMdl, mdlPath) Then Continue For
             seenMdl.Add(mdlPath)
 
@@ -260,7 +95,6 @@ Sub Main()
 
     Else
 
-        ' 기존 방식 : 열려있는 도면 전부
         For Each oDoc As Inventor.Document In ThisApplication.Documents
             If oDoc.DocumentType <> Inventor.DocumentTypeEnum.kDrawingDocumentObject Then Continue For
             Try
@@ -274,8 +108,6 @@ Sub Main()
 
     End If
 
-    '--- 1-3) 공통 검증 ------------------------------------------------------
-    '     seenMdl 은 1-2 에서 이미 쓰였으므로 여기서는 별도 목록을 쓴다
     Dim usedMdl As New List(Of String)
 
     For Each oDrw As Inventor.DrawingDocument In candidates
@@ -286,7 +118,6 @@ Sub Main()
         Catch
         End Try
 
-        ' 참조 모델이 정확히 1개인 도면만 처리
         Dim mdl As Inventor.Document = Nothing
         Dim refCnt As Integer = -1
         Try
@@ -310,16 +141,12 @@ Sub Main()
             Continue For
         End If
 
-        ' [L] 같은 모델을 가리키는 도면이 둘 이상이면 하나만 처리한다.
-        '     그러지 않으면 첫 항목을 조립도에서 대치하는 순간 원본 모델 문서가
-        '     닫히고, 다음 항목에서 그 문서에 접근하다 배치 전체가 중단된다.
         If ContainsPath(usedMdl, mdl.FullFileName) Then
             skipped.Add(dwgName & "  (같은 모델을 가리키는 도면이 이미 목록에 있음)")
             Continue For
         End If
         usedMdl.Add(mdl.FullFileName)
 
-        ' 사내 도면번호 형식이 아니면 제외 (규격품 보호)
         Dim hy As Integer = 0
         For Each ch As Char In curPN
             If ch = "-"c Then hy += 1
@@ -340,10 +167,6 @@ Sub Main()
         Dim mExt As String = System.IO.Path.GetExtension(mdl.FullFileName)
         Dim dExt As String = System.IO.Path.GetExtension(oDrw.FullFileName)
 
-        ' [R] 예전에는 다음 리비전 파일이 이미 있으면 목록에서 통째로 뺐다.
-        '     그래서 01-15 를 열어놓고 01-15A 가 이미 있으면 아무것도 못 했다.
-        '     이제는 이미 있는 것 중 가장 높은 리비전을 찾아 그 다음 번호를
-        '     목표로 잡고, 진행할지 아래 2-0 에서 물어본다.
         Dim lastRev As String = LatestExistingRev(curPN, SKIP_LETTERS, _
                                                   mDir, mExt, dDir, dExt)
 
@@ -386,7 +209,6 @@ Sub Main()
         Return
     End If
 
-    '--- 2) 대상 선택 --------------------------------------------------------
     Dim pickMsg As String = "리비전을 딸 도면을 선택하세요."
     If noDwg.Count > 0 Then
         pickMsg &= "   (도면을 못 찾은 " & noDwg.Count & "건 제외)"
@@ -400,7 +222,6 @@ Sub Main()
 
     If useSelection Then
 
-        ' 조립도에서 직접 고른 부품이므로 다시 묻지 않고 전부 대상으로 삼는다
         picked = New List(Of Integer)
         For i As Integer = 0 To names.Count - 1
             picked.Add(i)
@@ -408,7 +229,6 @@ Sub Main()
 
     Else
 
-        ' 도면을 열어놓고 실행한 경우에만 어떤 도면을 처리할지 고른다
         picked = PickList(names, pickMsg, True, _
                           "리비전 생성 로그를 바탕화면에 남기기", writeLog)
         If picked Is Nothing Then
@@ -424,17 +244,12 @@ Sub Main()
         Return
     End If
 
-    '--- 2-0) 이미 다음 리비전이 있는 항목 확인 --------------------------  [R]
-    '     01-15 를 골랐는데 01-15A 가 이미 폴더에 있는 경우.
-    '     예전에는 목록에서 아예 빠져 손을 댈 수 없었다.
-    '     이제는 최신 리비전(01-15A) 다음 번호(01-15B)로 만들지 물어본다.
-    '     복사 원본은 지금 고른 01-15 이다. 01-15A 가 아니다.
     Dim confirmed As New List(Of Integer)
 
     For Each ix As Integer In picked
 
         If existed(ix) = "" Then
-            confirmed.Add(ix)          ' 다음 리비전이 비어 있으면 물을 것이 없다
+            confirmed.Add(ix)
             Continue For
         End If
 
@@ -460,7 +275,6 @@ Sub Main()
                             "만들어진 파일은 없습니다.", "리비전 생성")
             Return
         End If
-        ' 아니오 - 이 부품만 목록에서 뺀다
 
     Next
 
@@ -473,18 +287,13 @@ Sub Main()
         Return
     End If
 
-    '--- 2-1) 조립도 대치 범위 결정 -----------------------------------------
-    '     파일을 만들기 전에 물어본다. 만든 뒤에 취소하면 되돌릴 수 없기 때문.
-    '     asmPlan(i) : 0=전체 대치  1=선택만 대치  2=건너뛰기
     Dim asmPlan As New List(Of Integer)
     Dim asmNote As String = ""
 
     For Each ix As Integer In picked
 
-        Dim mode As Integer = 0     ' 기본은 전체 대치
+        Dim mode As Integer = 0
 
-        ' 조립도에서 부품을 선택하고 실행했을 때만 대치 범위를 묻는다.
-        ' 도면 목록에서 고른 경우에는 선택이라는 개념이 없으므로 전체 대치다.
         If REPLACE_IN_ASM AndAlso useSelection Then
 
             Dim oldP As String = models(ix).FullFileName
@@ -493,7 +302,6 @@ Sub Main()
             Dim asmNm As String = ""
             Dim pnm   As String = System.IO.Path.GetFileNameWithoutExtension(oldP)
 
-            ' [H] 열려있는 모든 조립도를 합산한다 (하위 조립도 포함)
             CountOccurrences(oldP, selOccs, selOwner, total, mine, asmNm)
 
             If total > 1 AndAlso mine > 0 AndAlso mine < total Then
@@ -516,8 +324,6 @@ Sub Main()
                     asmNote &= "   " & pnm & _
                                " : " & total & "개 전부 대치" & vbCrLf
                 Else
-                    ' [N] 취소는 취소다. 아직 아무것도 만들지 않았으므로
-                    '     규칙이 연 도면만 도로 닫고 그대로 끝낸다.
                     CloseOpenedDrawings(openedByRule)
                     MessageBox.Show("규칙 실행을 취소했습니다." & vbCrLf & _
                                     "만들어진 파일은 없습니다.", "리비전 생성")
@@ -526,8 +332,6 @@ Sub Main()
 
             ElseIf total > 1 AndAlso mine = 0 Then
 
-                ' [M] 어느 배치를 고른 것인지 특정하지 못한 경우.
-                '     조용히 전부 대치해 버리면 되돌릴 수 없으므로 반드시 묻는다.
                 Dim q3 As System.Windows.Forms.DialogResult = MessageBox.Show( _
                     pnm & " 부품이" & vbCrLf & _
                     "조립도 [" & asmNm & "] 에 " & total & "개 배치되어 있습니다." & vbCrLf & _
@@ -544,7 +348,6 @@ Sub Main()
                     mode = 2
                     asmNote &= "   " & pnm & " : 조립도 대치 안 함 (파일만 생성)" & vbCrLf
                 Else
-                    ' [N] 취소는 취소다.
                     CloseOpenedDrawings(openedByRule)
                     MessageBox.Show("규칙 실행을 취소했습니다." & vbCrLf & _
                                     "만들어진 파일은 없습니다.", "리비전 생성")
@@ -557,12 +360,8 @@ Sub Main()
         asmPlan.Add(mode)
     Next
 
-
-    '--- 2-2) 현품수정 대상 선택 --------------------------------------------
     Dim isFieldMod As New List(Of Boolean)
 
-    ' [C] 기본값은 "현재 상태 유지" 다.
-    '     선택창을 건너뛰더라도 기존 (현품수정) 표기가 지워지면 안 된다.
     For Each ix As Integer In picked
         Dim d0 As String = ReadProp(models(ix), "Description")
         isFieldMod.Add(d0.IndexOf(FIELD_MOD_TAG, StringComparison.Ordinal) >= 0)
@@ -570,8 +369,6 @@ Sub Main()
 
     If ASK_FIELD_MOD Then
 
-        ' 이미 현품수정이 붙어있는 항목은 체크된 상태로 보여준다.
-        ' 사용자는 "바꿀 것만" 건드리면 된다.
         Dim subNames As New List(Of String)
         Dim preChk   As New List(Of Boolean)
         Dim already2 As Integer = 0
@@ -607,7 +404,6 @@ Sub Main()
             Return
         End If
 
-        ' 선택 결과로 다시 채운다
         For i2 As Integer = 0 To isFieldMod.Count - 1
             isFieldMod(i2) = False
         Next
@@ -616,8 +412,6 @@ Sub Main()
         Next
     End If
 
-    '--- 3) 새 부품번호 확인 및 수정 (자동계산값을 미리 채워서 보여줌) --------
-    '     [D] 빈칸 / 금지문자 / 중복 / 기존 파일 충돌을 이 창에서 바로 잡는다
     Dim curPNs   As New List(Of String)
     Dim editPNs  As New List(Of String)
     Dim mdlPaths As New List(Of String)
@@ -632,7 +426,7 @@ Sub Main()
 
     If Not EditPartNumbers(curPNs, mdlPaths, drwPaths, editPNs) Then
         CloseOpenedDrawings(openedByRule)
-        Return                                                     ' 취소
+        Return
     End If
 
     Dim ep As Integer = 0
@@ -641,7 +435,6 @@ Sub Main()
         ep += 1
     Next
 
-    '--- 4) 계획 수립 및 충돌 검사 -------------------------------------------
     Dim plan       As String = ""
     Dim conflicts  As New List(Of String)
     Dim newIptList As New List(Of String)
@@ -666,11 +459,9 @@ Sub Main()
         newIptList.Add(newIpt)
         newIdwList.Add(newIdw)
 
-        ' [L] 실행 중에는 문서가 닫힐 수 있으므로 지금 값을 붙잡아 둔다
         oldIptList.Add(mdlPath)
         oldPNList.Add(ReadPN(models(ix)))
 
-        ' 최종 안전망 - 편집창을 통과했더라도 한 번 더 본다
         If System.IO.File.Exists(newIpt) Then conflicts.Add(System.IO.Path.GetFileName(newIpt))
         If System.IO.File.Exists(newIdw) Then conflicts.Add(System.IO.Path.GetFileName(newIdw))
 
@@ -693,7 +484,6 @@ Sub Main()
         planIdx += 1
     Next
 
-    '--- 5) 충돌 시 중단 -----------------------------------------------------
     If conflicts.Count > 0 Then
         CloseOpenedDrawings(openedByRule)
         MessageBox.Show("같은 이름의 파일이 이미 있습니다. 중단합니다." & vbCrLf & _
@@ -702,7 +492,6 @@ Sub Main()
         Return
     End If
 
-    '--- 6) 최종 확인 --------------------------------------------------------
     Dim ask As String = "아래대로 리비전을 생성합니다. (" & picked.Count & "건)" & vbCrLf & vbCrLf & _
                         plan & vbCrLf & _
                         "원본 파일은 수정하지 않습니다." & vbCrLf
@@ -725,10 +514,9 @@ Sub Main()
         Return
     End If
 
-    '--- 7) 실행 -------------------------------------------------------------
     Dim logTxt As String = ""
     Dim okCount As Integer = 0
-    Dim orphan As New List(Of String)          ' [J] 만들다 만 파일
+    Dim orphan As New List(Of String)
     Dim prevSilent As Boolean = ThisApplication.SilentOperation
 
     Try
@@ -738,8 +526,6 @@ Sub Main()
         For Each ix As Integer In picked
 
             n += 1
-            ' [L] 실행 전에 붙잡아 둔 값을 쓴다.
-            '     조립도 대치로 원본 문서가 닫히면 models(ix) 접근이 예외를 던진다.
             Dim oldPN  As String = oldPNList(n - 1)
             Dim newPN  As String = newPNs(ix)
             Dim newIpt As String = newIptList(n - 1)
@@ -751,9 +537,8 @@ Sub Main()
             Dim newModel As Inventor.Document = Nothing
             Dim newDrw   As Inventor.DrawingDocument = Nothing
 
-            ' ── 1단계 : 모델 사본 저장 ──
             Try
-                models(ix).SaveAs(newIpt, True)      ' True = 사본으로 저장, 원본 유지
+                models(ix).SaveAs(newIpt, True)
                 logTxt &= "  1) 모델 사본 : 성공" & vbCrLf
             Catch ex As Exception
                 logTxt &= "  1) 모델 사본 : 실패 → " & ex.Message & vbCrLf
@@ -761,14 +546,11 @@ Sub Main()
                 Continue For
             End Try
 
-            ' ── 2단계 : 새 모델 열고 부품번호 (+ 현품수정 표기) 수정 ──
             Try
                 newModel = ThisApplication.Documents.Open(newIpt, SHOW_NEW_MODEL)
                 WritePN(newModel, newPN)
                 logTxt &= "  2) 부품번호 수정 : 성공" & vbCrLf
 
-                ' 체크되어 있으면 태그를 붙이고, 해제되어 있으면 떼어낸다.
-                ' 이전 리비전에서 붙은 표기가 그대로 따라오는 것을 막는다.
                 Dim oldD As String = ReadProp(newModel, "Description")
                 Dim newD As String = ApplyTag(oldD, FIELD_MOD_TAG, isFieldMod(n - 1))
 
@@ -792,7 +574,6 @@ Sub Main()
                 Continue For
             End Try
 
-            ' ── 3단계 : 도면 사본 저장 ──
             Try
                 drawings(ix).SaveAs(newIdw, True)
                 logTxt &= "  3) 도면 사본 : 성공" & vbCrLf
@@ -804,11 +585,9 @@ Sub Main()
                 Continue For
             End Try
 
-            ' ── 4단계 : 새 도면 열고 참조 대체 ──
             Try
                 newDrw = CType(ThisApplication.Documents.Open(newIdw, True), Inventor.DrawingDocument)
 
-                ' [F] 대체하면 컬렉션이 바뀌므로 먼저 복사해 둔다
                 Dim fds As New List(Of Inventor.FileDescriptor)
                 For Each fd As Inventor.FileDescriptor In newDrw.File.ReferencedFileDescriptors
                     fds.Add(fd)
@@ -825,7 +604,6 @@ Sub Main()
                     End Try
                 Next
 
-                ' [F] 2차 시도 - 경로 표기가 달라(매핑 드라이브 / UNC) 못 찾은 경우
                 If replaced = 0 Then
                     Dim oldBase As String = System.IO.Path.GetFileName(oldIpt)
                     For Each fd As Inventor.FileDescriptor In fds
@@ -861,7 +639,6 @@ Sub Main()
                 Continue For
             End Try
 
-            ' ── 5단계 : 부품번호 토글로 타이틀블록 갱신 ──
             Try
                 Dim cur As String = ReadPN(newModel)
                 Dim restored As Boolean = False
@@ -889,8 +666,6 @@ Sub Main()
                 logTxt &= "  5) 타이틀블록 갱신 : 실패 → " & ex.Message & vbCrLf
             End Try
 
-            ' ── 6단계 : 새로 만든 파일 저장 ──  [B]
-            '    모델을 먼저 저장해야 도면이 확정된 참조를 보게 된다.
             If SAVE_NEW_FILES Then
                 Dim savedM As Boolean = False
                 Try
@@ -916,7 +691,6 @@ Sub Main()
                 logTxt &= "  6) 새 파일 저장 : 건너뜀 (설정) - ★ 직접 저장해야 부품번호가 반영됩니다" & vbCrLf
             End If
 
-            ' ── 7단계 : 조립도 구성요소 대치 ──
             If REPLACE_IN_ASM Then
 
                 If asmPlan(n - 1) = 2 Then
@@ -950,7 +724,6 @@ Sub Main()
         ThisApplication.SilentOperation = prevSilent
     End Try
 
-    '--- 8) 결과 보고 --------------------------------------------------------
     Dim msg As String = "리비전 생성 완료  (" & okCount & " / " & picked.Count & "건)" & vbCrLf & logTxt
 
     If orphan.Count > 0 Then
@@ -967,7 +740,6 @@ Sub Main()
                "   도면번호와 조립도를 확인한 뒤 저장하세요."
     End If
 
-    ' 로그 남기기를 선택했을 때만 파일로 저장한다
     If writeLog Then
         Try
             Dim lf As String = System.IO.Path.Combine( _
@@ -981,29 +753,13 @@ Sub Main()
     End If
 
     MessageBox.Show(msg, "리비전 생성")
-
 End Sub
 
-
-' ============================================================================
-'  열려있는 모든 조립도에서 oldPath 부품을 newPath 로 대치
-'  반환 : 대치한 구성요소 수 / 오류 시 -1
-'
-'  ThisApplication.Documents 에는 참조로 열린 하위 조립도까지 들어있으므로
-'  이 반복만으로 하위 조립도의 배치도 함께 처리된다.
-'  (하위 조립도 안의 부품은 그 하위 조립도 문서의 Occurrences 에만 있으므로
-'   중복 계산되지 않는다)
-'
-'  [G] Replace(path, True) 를 한 번 부르고 개수를 추정하던 방식을 버리고,
-'      하나씩 Replace(path, False) 로 바꾸며 실제 성공한 것만 센다.
-' ============================================================================
 Function ReplaceInAssemblies(oldPath As String, newPath As String, _
                              selOccs As List(Of Inventor.ComponentOccurrence), _
                              selOwner As String, _
                              onlySelected As Boolean, _
                              ByRef detail As String) As Integer
-
-    ' 대치 범위는 실행 전에 이미 결정되었다. 여기서는 묻지 않고 그대로 수행한다.
     Dim hit As Integer = 0
     detail = ""
 
@@ -1021,7 +777,6 @@ Function ReplaceInAssemblies(oldPath As String, newPath As String, _
             Catch
             End Try
 
-            ' 대치 중 컬렉션이 변하므로 대상을 먼저 모아둔다
             Dim victims As New List(Of Inventor.ComponentOccurrence)
 
             Try
@@ -1047,7 +802,7 @@ Function ReplaceInAssemblies(oldPath As String, newPath As String, _
 
             For Each v As Inventor.ComponentOccurrence In victims
                 Try
-                    v.Replace(newPath, False)      ' 하나씩 - 개수를 정확히 셀 수 있다
+                    v.Replace(newPath, False)
                     done += 1
                 Catch
                     fail += 1
@@ -1073,35 +828,13 @@ Function ReplaceInAssemblies(oldPath As String, newPath As String, _
     End Try
 
     Return hit
-
 End Function
 
-
-' ============================================================================
-'  해당 배치가 사용자가 선택한 것인지 판정
-'
-'  [E] 배치 이름(Part1:1)은 한 조립도 안에서만 고유하다. 이름만 비교하면
-'      다른 조립도에 있는 동명 배치까지 선택된 것으로 판정된다.
-'
-'  [M] 앞선 수정에서는 occ.Parent.Document 로 소속 조립도를 알아냈다.
-'      그런데 선택한 개체와 열거한 개체가 서로 다른 값을 내놓으면 판정이
-'      통째로 실패해 선택된 개수가 0 이 되고, 그 결과
-'      "선택한 것만 대치 / 전부 대치" 질문이 아예 뜨지 않은 채
-'      조용히 전부 대치로 넘어갔다.
-'
-'      이제 소속 문서를 구성요소에게 되묻지 않는다.
-'        · 열거 중인 개체의 소속 = 지금 훑고 있는 조립도 문서 (asmPath)
-'        · 선택한 개체의 소속     = 실행 시점의 활성 문서 (selOwner)
-'      둘 다 호출하는 쪽이 확실히 아는 값이므로 판정이 흔들리지 않는다.
-' ============================================================================
 Function IsSelected(v As Inventor.ComponentOccurrence, _
                     selOccs As List(Of Inventor.ComponentOccurrence), _
                     asmPath As String, selOwner As String) As Boolean
-
     If selOccs Is Nothing OrElse selOccs.Count = 0 Then Return False
 
-    ' 같은 개체를 가리키면 그것으로 끝.
-    ' COM 은 같은 대상이라도 래퍼가 달라 실패할 수 있어 이름 비교가 더 필요하다.
     For Each sel As Inventor.ComponentOccurrence In selOccs
         Try
             If v Is sel Then Return True
@@ -1109,8 +842,6 @@ Function IsSelected(v As Inventor.ComponentOccurrence, _
         End Try
     Next
 
-    ' 이름 비교는 선택이 이루어진 그 조립도 안에서만 유효하다.
-    ' 소속을 알 수 없을 때(selOwner 가 빈 값)는 예전처럼 이름만으로 판정한다.
     If selOwner <> "" AndAlso asmPath <> "" AndAlso _
        Not String.Equals(asmPath, selOwner, StringComparison.OrdinalIgnoreCase) Then
         Return False
@@ -1132,22 +863,12 @@ Function IsSelected(v As Inventor.ComponentOccurrence, _
     Next
 
     Return False
-
 End Function
 
-
-' ============================================================================
-'  조립도에서 해당 부품의 총 배치 수와 그중 선택된 수를 센다
-'
-'  [H] 예전에는 "배치가 가장 많은 조립도 하나" 만 봤다.
-'      부품이 여러 조립도(하위 조립도 포함)에 흩어져 있으면 숫자가 틀렸다.
-'      이제 열려있는 모든 조립도를 합산하고 조립도 이름을 모아서 보여준다.
-' ============================================================================
 Sub CountOccurrences(oldPath As String, _
                      selOccs As List(Of Inventor.ComponentOccurrence), _
                      selOwner As String, _
                      ByRef total As Integer, ByRef mine As Integer, ByRef asmName As String)
-
     total = 0
     mine = 0
     asmName = ""
@@ -1200,14 +921,8 @@ Sub CountOccurrences(oldPath As String, _
     End Try
 
     If asmList.Count > 0 Then asmName = String.Join(", ", asmList.ToArray())
-
 End Sub
 
-
-' ============================================================================
-'  부품번호 읽기 / 쓰기
-'  읽기에 실패하면 "" 를 돌려준다 (예전의 "읽기실패" 문자열 판정은 위험했다)
-' ============================================================================
 Function ReadPN(d As Inventor.Document) As String
     Try
         Return CStr(d.PropertySets.Item("Design Tracking Properties").Item("Part Number").Value)
@@ -1220,10 +935,6 @@ Sub WritePN(d As Inventor.Document, v As String)
     d.PropertySets.Item("Design Tracking Properties").Item("Part Number").Value = v
 End Sub
 
-
-' ============================================================================
-'  경로 목록에 해당 경로가 있는지 (대소문자 무시)
-' ============================================================================
 Function ContainsPath(list As List(Of String), p As String) As Boolean
     If list Is Nothing OrElse String.IsNullOrEmpty(p) Then Return False
     For Each s As String In list
@@ -1232,91 +943,42 @@ Function ContainsPath(list As List(Of String), p As String) As Boolean
     Return False
 End Function
 
-
-' ============================================================================
-'  규칙이 직접 연 도면을 도로 닫는다.  [N]
-'  취소했을 때 실행 전 상태로 되돌리기 위한 것이다.
-'  원래 열려있던 도면은 목록에 없으므로 건드리지 않는다.
-'  아직 아무것도 고치지 않은 문서들이라 저장 없이 닫아도 잃을 것이 없다.
-' ============================================================================
 Sub CloseOpenedDrawings(opened As List(Of Inventor.DrawingDocument))
-
     If opened Is Nothing Then Return
 
     For Each d As Inventor.DrawingDocument In opened
         Try
-            d.Close(True)      ' True = 저장하지 않고 닫기
+            d.Close(True)
         Catch
         End Try
     Next
 
     opened.Clear()
-
 End Sub
 
-
-' ============================================================================
-'  Enter / Esc 기본 버튼 지정                                           [O]
-'
-'  Inventor 2026 의 iLogic 은 최신 .NET 으로 컴파일한다. 그 WinForms 에서는
-'  Control 이 System.Private.Windows.Core 안의 내부 인터페이스
-'  (IHandle(Of ), IPersist.Interface) 를 구현하도록 바뀌었다.
-'
-'      frm.AcceptButton = btnOK
-'
-'  이 한 줄은 Button 을 IButtonControl 로 바꾸는 인터페이스 변환이다.
-'  컴파일러는 변환이 되는지 보려고 Button 이 구현한 인터페이스를 전부 훑는데,
-'  그 목록에 참조되지 않은 어셈블리의 타입이 끼어 있어 컴파일이 깨진다.
-'  iLogic 은 그 어셈블리를 참조하지 않는다.
-'
-'      "System.Private.Windows.Core ... 어셈블리에 대한 참조를 찾을 수 없습니다"
-'
-'  Text / Width / DialogResult 같은 값 대입은 인터페이스 변환이 아니라서
-'  멀쩡하다. 그래서 딱 이 두 줄만 오류가 났다.
-'
-'  리플렉션으로 넘기면 컴파일 시점에 인터페이스 목록을 들여다보지 않으므로
-'  문제가 사라진다. 실행 시점에는 어셈블리가 이미 메모리에 있어 정상 동작한다.
-'  혹시 실패하더라도 두 버튼에 DialogResult 가 이미 지정되어 있어
-'  마우스 클릭과 창 닫기(X)로는 그대로 동작한다.
-' ============================================================================
 Sub SetDefaultButtons(frm As System.Windows.Forms.Form, _
                       okBtn As System.Windows.Forms.Button, _
                       cancelBtn As System.Windows.Forms.Button)
-
-    ' Enter -> 확인
     Try
         frm.GetType().GetProperty("AcceptButton").SetValue(frm, okBtn)
     Catch
     End Try
 
-    ' Esc -> 취소
     Try
         frm.GetType().GetProperty("CancelButton").SetValue(frm, cancelBtn)
     Catch
     End Try
-
 End Sub
 
-
-' ============================================================================
-'  문서를 조용히 닫는다 (실패해도 무시)
-' ============================================================================
 Sub TryCloseDoc(d As Inventor.Document)
     If d Is Nothing Then Return
     Try
-        d.Close(True)      ' True = 저장하지 않고 닫기
+        d.Close(True)
     Catch
     End Try
 End Sub
 
-
-' ============================================================================
-'  모델 파일과 같은 이름의 도면 파일을 찾는다
-'  (도면 파일명은 항상 모델과 같다는 사내 규칙에 기반)
-'  찾으면 전체 경로를, 없으면 "" 를 반환한다
-' ============================================================================
 Function FindDrawingFor(modelPath As String) As String
-
     Try
         Dim dir  As String = System.IO.Path.GetDirectoryName(modelPath)
         Dim base As String = System.IO.Path.GetFileNameWithoutExtension(modelPath)
@@ -1330,22 +992,11 @@ Function FindDrawingFor(modelPath As String) As String
     End Try
 
     Return ""
-
 End Function
 
-
-' ============================================================================
-'  도면 파일을 연다. 이미 열려있으면 그 문서를 그대로 반환한다.
-'  실패하면 Nothing 을 반환한다.
-'
-'  justOpened : 이 호출이 직접 연 것이면 True.
-'               취소했을 때 규칙이 연 도면만 골라 닫기 위해 필요하다.  [N]
-' ============================================================================
 Function OpenDrawingDoc(dwgPath As String, ByRef justOpened As Boolean) As Inventor.DrawingDocument
-
     justOpened = False
 
-    ' 이미 열려있는지 먼저 확인
     Try
         For Each oDoc As Inventor.Document In ThisApplication.Documents
             If oDoc.DocumentType <> Inventor.DocumentTypeEnum.kDrawingDocumentObject Then Continue For
@@ -1359,7 +1010,6 @@ Function OpenDrawingDoc(dwgPath As String, ByRef justOpened As Boolean) As Inven
     Catch
     End Try
 
-    ' 없으면 새로 연다 (화면에 표시)
     Try
         Dim d As Inventor.DrawingDocument = _
             CType(ThisApplication.Documents.Open(dwgPath, True), Inventor.DrawingDocument)
@@ -1368,19 +1018,11 @@ Function OpenDrawingDoc(dwgPath As String, ByRef justOpened As Boolean) As Inven
     Catch
         Return Nothing
     End Try
-
 End Function
 
-
-' ============================================================================
-'  오류 메시지에서 원인을 추정해 대처법을 덧붙인다
-'  COM 오류 코드만으로는 원인을 알기 어려우므로 안내를 제공한다
-' ============================================================================
 Function Hint(errMsg As String) As String
-
     If errMsg Is Nothing Then Return ""
 
-    ' E_INVALIDARG : 지워진 파일의 참조가 메모리에 남아있을 때 자주 발생
     If errMsg.IndexOf("0x80070057", StringComparison.OrdinalIgnoreCase) >= 0 _
        OrElse errMsg.IndexOf("E_INVALIDARG", StringComparison.OrdinalIgnoreCase) >= 0 _
        OrElse errMsg.IndexOf("매개 변수가 틀립니다", StringComparison.Ordinal) >= 0 Then
@@ -1391,7 +1033,6 @@ Function Hint(errMsg As String) As String
                "            같은 이름과 부딪힙니다. 인벤터를 껐다 켤 필요는 없습니다." & vbCrLf
     End If
 
-    ' 접근 거부 / 읽기 전용
     If errMsg.IndexOf("0x80070005", StringComparison.OrdinalIgnoreCase) >= 0 _
        OrElse errMsg.IndexOf("액세스", StringComparison.Ordinal) >= 0 _
        OrElse errMsg.IndexOf("denied", StringComparison.OrdinalIgnoreCase) >= 0 Then
@@ -1400,7 +1041,6 @@ Function Hint(errMsg As String) As String
                "            Vault 체크아웃 상태와 폴더 쓰기 권한을 확인하세요." & vbCrLf
     End If
 
-    ' 파일 사용 중
     If errMsg.IndexOf("0x80070020", StringComparison.OrdinalIgnoreCase) >= 0 _
        OrElse errMsg.IndexOf("사용 중", StringComparison.Ordinal) >= 0 Then
 
@@ -1409,13 +1049,8 @@ Function Hint(errMsg As String) As String
     End If
 
     Return ""
-
 End Function
 
-
-' ============================================================================
-'  임의 iProperty 읽기 / 쓰기  (Description 등)
-' ============================================================================
 Function ReadProp(d As Inventor.Document, pname As String) As String
     Try
         Return CStr(d.PropertySets.Item("Design Tracking Properties").Item(pname).Value)
@@ -1428,60 +1063,32 @@ Sub WriteProp(d As Inventor.Document, pname As String, v As String)
     d.PropertySets.Item("Design Tracking Properties").Item(pname).Value = v
 End Sub
 
-
-' ============================================================================
-'  설명의 태그 상태를 목표대로 맞춘다 (양방향)
-'
-'   want=True  : 태그가 없으면 끝에 붙인다. 이미 있으면 그대로 둔다.
-'   want=False : 태그가 있으면 모두 떼어낸다. 없으면 그대로 둔다.
-'
-'  이전 리비전에서 붙은 (현품수정) 이 다음 리비전까지 따라오는 것을 막는다.
-'  태그가 중간에 있든 끝에 있든, 여러 번 붙어 있든 모두 제거한다.
-' ============================================================================
 Function ApplyTag(src As String, tag As String, want As Boolean) As String
-
     If src Is Nothing Then src = ""
     If String.IsNullOrEmpty(tag) Then Return src
 
     If want Then
-        ' 붙이기 - 이미 있으면 그대로
         If src.IndexOf(tag, StringComparison.Ordinal) >= 0 Then Return src
         Return src.TrimEnd() & tag
     End If
 
-    ' 떼기 - 여러 번 붙어 있어도 전부 제거
     Dim res As String = src
     Do While res.IndexOf(tag, StringComparison.Ordinal) >= 0
         res = res.Replace(tag, "")
     Loop
 
-    ' 태그를 떼면서 생긴 두 칸 공백을 정리한다
     Do While res.IndexOf("  ", StringComparison.Ordinal) >= 0
         res = res.Replace("  ", " ")
     Loop
 
     Return res.Trim()
-
 End Function
 
-
-' ============================================================================
-'  이미 만들어져 있는 리비전 중 가장 높은 것을 찾는다                    [R]
-'
-'  01-15 를 받으면 01-15A, 01-15B ... 를 차례로 확인하면서
-'  모델이나 도면 파일이 있는 마지막 리비전을 돌려준다.
-'  하나도 없으면 "" 를 돌려준다.
-'
-'  한 칸 비었다고 바로 멈추지 않는다. 중간 리비전을 지운 경우가 있기 때문이다.
-'  01-15A 와 01-15C 가 있고 B 만 없을 때 B 를 최신으로 보면 안 되고 C 로 봐야
-'  한다. 그래서 연달아 GAP 개가 비었을 때 비로소 멈춘다.
-' ============================================================================
 Function LatestExistingRev(curPN As String, skipLetters As String, _
                            mDir As String, mExt As String, _
                            dDir As String, dExt As String) As String
-
-    Dim GAP  As Integer = 3      ' 연속으로 이만큼 비면 멈춘다
-    Dim SCAN As Integer = 60     ' 무한 반복 방지
+    Dim GAP  As Integer = 3
+    Dim SCAN As Integer = 60
 
     Dim last  As String = ""
     Dim probe As String = curPN
@@ -1514,17 +1121,9 @@ Function LatestExistingRev(curPN As String, skipLetters As String, _
     Next
 
     Return last
-
 End Function
 
-
-' ============================================================================
-'  부품번호의 리비전 알파벳을 한 단계 올린다
-'   ...-06 -> ...-06A -> ...-06B ... ...-06Z -> ...-06AA
-'  판단할 수 없으면 "" 반환
-' ============================================================================
 Function BumpPartNumber(pn As String, skipLetters As String) As String
-
     If String.IsNullOrWhiteSpace(pn) Then Return ""
 
     Dim s As String = pn.Trim()
@@ -1544,12 +1143,9 @@ Function BumpPartNumber(pn As String, skipLetters As String) As String
     If nr = "" Then Return ""
 
     Return baseStr & nr
-
 End Function
 
-
 Function NextRev(rev As String, skipLetters As String) As String
-
     If skipLetters Is Nothing Then skipLetters = ""
 
     Dim allowed As String = ""
@@ -1563,7 +1159,7 @@ Function NextRev(rev As String, skipLetters As String) As String
     Dim idxList As New List(Of Integer)
     For Each ch As Char In rev
         Dim k As Integer = allowed.IndexOf(ch)
-        If k < 0 Then Return ""      ' 제외 문자가 이미 쓰였거나 알 수 없는 문자
+        If k < 0 Then Return ""
         idxList.Add(k)
     Next
 
@@ -1585,17 +1181,11 @@ Function NextRev(rev As String, skipLetters As String) As String
     Next
 
     Return res
-
 End Function
 
-
-' ============================================================================
-'  체크박스 목록 선택 대화상자
-' ============================================================================
 Function PickList(names As List(Of String), prompt As String, _
                   defaultChecked As Boolean, _
                   checkText As String, ByRef checkValue As Boolean) As List(Of Integer)
-
     Dim frm As New System.Windows.Forms.Form
     Dim picked As List(Of Integer) = Nothing
 
@@ -1621,7 +1211,6 @@ Function PickList(names As List(Of String), prompt As String, _
             clb.Items.Add(nm, defaultChecked)
         Next
 
-        ' 선택 사항 체크박스 (checkText 가 비어있으면 표시하지 않음)
         Dim chk As System.Windows.Forms.CheckBox = Nothing
         If checkText <> "" Then
             chk = New System.Windows.Forms.CheckBox
@@ -1645,7 +1234,7 @@ Function PickList(names As List(Of String), prompt As String, _
         frm.Controls.Add(clb)
         frm.Controls.Add(btnOK)
         frm.Controls.Add(btnCancel)
-        SetDefaultButtons(frm, btnOK, btnCancel)   ' [O] Enter / Esc
+        SetDefaultButtons(frm, btnOK, btnCancel)
 
         Dim result As System.Windows.Forms.DialogResult = frm.ShowDialog()
 
@@ -1662,31 +1251,14 @@ Function PickList(names As List(Of String), prompt As String, _
     End Try
 
     Return picked
-
 End Function
 
-
-' ============================================================================
-'  새 부품번호를 한 창에서 모두 편집한다
-'  왼쪽에 현재 번호, 오른쪽 입력칸에 자동계산된 새 번호가 채워져 있다.
-'
-'  [D] 확인을 누르면 아래를 검사하고, 문제가 있으면 창을 닫지 않는다.
-'      - 파일명에 쓸 수 없는 문자
-'      - 현재 부품번호와 같음
-'      - 목록 안에서 중복
-'      - 같은 이름의 ipt / idw 가 이미 존재
-'      빈칸은 자동 계산값을 그대로 쓴다.
-'
-'  반환 : 확인=True (editPNs 갱신) / 취소=False
-' ============================================================================
 Function EditPartNumbers(curPNs As List(Of String), _
                          mdlPaths As List(Of String), _
                          drwPaths As List(Of String), _
                          ByRef editPNs As List(Of String)) As Boolean
-
     Dim n As Integer = curPNs.Count
 
-    ' 자동 계산값 보관 - 빈칸일 때 되돌릴 기준
     Dim autoPNs As New List(Of String)
     For i As Integer = 0 To n - 1
         autoPNs.Add(editPNs(i))
@@ -1715,7 +1287,6 @@ Function EditPartNumbers(curPNs As List(Of String), _
         lbl.SetBounds(12, 12, 680, 20)
         frm.Controls.Add(lbl)
 
-        ' 스크롤 가능한 영역
         Dim pnl As New System.Windows.Forms.Panel
         pnl.SetBounds(12, 38, 686, listH)
         pnl.AutoScroll = True
@@ -1750,11 +1321,10 @@ Function EditPartNumbers(curPNs As List(Of String), _
         btnCancel.DialogResult = System.Windows.Forms.DialogResult.Cancel
         frm.Controls.Add(btnCancel)
 
-        SetDefaultButtons(frm, btnOK, btnCancel)   ' [O] Enter / Esc
+        SetDefaultButtons(frm, btnOK, btnCancel)
 
         Dim bad As Char() = System.IO.Path.GetInvalidFileNameChars()
 
-        ' 검사를 통과할 때까지 다시 보여준다
         Do
             Dim res As System.Windows.Forms.DialogResult = frm.ShowDialog()
             If res <> System.Windows.Forms.DialogResult.OK Then Exit Do
@@ -1766,7 +1336,7 @@ Function EditPartNumbers(curPNs As List(Of String), _
                 Dim v As String = boxes(i).Text
                 If v Is Nothing Then v = ""
                 v = v.Trim()
-                If v = "" Then v = autoPNs(i)     ' 빈칸이면 자동 계산값
+                If v = "" Then v = autoPNs(i)
                 vals.Add(v)
             Next
 
@@ -1789,7 +1359,6 @@ Function EditPartNumbers(curPNs As List(Of String), _
                     Continue For
                 End If
 
-                ' 목록 안에서 중복
                 For j As Integer = 0 To i - 1
                     If String.Equals(v, vals(j), StringComparison.OrdinalIgnoreCase) Then
                         err &= "· " & v & " : 목록 안에서 중복됩니다 (" & (j + 1) & "번, " & (i + 1) & "번)" & vbCrLf
@@ -1797,7 +1366,6 @@ Function EditPartNumbers(curPNs As List(Of String), _
                     End If
                 Next
 
-                ' 같은 이름 파일이 이미 있는지
                 Try
                     Dim mDir As String = System.IO.Path.GetDirectoryName(mdlPaths(i))
                     Dim dDir As String = System.IO.Path.GetDirectoryName(drwPaths(i))
@@ -1833,19 +1401,11 @@ Function EditPartNumbers(curPNs As List(Of String), _
     End Try
 
     Return ok
-
 End Function
 
-
-' ============================================================================
-'  체크박스 목록 - 항목마다 초기 체크 상태를 따로 지정한다
-'  (기존 PickList 는 전체 일괄 체크만 가능)
-'  반환 : 선택된 인덱스 목록 / 취소하면 Nothing
-' ============================================================================
 Function PickListPre(names As List(Of String), prompt As String, _
                      preChecked As List(Of Boolean), _
                      checkText As String, ByRef checkValue As Boolean) As List(Of Integer)
-
     Dim frm As New System.Windows.Forms.Form
     Dim picked As List(Of Integer) = Nothing
 
@@ -1896,7 +1456,7 @@ Function PickListPre(names As List(Of String), prompt As String, _
         frm.Controls.Add(clb)
         frm.Controls.Add(btnOK)
         frm.Controls.Add(btnCancel)
-        SetDefaultButtons(frm, btnOK, btnCancel)   ' [O] Enter / Esc
+        SetDefaultButtons(frm, btnOK, btnCancel)
 
         Dim result As System.Windows.Forms.DialogResult = frm.ShowDialog()
 
@@ -1913,5 +1473,4 @@ Function PickListPre(names As List(Of String), prompt As String, _
     End Try
 
     Return picked
-
 End Function
