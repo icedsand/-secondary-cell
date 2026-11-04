@@ -9,7 +9,6 @@ Sub Main()
 
     Dim FIELD_MOD_TAG  As String  = "(현품수정)"
     Dim ASK_FIELD_MOD  As Boolean = True      ' False=현품수정 선택창을 건너뜀
-    Dim WRITE_LOG_DEF  As Boolean = True      ' 로그 남기기 체크박스의 기본값
 
     Dim SAVE_NEW_FILES As Boolean = True      ' 새 ipt / idw 만 저장 (조립도는 저장 안 함)
     Dim SHOW_NEW_MODEL As Boolean = True      ' 새 모델을 화면에 표시
@@ -217,7 +216,6 @@ Sub Main()
         pickMsg &= "   (조건 불일치 " & skipped.Count & "건 제외)"
     End If
 
-    Dim writeLog As Boolean = WRITE_LOG_DEF
     Dim picked As List(Of Integer) = Nothing
 
     If useSelection Then
@@ -229,8 +227,7 @@ Sub Main()
 
     Else
 
-        picked = PickList(names, pickMsg, True, _
-                          "리비전 생성 로그를 바탕화면에 남기기", writeLog)
+        picked = PickList(names, pickMsg, True)
         If picked Is Nothing Then
             CloseOpenedDrawings(openedByRule)
             Return
@@ -288,7 +285,6 @@ Sub Main()
     End If
 
     Dim asmPlan As New List(Of Integer)
-    Dim asmNote As String = ""
 
     For Each ix As Integer In picked
 
@@ -317,12 +313,8 @@ Sub Main()
 
                 If q2 = DialogResult.Yes Then
                     mode = 1
-                    asmNote &= "   " & pnm & _
-                               " : 선택한 " & mine & " / " & total & "개만 대치" & vbCrLf
                 ElseIf q2 = DialogResult.No Then
                     mode = 0
-                    asmNote &= "   " & pnm & _
-                               " : " & total & "개 전부 대치" & vbCrLf
                 Else
                     CloseOpenedDrawings(openedByRule)
                     MessageBox.Show("규칙 실행을 취소했습니다." & vbCrLf & _
@@ -343,10 +335,8 @@ Sub Main()
 
                 If q3 = DialogResult.Yes Then
                     mode = 0
-                    asmNote &= "   " & pnm & " : " & total & "개 전부 대치" & vbCrLf
                 ElseIf q3 = DialogResult.No Then
                     mode = 2
-                    asmNote &= "   " & pnm & " : 조립도 대치 안 함 (파일만 생성)" & vbCrLf
                 Else
                     CloseOpenedDrawings(openedByRule)
                     MessageBox.Show("규칙 실행을 취소했습니다." & vbCrLf & _
@@ -396,8 +386,7 @@ Sub Main()
             msg2 &= "   (이미 붙어있는 " & already2 & "건은 체크된 상태입니다. 해제하면 제거됩니다)"
         End If
 
-        Dim dummy As Boolean = False
-        Dim picked2 As List(Of Integer) = PickListPre(subNames, msg2, preChk, "", dummy)
+        Dim picked2 As List(Of Integer) = PickListPre(subNames, msg2, preChk)
 
         If picked2 Is Nothing Then
             CloseOpenedDrawings(openedByRule)
@@ -435,13 +424,11 @@ Sub Main()
         ep += 1
     Next
 
-    Dim plan       As String = ""
     Dim conflicts  As New List(Of String)
     Dim newIptList As New List(Of String)
     Dim newIdwList As New List(Of String)
     Dim oldIptList As New List(Of String)
     Dim oldPNList  As New List(Of String)
-    Dim planIdx    As Integer = 0
 
     For Each ix As Integer In picked
 
@@ -465,23 +452,6 @@ Sub Main()
         If System.IO.File.Exists(newIpt) Then conflicts.Add(System.IO.Path.GetFileName(newIpt))
         If System.IO.File.Exists(newIdw) Then conflicts.Add(System.IO.Path.GetFileName(newIdw))
 
-        plan &= "● " & ReadPN(models(ix)) & "  →  " & newPNs(ix) & vbCrLf
-        plan &= "   모델 : " & System.IO.Path.GetFileName(newIpt) & vbCrLf
-        plan &= "   도면 : " & System.IO.Path.GetFileName(newIdw) & vbCrLf
-
-        Dim curD As String = ReadProp(models(ix), "Description")
-        Dim tgtD As String = ApplyTag(curD, FIELD_MOD_TAG, isFieldMod(planIdx))
-
-        If tgtD <> curD Then
-            plan &= "   설명 : " & curD & "  →  " & tgtD
-            If isFieldMod(planIdx) Then
-                plan &= "   (현품수정 표기)" & vbCrLf
-            Else
-                plan &= "   (현품수정 표기 제거)" & vbCrLf
-            End If
-        End If
-
-        planIdx += 1
     Next
 
     If conflicts.Count > 0 Then
@@ -489,28 +459,6 @@ Sub Main()
         MessageBox.Show("같은 이름의 파일이 이미 있습니다. 중단합니다." & vbCrLf & _
                         "(덮어쓰지 않습니다)" & vbCrLf & vbCrLf & _
                         String.Join(vbCrLf, conflicts.ToArray()), "리비전 생성 - 중단")
-        Return
-    End If
-
-    Dim ask As String = "아래대로 리비전을 생성합니다. (" & picked.Count & "건)" & vbCrLf & vbCrLf & _
-                        plan & vbCrLf & _
-                        "원본 파일은 수정하지 않습니다." & vbCrLf
-    If REPLACE_IN_ASM Then
-        ask &= "열려있는 조립도의 구성요소도 새 부품으로 대치합니다." & vbCrLf
-        If asmNote <> "" Then ask &= vbCrLf & "[대치 범위]" & vbCrLf & asmNote
-    End If
-
-    If SAVE_NEW_FILES Then
-        ask &= vbCrLf & "※ 새로 만든 파일(ipt / idw)은 저장됩니다." & vbCrLf & _
-               "   조립도는 저장하지 않으니 확인 후 직접 저장하세요."
-    Else
-        ask &= vbCrLf & "※ 저장은 하지 않습니다. 확인 후 직접 저장하세요." & vbCrLf & _
-               "   저장하지 않으면 새 파일의 부품번호가 이전 값으로 남습니다."
-    End If
-
-    If MessageBox.Show(ask, "리비전 생성 - 최종 확인", _
-                       MessageBoxButtons.OKCancel) <> DialogResult.OK Then
-        CloseOpenedDrawings(openedByRule)
         Return
     End If
 
@@ -738,18 +686,6 @@ Sub Main()
     Else
         msg &= vbCrLf & "※ 아직 저장되지 않았습니다." & vbCrLf & _
                "   도면번호와 조립도를 확인한 뒤 저장하세요."
-    End If
-
-    If writeLog Then
-        Try
-            Dim lf As String = System.IO.Path.Combine( _
-                System.Environment.GetFolderPath(System.Environment.SpecialFolder.DesktopDirectory), _
-                "리비전생성_로그.txt")
-            System.IO.File.WriteAllText(lf, msg, System.Text.Encoding.UTF8)
-            msg &= vbCrLf & vbCrLf & "※ 바탕화면에 로그 저장됨 : 리비전생성_로그.txt"
-        Catch ex As Exception
-            msg &= vbCrLf & vbCrLf & "※ 로그 저장 실패 : " & ex.Message
-        End Try
     End If
 
     MessageBox.Show(msg, "리비전 생성")
@@ -1184,8 +1120,7 @@ Function NextRev(rev As String, skipLetters As String) As String
 End Function
 
 Function PickList(names As List(Of String), prompt As String, _
-                  defaultChecked As Boolean, _
-                  checkText As String, ByRef checkValue As Boolean) As List(Of Integer)
+                  defaultChecked As Boolean) As List(Of Integer)
     Dim frm As New System.Windows.Forms.Form
     Dim picked As List(Of Integer) = Nothing
 
@@ -1211,14 +1146,6 @@ Function PickList(names As List(Of String), prompt As String, _
             clb.Items.Add(nm, defaultChecked)
         Next
 
-        Dim chk As System.Windows.Forms.CheckBox = Nothing
-        If checkText <> "" Then
-            chk = New System.Windows.Forms.CheckBox
-            chk.Text = checkText
-            chk.Checked = checkValue
-            chk.SetBounds(12, 398, 320, 24)
-            frm.Controls.Add(chk)
-        End If
 
         Dim btnOK As New System.Windows.Forms.Button
         btnOK.Text = "확인"
@@ -1243,7 +1170,6 @@ Function PickList(names As List(Of String), prompt As String, _
             For Each ix As Integer In clb.CheckedIndices
                 picked.Add(ix)
             Next
-            If chk IsNot Nothing Then checkValue = chk.Checked
         End If
 
     Finally
@@ -1275,7 +1201,7 @@ Function EditPartNumbers(curPNs As List(Of String), _
     Try
         frm.Text = "새 부품번호 확인"
         frm.Width = 720
-        frm.Height = listH + 150
+        frm.Height = listH + 166
         frm.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen
         frm.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog
         frm.MinimizeBox = False
@@ -1283,12 +1209,13 @@ Function EditPartNumbers(curPNs As List(Of String), _
         frm.TopMost = True
 
         Dim lbl As New System.Windows.Forms.Label
-        lbl.Text = "자동 계산된 새 부품번호입니다. 필요하면 오른쪽 칸에서 수정하세요."
-        lbl.SetBounds(12, 12, 680, 20)
+        lbl.Text = "자동 계산된 새 부품번호입니다. 필요하면 오른쪽 칸에서 수정하세요." & vbCrLf & _
+                   "[생성] 을 누르면 바로 리비전을 만듭니다."
+        lbl.SetBounds(12, 12, 680, 36)
         frm.Controls.Add(lbl)
 
         Dim pnl As New System.Windows.Forms.Panel
-        pnl.SetBounds(12, 38, 686, listH)
+        pnl.SetBounds(12, 54, 686, listH)
         pnl.AutoScroll = True
         frm.Controls.Add(pnl)
 
@@ -1310,14 +1237,14 @@ Function EditPartNumbers(curPNs As List(Of String), _
         Next
 
         Dim btnOK As New System.Windows.Forms.Button
-        btnOK.Text = "확인"
-        btnOK.SetBounds(494, listH + 52, 92, 32)
+        btnOK.Text = "생성"
+        btnOK.SetBounds(494, listH + 68, 92, 32)
         btnOK.DialogResult = System.Windows.Forms.DialogResult.OK
         frm.Controls.Add(btnOK)
 
         Dim btnCancel As New System.Windows.Forms.Button
         btnCancel.Text = "취소"
-        btnCancel.SetBounds(598, listH + 52, 92, 32)
+        btnCancel.SetBounds(598, listH + 68, 92, 32)
         btnCancel.DialogResult = System.Windows.Forms.DialogResult.Cancel
         frm.Controls.Add(btnCancel)
 
@@ -1404,8 +1331,7 @@ Function EditPartNumbers(curPNs As List(Of String), _
 End Function
 
 Function PickListPre(names As List(Of String), prompt As String, _
-                     preChecked As List(Of Boolean), _
-                     checkText As String, ByRef checkValue As Boolean) As List(Of Integer)
+                     preChecked As List(Of Boolean)) As List(Of Integer)
     Dim frm As New System.Windows.Forms.Form
     Dim picked As List(Of Integer) = Nothing
 
@@ -1433,14 +1359,6 @@ Function PickListPre(names As List(Of String), prompt As String, _
             clb.Items.Add(names(i), ck)
         Next
 
-        Dim chk As System.Windows.Forms.CheckBox = Nothing
-        If checkText <> "" Then
-            chk = New System.Windows.Forms.CheckBox
-            chk.Text = checkText
-            chk.Checked = checkValue
-            chk.SetBounds(12, 398, 320, 24)
-            frm.Controls.Add(chk)
-        End If
 
         Dim btnOK As New System.Windows.Forms.Button
         btnOK.Text = "확인"
@@ -1465,7 +1383,6 @@ Function PickListPre(names As List(Of String), prompt As String, _
             For Each ix As Integer In clb.CheckedIndices
                 picked.Add(ix)
             Next
-            If chk IsNot Nothing Then checkValue = chk.Checked
         End If
 
     Finally
