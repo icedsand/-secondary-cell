@@ -71,6 +71,8 @@ Sub Main()
     ' ── 설정 ────────────────────────────────────────────────────────────────
     Dim TOL_COAX       As Double  = 0.02    ' mm  중심이 이 안쪽이면 같은 축
     Dim TOL_GAP        As Double  = 0.05    ' mm  구멍 끝 사이가 이 안쪽이면 맞닿은 것
+    Dim LINK_GAP       As Double  = 2.0     ' mm  끝 사이 틈이 이 안쪽이고 사이가 비어 있어도 짝으로 봄
+                                            '     (탭 입구 모따기, 모델링 안 한 와셔, 부품 사이 틈)
     Dim MAX_HOLE_D     As Double  = 45      ' mm  이보다 큰 원통면은 구멍으로 보지 않음
     Dim CHECK_BLOCKED  As Boolean = True    ' 짝 없는 구멍이 상대 부품 면에 막혔는지 검사
     Dim LOG_OK         As Boolean = True    ' 로그에 이상 없는 체결부도 남김
@@ -78,6 +80,8 @@ Sub Main()
     Dim SELECT_ERRORS  As Boolean = True    ' 끝나면 오류 구멍을 화면에서 선택해 둠
     Dim LOG_DIR_NAME   As String  = "체결검사"
     Dim LIST_MAX       As Integer = 15      ' 요약 창에 보여줄 줄 수
+    Dim DEBUG_HOLES    As Boolean = False   ' True = 찾은 구멍 전체 목록을 로그 폴더에 따로 남김
+                                            '        (오탐 원인 확인용)
 
     ' 이 글자가 파일 이름이나 설명에 있으면 볼트로 본다.
     ' 구멍 끝을 볼트가 막고 있으면 "막힘" 이 아니라 체결된 것으로 본다.
@@ -249,6 +253,10 @@ Sub Main()
     Dim misB   As New List(Of Integer)     '            구멍 j*2+f
     Dim misRho As New List(Of Double)      '            중심 거리 mm
 
+    Dim gapA   As New List(Of Integer)     ' 틈을 두고 마주보는 짝 후보
+    Dim gapB   As New List(Of Integer)
+    Dim gapRho As New List(Of Double)
+
     For i As Integer = 0 To insts.Count - 1
 
         Dim ha As Inst = insts(i)
@@ -288,13 +296,25 @@ Sub Main()
                             Dim vy As Double = pb(1) - pa(1)
                             Dim vz As Double = pb(2) - pa(2)
                             Dim axd As Double = vx * ha.D(0) + vy * ha.D(1) + vz * ha.D(2)
-                            If Math.Abs(axd) > TOL_GAP Then Continue For
+                            If Math.Abs(axd) > LINK_GAP Then Continue For
 
                             ' 서로 반대쪽에서 마주보는지 (구멍 몸통이 면의 양쪽에 있어야 함)
                             Dim sb As Double = If(fb = 0, 1.0, -1.0)
                             If sa * sb * dt >= 0 Then Continue For
 
                             Dim rho As Double = Math.Sqrt(Math.Max(0, vx * vx + vy * vy + vz * vz - axd * axd))
+
+                            ' 틈이 있으면 후보로만 모아 두고, 사이가 비어 있는지 나중에 본다.
+                            ' B 가 A 끝의 바깥쪽에 있어야 한다 (A 바깥 방향 = -sa * D)
+                            If Math.Abs(axd) > TOL_GAP Then
+                                If -sa * axd <= 0 Then Continue For
+                                If rho <= TOL_COAX OrElse rho < OpenR(ha, e) + OpenR(hb, fb) Then
+                                    gapA.Add(i * 2 + e)
+                                    gapB.Add(code)
+                                    gapRho.Add(rho)
+                                End If
+                                Continue For
+                            End If
 
                             If rho <= TOL_COAX Then
                                 Union(par, i, j)
@@ -312,6 +332,40 @@ Sub Main()
         Next
     Next
 
+    ' 틈을 두고 마주보는 짝 : 양쪽 끝이 열려 있고 사이에 다른 부품이 없으면 짝으로 본다.
+    ' 탭 입구 모따기(접시)를 못 읽어 탭 구멍이 면보다 안쪽에서 시작하는 경우,
+    ' 모델링하지 않은 와셔 / 부품 사이 틈이 있는 경우를 살린다.
+    Dim rayOk As Boolean = True
+
+    For k As Integer = 0 To gapA.Count - 1
+        Dim ia As Inst = insts(gapA(k) \ 2)
+        Dim ib As Inst = insts(gapB(k) \ 2)
+        Dim ea As Integer = gapA(k) Mod 2
+        Dim eb As Integer = gapB(k) Mod 2
+        If ia.St(ea) = ST_LINKED() OrElse ib.St(eb) = ST_LINKED() Then Continue For
+        If Not rayOk Then Exit For
+
+        Dim pa() As Double = EndPt(ia, ea)
+        Dim pb() As Double = EndPt(ib, eb)
+        Dim gm() As Double = {(pa(0) + pb(0)) / 2, (pa(1) + pb(1)) / 2, (pa(2) + pb(2)) / 2}
+        Dim sgn As Double = If(ea = 0, -1.0, 1.0)
+        Dim dir() As Double = SkewDir(ia.D, sgn)
+
+        ' 사이(틈 가운데)가 어느 부품 안이면 (막힌 구멍 바닥, 끼어 있는 판) 짝이 아님
+        If InsideAny(gm, dir, occs, -1, tg, rayOk) >= 0 Then Continue For
+        If Not rayOk Then Exit For
+
+        If gapRho(k) <= TOL_COAX Then
+            Union(par, gapA(k) \ 2, gapB(k) \ 2)
+            ia.St(ea) = ST_LINKED()
+            ib.St(eb) = ST_LINKED()
+        Else
+            misA.Add(gapA(k))
+            misB.Add(gapB(k))
+            misRho.Add(gapRho(k))
+        End If
+    Next
+
     ' 어긋난 짝 : 어느 쪽이든 다른 구멍과 제대로 짝이 지어졌으면 무시
     For k As Integer = 0 To misA.Count - 1
         Dim ia As Inst = insts(misA(k) \ 2)
@@ -324,7 +378,6 @@ Sub Main()
     Next
 
     '--- 6) 짝 없는 구멍 끝이 상대 부품 면에 막혔는지 ----------------------
-    Dim rayOk As Boolean = True
     Dim nTested As Integer = 0
 
     If CHECK_BLOCKED Then
@@ -478,6 +531,14 @@ Sub Main()
         Catch ex As Exception
             saveErr &= vbCrLf & "바탕화면 저장도 실패 : " & ex.Message
             csvPath = ""
+        End Try
+    End If
+
+    If DEBUG_HOLES AndAlso csvPath <> "" Then
+        Try
+            WriteHoleList(System.IO.Path.Combine(logDir, "체결검사_" & asmBase & "_" & stamp & "_구멍목록.csv"), _
+                          insts, occs, par)
+        Catch
         End Try
     End If
 
@@ -1372,9 +1433,13 @@ Sub TestEnd(it As Inst, e As Integer, occs As List(Of OccRec), _
             tg As Inventor.TransientGeometry, ByRef rayOk As Boolean)
 
     Dim sgn As Double = If(e = 0, -1.0, 1.0)            ' 바깥 방향
-    Dim dir() As Double = {it.D(0) * sgn, it.D(1) * sgn, it.D(2) * sgn}
     Dim ep() As Double = EndPt(it, e)
-    Dim pt() As Double = {ep(0) + dir(0) * 0.05, ep(1) + dir(1) * 0.05, ep(2) + dir(2) * 0.05}
+    Dim pt() As Double = {ep(0) + it.D(0) * sgn * 0.05, ep(1) + it.D(1) * sgn * 0.05, ep(2) + it.D(2) * sgn * 0.05}
+
+    ' 광선은 구멍 축과 비스듬하게 쏜다.
+    ' 축을 따라 쏘면 상대 탭 구멍의 드릴 끝(원뿔 꼭짓점)에 정확히 맞아
+    ' 면 방향을 잘못 읽고 "재료 안" 으로 판정하는 일이 생긴다.
+    Dim dir() As Double = SkewDir(it.D, sgn)
 
     ' 자기 부품 안쪽이면 막힌 구멍의 바닥
     If PointInOcc(occs(it.O), pt, dir, tg, rayOk) Then
@@ -1383,8 +1448,27 @@ Sub TestEnd(it As Inst, e As Integer, occs As List(Of OccRec), _
     End If
     If Not rayOk Then Return
 
+    Dim k As Integer = InsideAny(pt, dir, occs, it.O, tg, rayOk)
+    If Not rayOk Then Return
+
+    If k < 0 Then
+        it.St(e) = ST_OPEN()
+    ElseIf occs(k).Data.IsFastener Then
+        it.St(e) = ST_FASTENER()
+    Else
+        it.St(e) = ST_BLOCKED()
+        it.Blk(e) = k
+    End If
+
+End Sub
+
+
+' 점이 들어 있는 부품 번호 (skip 번호는 건너뜀), 없으면 -1
+Function InsideAny(pt() As Double, dir() As Double, occs As List(Of OccRec), skip As Integer, _
+                   tg As Inventor.TransientGeometry, ByRef rayOk As Boolean) As Integer
+
     For k As Integer = 0 To occs.Count - 1
-        If k = it.O Then Continue For
+        If k = skip Then Continue For
         Dim oc As OccRec = occs(k)
         If oc.HasBox Then
             If pt(0) < oc.WMin(0) - 0.01 OrElse pt(0) > oc.WMax(0) + 0.01 Then Continue For
@@ -1392,21 +1476,39 @@ Sub TestEnd(it As Inst, e As Integer, occs As List(Of OccRec), _
             If pt(2) < oc.WMin(2) - 0.01 OrElse pt(2) > oc.WMax(2) + 0.01 Then Continue For
         End If
 
-        If PointInOcc(oc, pt, dir, tg, rayOk) Then
-            If oc.Data.IsFastener Then
-                it.St(e) = ST_FASTENER()
-            Else
-                it.St(e) = ST_BLOCKED()
-                it.Blk(e) = k
-            End If
-            Return
-        End If
-        If Not rayOk Then Return
+        If PointInOcc(oc, pt, dir, tg, rayOk) Then Return k
+        If Not rayOk Then Return -1
     Next
+    Return -1
 
-    it.St(e) = ST_OPEN()
+End Function
 
-End Sub
+
+' 구멍 축(d) 의 sgn 쪽으로 기울어진, 축과도 부품 면과도 나란하지 않은 방향
+Function SkewDir(d() As Double, sgn As Double) As Double()
+
+    Dim ax As Double = d(0), ay As Double = d(1), az As Double = d(2)
+    Dim e1x As Double, e1y As Double, e1z As Double
+    If Math.Abs(ax) < 0.9 Then
+        e1x = 0 : e1y = az : e1z = -ay
+    Else
+        e1x = -az : e1y = 0 : e1z = ax
+    End If
+    Dim el As Double = Math.Sqrt(e1x * e1x + e1y * e1y + e1z * e1z)
+    e1x /= el : e1y /= el : e1z /= el
+    Dim e2x As Double = ay * e1z - az * e1y
+    Dim e2y As Double = az * e1x - ax * e1z
+    Dim e2z As Double = ax * e1y - ay * e1x
+
+    Dim r(2) As Double
+    r(0) = ax * sgn * 0.6 + e1x * 0.64 + e2x * 0.48
+    r(1) = ay * sgn * 0.6 + e1y * 0.64 + e2y * 0.48
+    r(2) = az * sgn * 0.6 + e1z * 0.64 + e2z * 0.48
+    Dim ln As Double = Math.Sqrt(r(0) * r(0) + r(1) * r(1) + r(2) * r(2))
+    r(0) /= ln : r(1) /= ln : r(2) /= ln
+    Return r
+
+End Function
 
 
 Function PointInOcc(oc As OccRec, w() As Double, wd() As Double, _
@@ -2149,6 +2251,48 @@ Sub WriteLogs(csvPath As String, txtPath As String, results As List(Of Res), _
     System.IO.File.WriteAllText(txtPath, txt.ToString(), New System.Text.UTF8Encoding(True))
 
 End Sub
+
+
+' ============================================================================
+'  (DEBUG_HOLES) 찾은 구멍 전체 목록 - 오탐 원인 확인용
+' ============================================================================
+Sub WriteHoleList(path As String, insts As List(Of Inst), occs As List(Of OccRec), par As List(Of Integer))
+
+    Dim sb As New System.Text.StringBuilder
+    sb.AppendLine("부품,구멍,정보,피처,체결부 번호,끝0 X,끝0 Y,끝0 Z,끝0 상태,끝0 지름,끝1 X,끝1 Y,끝1 Z,끝1 상태,끝1 지름,길이,부품 경로")
+
+    For i As Integer = 0 To insts.Count - 1
+        Dim it As Inst = insts(i)
+        Dim h As HoleRec = it.H
+        Dim src As String = "형상"
+        Dim feat As String = ""
+        If h.Info IsNot Nothing Then
+            src = If(h.Info.IsHoleFeat, "구멍피처", "나사피처")
+            feat = h.Info.FeatName
+        End If
+        sb.AppendLine(CsvQ(occs(it.O).Name) & "," & CsvQ(HoleDesc(h)) & "," & src & "," & CsvQ(feat) & "," & _
+                      FindRoot(par, i) & "," & _
+                      F(it.E0(0)) & "," & F(it.E0(1)) & "," & F(it.E0(2)) & "," & StName(it.St(0)) & "," & F(h.Open0) & "," & _
+                      F(it.E1(0)) & "," & F(it.E1(1)) & "," & F(it.E1(2)) & "," & StName(it.St(1)) & "," & F(h.Open1) & "," & _
+                      F(h.T1 - h.T0) & "," & CsvQ(it.PathText))
+    Next
+
+    System.IO.File.WriteAllText(path, sb.ToString(), New System.Text.UTF8Encoding(True))
+
+End Sub
+
+
+Function StName(st As Integer) As String
+    Select Case st
+        Case 1 : Return "짝"
+        Case 2 : Return "어긋남"
+        Case 3 : Return "막힘"
+        Case 4 : Return "볼트"
+        Case 5 : Return "바닥"
+        Case 6 : Return "열림"
+    End Select
+    Return "-"
+End Function
 
 
 ' ============================================================================
