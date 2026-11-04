@@ -56,6 +56,8 @@
 '
 '  [조립도에서 색을 덮어쓴 부품]
 '   조립도에서 부품에 색을 지정해 두었으면 부품 면 색이 가려 보이지 않는다.
+'   하위 조립품 전체에 색을 지정해 둔 경우도 그 안의 부품이 모두 가려진다.
+'   그래서 부품부터 맨 위 하위 조립품까지 덮어쓴 색을 위쪽부터 차례로 푼다.
 '   그런 부품이 있으면 뷰 표현 "가공색상 확인(임시)" 을 새로 만들어 그 안에서만
 '   덮어쓴 색을 풀어 준다. 원래 뷰 표현은 건드리지 않는다.
 '   [원래대로] 는 원래 뷰 표현으로 돌아가고 임시 뷰 표현을 지운다.
@@ -255,6 +257,7 @@ Sub PaintMode(top As Inventor.Document, prefixes As List(Of String), maxRev As I
     Dim cleanList As New List(Of Inventor.Document)
     Dim occShown As Integer = 0
     Dim occStill As Integer = 0
+    Dim stillNames As New List(Of String)
     Dim dvrFail As Boolean = False
 
     ' 칠하기 전에 저장 안 된 변경이 없었던 것만 나중에 "변경 없음" 으로 되돌린다.
@@ -323,14 +326,20 @@ Sub PaintMode(top As Inventor.Document, prefixes As List(Of String), maxRev As I
             Dim asmDoc As AssemblyDocument = CType(top, AssemblyDocument)
 
             If ActivateTempDvr(asmDoc) Then
-                For Each occ As ComponentOccurrence In covered
-                    Try
-                        occ.AppearanceSourceType = AppearanceSourceTypeEnum.kPartAppearance
-                    Catch
-                    End Try
 
-                    If LeafOverridden(occ) Then
+                ' 하위 조립품에 준 색이 그 안의 부품 색을 덮는다.
+                ' 그래서 부품만 풀면 안 되고, 위쪽 하위 조립품부터 차례로 푼다.
+                ' 같은 하위 조립품을 여러 번 풀지 않도록 지나간 것을 기억한다.
+                Dim doneKeys As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+                For Each occ As ComponentOccurrence In covered
+                    ClearCoverChain(occ, doneKeys)
+                Next
+
+                ' 부품 자신과 위쪽 어디에도 덮어쓴 색이 남지 않아야 보인다
+                For Each occ As ComponentOccurrence In covered
+                    If IsColorCovered(occ) Then
                         occStill += 1
+                        If stillNames.Count < 200 Then stillNames.Add(OccKey(occ))
                     Else
                         occShown += 1
                     End If
@@ -393,7 +402,10 @@ Sub PaintMode(top As Inventor.Document, prefixes As List(Of String), maxRev As I
                    "색이 보이지 않을 수 있습니다." & vbCrLf & vbCrLf
         Else
             res &= "뷰 표현 """ & TempDvrName() & """ 에서 조립도 색 덮어쓰기를 풀었습니다 : " & occShown & "개" & vbCrLf
-            If occStill > 0 Then res &= "   풀지 못함 : " & occStill & "개 (색이 안 보일 수 있음)" & vbCrLf
+            If occStill > 0 Then
+                res &= "   풀지 못함 : " & occStill & "개 (색이 안 보임)" & vbCrLf & _
+                       ListLines(stillNames, listMax)
+            End If
             res &= vbCrLf
         End If
     End If
@@ -1270,12 +1282,100 @@ Function IsColorCovered(occ As ComponentOccurrence) As Boolean
 End Function
 
 
-Function LeafOverridden(occ As ComponentOccurrence) As Boolean
+Function IsOverridden(occ As ComponentOccurrence) As Boolean
     Try
         Return occ.AppearanceSourceType = AppearanceSourceTypeEnum.kOverrideAppearance
     Catch
-        Return True
+        Return False
     End Try
+End Function
+
+
+' ============================================================================
+'  부품부터 맨 위 하위 조립품까지 덮어쓴 색을 푼다. 위쪽부터 푼다.
+'  (임시 뷰 표현 안에서만 바뀌고, [원래대로] 에서 원래 뷰 표현으로 돌아간다)
+' ============================================================================
+Sub ClearCoverChain(leaf As ComponentOccurrence, doneKeys As HashSet(Of String))
+
+    Dim chain As New List(Of ComponentOccurrence)
+    Dim cur As ComponentOccurrence = leaf
+    Dim guard As Integer = 0
+
+    While cur IsNot Nothing AndAlso guard < 30
+        chain.Add(cur)
+        Try
+            cur = cur.ParentOccurrence
+        Catch
+            cur = Nothing
+        End Try
+        guard += 1
+    End While
+
+    For i As Integer = chain.Count - 1 To 0 Step -1
+        Dim o As ComponentOccurrence = chain(i)
+        Dim occId As String = OccKey(o)
+        If doneKeys.Contains(occId) Then Continue For
+        doneKeys.Add(occId)
+
+        If IsOverridden(o) Then ClearOverride(o)
+    Next
+
+End Sub
+
+
+' 덮어쓴 색 풀기
+'  먼저 "부품 색 따르기" 로 바꿔 본다.
+'  하위 조립품은 그 값이 안 받아질 수 있어서, 안 풀리면 인벤터가 가진 다른
+'  색 출처 값을 차례로 넣어 본다. 덮어쓰기/기본색 값은 넣지 않는다.
+Function ClearOverride(o As ComponentOccurrence) As Boolean
+
+    Try
+        o.AppearanceSourceType = AppearanceSourceTypeEnum.kPartAppearance
+    Catch
+    End Try
+    If Not IsOverridden(o) Then Return True
+
+    Try
+        For Each v As AppearanceSourceTypeEnum In [Enum].GetValues(GetType(AppearanceSourceTypeEnum))
+            Dim vn As String = v.ToString()
+            If vn.Contains("Override") OrElse vn.Contains("Default") Then Continue For
+            If v = AppearanceSourceTypeEnum.kPartAppearance Then Continue For
+
+            Try
+                o.AppearanceSourceType = v
+            Catch
+                Continue For
+            End Try
+
+            If Not IsOverridden(o) Then Return True
+        Next
+    Catch
+    End Try
+
+    Return False
+
+End Function
+
+
+' 배치 경로 이름 (최상위 조립도 기준)  예: 하위조립:1\부품:3
+Function OccKey(occ As ComponentOccurrence) As String
+
+    Dim parts As New List(Of String)
+    Dim cur As ComponentOccurrence = occ
+    Dim guard As Integer = 0
+
+    While cur IsNot Nothing AndAlso guard < 30
+        Try
+            parts.Insert(0, cur.Name)
+            cur = cur.ParentOccurrence
+        Catch
+            cur = Nothing
+        End Try
+        guard += 1
+    End While
+
+    Return String.Join("\", parts.ToArray())
+
 End Function
 
 
