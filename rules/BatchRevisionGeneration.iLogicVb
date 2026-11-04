@@ -24,6 +24,7 @@ Sub Main()
     Dim selOccs   As New List(Of Inventor.ComponentOccurrence)
     Dim oAct      As Inventor.Document = Nothing
     Dim selOwner  As String = ""
+    Dim tgtAsm    As Inventor.AssemblyDocument = Nothing
 
     Try
         oAct = ThisApplication.ActiveDocument
@@ -46,6 +47,8 @@ Sub Main()
         Catch
             selOwner = ""
         End Try
+
+        tgtAsm = CType(oAct, Inventor.AssemblyDocument)
     End If
 
     Dim useSelection As Boolean = (selOccs.Count > 0)
@@ -298,7 +301,8 @@ Sub Main()
             Dim asmNm As String = ""
             Dim pnm   As String = System.IO.Path.GetFileNameWithoutExtension(oldP)
 
-            CountOccurrences(oldP, selOccs, selOwner, total, mine, asmNm)
+            asmNm = System.IO.Path.GetFileName(selOwner)
+            CountInAssembly(tgtAsm, oldP, selOccs, selOwner, total, mine)
 
             If total > 1 AndAlso mine > 0 AndAlso mine < total Then
 
@@ -307,7 +311,7 @@ Sub Main()
                     "조립도 [" & asmNm & "] 에 " & total & "개 배치되어 있고," & vbCrLf & _
                     "그중 " & mine & "개를 선택하셨습니다." & vbCrLf & vbCrLf & _
                     "[예]     선택한 " & mine & "개만 대치" & vbCrLf & _
-                    "[아니오]  " & total & "개 전부 대치" & vbCrLf & _
+                    "[아니오]  이 조립도 안의 " & total & "개 전부 대치" & vbCrLf & _
                     "[취소]   규칙 실행을 취소합니다 (파일도 만들지 않음)", _
                     "조립도 대치 범위", MessageBoxButtons.YesNoCancel)
 
@@ -328,7 +332,7 @@ Sub Main()
                     pnm & " 부품이" & vbCrLf & _
                     "조립도 [" & asmNm & "] 에 " & total & "개 배치되어 있습니다." & vbCrLf & _
                     "선택하신 것이 그중 어느 배치인지는 특정하지 못했습니다." & vbCrLf & vbCrLf & _
-                    "[예]     " & total & "개 전부 대치" & vbCrLf & _
+                    "[예]     이 조립도 안의 " & total & "개 전부 대치" & vbCrLf & _
                     "[아니오]  조립도는 그대로 두고 파일만 생성" & vbCrLf & _
                     "[취소]   규칙 실행을 취소합니다 (파일도 만들지 않음)", _
                     "조립도 대치 범위", MessageBoxButtons.YesNoCancel)
@@ -641,22 +645,27 @@ Sub Main()
 
             If REPLACE_IN_ASM Then
 
-                If asmPlan(n - 1) = 2 Then
+                If tgtAsm Is Nothing Then
+                    logTxt &= "  7) 조립도 대치 : 건너뜀 (조립도에서 실행하지 않음)" & vbCrLf
+                ElseIf asmPlan(n - 1) = 2 Then
                     logTxt &= "  7) 조립도 대치 : 건너뜀 (사용자 선택)" & vbCrLf
                 Else
                     Dim onlySel As Boolean = (asmPlan(n - 1) = 1)
-                    Dim asmDetail As String = ""
-                    Dim asmHit As Integer = ReplaceInAssemblies(oldIpt, newIpt, selOccs, selOwner, _
-                                                               onlySel, asmDetail)
+                    Dim failCnt As Integer = 0
+                    Dim asmHit As Integer = ReplaceInAssembly(tgtAsm, oldIpt, newIpt, selOccs, selOwner, _
+                                                              onlySel, failCnt)
 
                     If asmHit < 0 Then
                         logTxt &= "  7) 조립도 대치 : 오류 발생" & vbCrLf
                     ElseIf asmHit = 0 Then
-                        logTxt &= "  7) 조립도 대치 : 대상 없음 (해당 부품을 쓰는 조립도가 열려있지 않음)" & vbCrLf
+                        logTxt &= "  7) 조립도 대치 : 대상 없음 (이 조립도에 해당 부품이 없음)" & vbCrLf
                     ElseIf onlySel Then
-                        logTxt &= "  7) 조립도 대치 : 선택한 " & asmHit & "개만 대치" & vbCrLf & asmDetail
+                        logTxt &= "  7) 조립도 대치 : 선택한 " & asmHit & "개만 대치" & vbCrLf
                     Else
-                        logTxt &= "  7) 조립도 대치 : 성공 (" & asmHit & "개 구성요소)" & vbCrLf & asmDetail
+                        logTxt &= "  7) 조립도 대치 : 이 조립도 안의 " & asmHit & "개 전부 대치" & vbCrLf
+                    End If
+                    If failCnt > 0 Then
+                        logTxt &= "     ┗ ★ " & failCnt & "개는 대치하지 못함 - 직접 확인하세요" & vbCrLf
                     End If
                 End If
             End If
@@ -691,79 +700,69 @@ Sub Main()
     MessageBox.Show(msg, "리비전 생성")
 End Sub
 
-Function ReplaceInAssemblies(oldPath As String, newPath As String, _
-                             selOccs As List(Of Inventor.ComponentOccurrence), _
-                             selOwner As String, _
-                             onlySelected As Boolean, _
-                             ByRef detail As String) As Integer
-    Dim hit As Integer = 0
-    detail = ""
+Sub CountInAssembly(oAsm As Inventor.AssemblyDocument, oldPath As String, _
+                    selOccs As List(Of Inventor.ComponentOccurrence), _
+                    asmPath As String, _
+                    ByRef total As Integer, ByRef mine As Integer)
+
+    total = 0
+    mine = 0
 
     Try
-        For Each oDoc As Inventor.Document In ThisApplication.Documents
-
-            If oDoc.DocumentType <> Inventor.DocumentTypeEnum.kAssemblyDocumentObject Then Continue For
-
-            Dim oAsm As Inventor.AssemblyDocument = TryCast(oDoc, Inventor.AssemblyDocument)
-            If oAsm Is Nothing Then Continue For
-
-            Dim asmPath As String = ""
+        For Each occ As Inventor.ComponentOccurrence In oAsm.ComponentDefinition.Occurrences
             Try
-                asmPath = oDoc.FullFileName
+                If String.Equals(occ.Definition.Document.FullFileName, oldPath, _
+                                 StringComparison.OrdinalIgnoreCase) Then
+                    total += 1
+                    If IsSelected(occ, selOccs, asmPath, asmPath) Then mine += 1
+                End If
             Catch
             End Try
-
-            Dim victims As New List(Of Inventor.ComponentOccurrence)
-
-            Try
-                For Each occ As Inventor.ComponentOccurrence In oAsm.ComponentDefinition.Occurrences
-                    Try
-                        If String.Equals(occ.Definition.Document.FullFileName, oldPath, _
-                                         StringComparison.OrdinalIgnoreCase) Then
-                            If (Not onlySelected) OrElse IsSelected(occ, selOccs, asmPath, selOwner) Then
-                                victims.Add(occ)
-                            End If
-                        End If
-                    Catch
-                    End Try
-                Next
-            Catch
-                Continue For
-            End Try
-
-            If victims.Count = 0 Then Continue For
-
-            Dim done As Integer = 0
-            Dim fail As Integer = 0
-
-            For Each v As Inventor.ComponentOccurrence In victims
-                Try
-                    v.Replace(newPath, False)
-                    done += 1
-                Catch
-                    fail += 1
-                End Try
-            Next
-
-            hit += done
-
-            Dim asmNm As String = "(이름 없음)"
-            Try
-                asmNm = System.IO.Path.GetFileName(asmPath)
-            Catch
-            End Try
-
-            detail &= "        · " & asmNm & " : " & done & "개 대치"
-            If fail > 0 Then detail &= " / " & fail & "개 실패"
-            detail &= vbCrLf
-
         Next
+    Catch
+    End Try
 
+End Sub
+
+Function ReplaceInAssembly(oAsm As Inventor.AssemblyDocument, _
+                           oldPath As String, newPath As String, _
+                           selOccs As List(Of Inventor.ComponentOccurrence), _
+                           asmPath As String, onlySelected As Boolean, _
+                           ByRef failCnt As Integer) As Integer
+
+    failCnt = 0
+
+    Dim victims As New List(Of Inventor.ComponentOccurrence)
+
+    Try
+        For Each occ As Inventor.ComponentOccurrence In oAsm.ComponentDefinition.Occurrences
+            Try
+                If String.Equals(occ.Definition.Document.FullFileName, oldPath, _
+                                 StringComparison.OrdinalIgnoreCase) Then
+                    If (Not onlySelected) OrElse IsSelected(occ, selOccs, asmPath, asmPath) Then
+                        victims.Add(occ)
+                    End If
+                End If
+            Catch
+            End Try
+        Next
     Catch
         Return -1
     End Try
 
-    Return hit
+    Dim done As Integer = 0
+
+    For Each v As Inventor.ComponentOccurrence In victims
+        Try
+            v.Replace(newPath, False)
+            done += 1
+        Catch
+            failCnt += 1
+        End Try
+    Next
+
+    Return done
+
 End Function
 
 Function IsSelected(v As Inventor.ComponentOccurrence, _
@@ -800,64 +799,6 @@ Function IsSelected(v As Inventor.ComponentOccurrence, _
 
     Return False
 End Function
-
-Sub CountOccurrences(oldPath As String, _
-                     selOccs As List(Of Inventor.ComponentOccurrence), _
-                     selOwner As String, _
-                     ByRef total As Integer, ByRef mine As Integer, ByRef asmName As String)
-    total = 0
-    mine = 0
-    asmName = ""
-
-    Dim asmList As New List(Of String)
-
-    Try
-        For Each oDoc As Inventor.Document In ThisApplication.Documents
-
-            If oDoc.DocumentType <> Inventor.DocumentTypeEnum.kAssemblyDocumentObject Then Continue For
-
-            Dim oAsm As Inventor.AssemblyDocument = TryCast(oDoc, Inventor.AssemblyDocument)
-            If oAsm Is Nothing Then Continue For
-
-            Dim asmPath As String = ""
-            Try
-                asmPath = oDoc.FullFileName
-            Catch
-            End Try
-
-            Dim t As Integer = 0
-            Dim m As Integer = 0
-
-            Try
-                For Each occ As Inventor.ComponentOccurrence In oAsm.ComponentDefinition.Occurrences
-                    Try
-                        If String.Equals(occ.Definition.Document.FullFileName, oldPath, _
-                                         StringComparison.OrdinalIgnoreCase) Then
-                            t += 1
-                            If IsSelected(occ, selOccs, asmPath, selOwner) Then m += 1
-                        End If
-                    Catch
-                    End Try
-                Next
-            Catch
-                Continue For
-            End Try
-
-            If t > 0 Then
-                total += t
-                mine  += m
-                Try
-                    asmList.Add(System.IO.Path.GetFileName(oDoc.FullFileName))
-                Catch
-                End Try
-            End If
-
-        Next
-    Catch
-    End Try
-
-    If asmList.Count > 0 Then asmName = String.Join(", ", asmList.ToArray())
-End Sub
 
 Function ReadPN(d As Inventor.Document) As String
     Try
