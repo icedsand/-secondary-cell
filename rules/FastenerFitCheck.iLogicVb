@@ -1,0 +1,2288 @@
+' ============================================================================
+'  Inventor iLogic Rule : 체결 검사(made by pjh)
+'
+'   조립도에서 서로 맞닿는 부품의 탭 / 통과구멍 / 카운터보어가
+'   크기와 위치가 맞는지 검사하고, 결과를 조립도 폴더에 로그로 남긴다.
+'
+'  [사용법]
+'   1) 최상위 조립도를 열고 규칙 실행 (하위 조립도까지 전부 검사)
+'   2) 끝나면 요약 창이 뜨고, 오류 구멍은 화면에서 선택되어 있다
+'   3) 자세한 내용은  <조립도 폴더>\체결검사\  의 로그 (csv 는 엑셀로 열림)
+'
+'  [무엇을 검사하나]
+'   맞닿은 두 부품에서 구멍 축이 일치하고 구멍 끝이 서로 붙어 있으면
+'   "체결부" 로 묶는다. 판 여러 장이 겹쳐 있으면 한 줄로 이어서 본다.
+'     · 탭 ↔ 통과구멍     : 통과구멍이 볼트보다 작거나, 다른 규격용이거나
+'                           (M6 탭인데 Ø9 = M8 용), 너무 빡빡한지
+'     · 카운터보어         : 볼트 머리 지름 / 높이가 들어가는지
+'     · 탭 ↔ 탭            : 볼트가 지나갈 수 없음
+'     · 축 어긋남          : 구멍이 겹치는데 중심이 맞지 않음 (피치 오류)
+'     · 막힌 구멍          : 카운터보어 / 통과구멍 아래가 상대 부품 면으로 막혀
+'                           탭이 없음, 탭 구멍이 상대 부품 면에 덮임
+'
+'  [구멍 정보를 읽는 방법]
+'   1) 구멍(Hole) 피처 / 나사(Thread) 피처가 있으면 그 정보를 쓴다 (확실)
+'      패턴 / 대칭으로 복사한 구멍도 원래 구멍 정보를 따라간다.
+'   2) 피처 정보가 없으면 (STEP 임포트, 돌출 컷) 원통면 지름을 표준표와
+'      맞춰 추정한다.  Ø5.0 -> M6 탭(기초구멍),  Ø6.6 -> M6 통과구멍
+'      추정으로 판정한 것은 한 단계 낮춰 "경고" 로 알린다.
+'      맞닿은 상대 구멍과 짝이 맞는 해석을 고른다.
+'      (Ø5.0 + Ø5.0 처럼 지름이 같으면 핀 구멍으로 보고 넘어간다)
+'
+'  [판정 기준] - 아래 SpecTable 표 (JIS / KS 표준, 렌치볼트 기준)
+'   통과구멍 : 1급 ~ 3급 범위면 정상 (M6 : Ø6.4 ~ Ø7.0)
+'   카운터보어 : 볼트 머리 지름 + 0.2 이상, 깊이는 머리 높이 이상
+'   회사 표준이 다르면 표 숫자만 고치면 된다.
+'
+'  [판정 단계]
+'   오류 : 체결이 안 됨 (볼트가 안 들어감, 탭이 없음, 머리가 안 들어감 ...)
+'   경고 : 확인 필요 (구멍이 큼, 빡빡함, 머리 돌출, 형상으로 추정한 오류 ...)
+'   참고 : 판정을 못 했거나 의도일 수 있는 것
+'   OK   : 이상 없음 (로그에만 남김)
+'
+'  [못 잡는 것]
+'   - 부품 사이에 틈이 있는 체결 (와셔를 모델링하지 않았는데 틈이 있는 경우 등)
+'     구멍 끝이 서로 붙어 있어야 짝으로 본다.
+'   - 볼트 길이 / 탭 물림 길이 (대부분 볼트를 넣지 않으므로)
+'     볼트를 넣은 경우는 [검사] -> [간섭 분석] 으로 따로 확인
+'   - 축이 기울어진 구멍 중 일부, 지름 MAX_HOLE_D 보다 큰 구멍
+'
+'  [안전]
+'   읽기만 한다. 어떤 파일도 수정하거나 저장하지 않는다.
+'   로그 폴더만 새로 만든다.
+'
+'  [Inventor 2026 주의]
+'   폼을 쓰지 않고 MessageBox 만 쓴다.
+'   정규식(Regex), Using 문을 쓰지 않는다.
+'
+'  [변수 이름 주의]
+'   VB 는 대소문자를 구분하지 않는다. 예약어와 철자가 같은 이름은 쓸 수 없다.
+'
+'  [iLogic 문법 주의]
+'   Inventor 네임스페이스에도 Path / File 타입이 있으므로
+'   System.IO.Path 처럼 반드시 풀네임으로 씁니다.
+'   Sub / Function 바깥에는 Const, Dim 선언을 둘 수 없습니다.
+'   (데이터를 묶는 Class 는 맨 아래에 따로 둔다)
+' ============================================================================
+
+
+Sub Main()
+
+    ' ── 설정 ────────────────────────────────────────────────────────────────
+    Dim TOL_COAX       As Double  = 0.02    ' mm  중심이 이 안쪽이면 같은 축
+    Dim TOL_GAP        As Double  = 0.05    ' mm  구멍 끝 사이가 이 안쪽이면 맞닿은 것
+    Dim MAX_HOLE_D     As Double  = 45      ' mm  이보다 큰 원통면은 구멍으로 보지 않음
+    Dim CHECK_BLOCKED  As Boolean = True    ' 짝 없는 구멍이 상대 부품 면에 막혔는지 검사
+    Dim LOG_OK         As Boolean = True    ' 로그에 이상 없는 체결부도 남김
+    Dim LOG_INFO       As Boolean = True    ' 로그에 "참고" 항목도 남김
+    Dim SELECT_ERRORS  As Boolean = True    ' 끝나면 오류 구멍을 화면에서 선택해 둠
+    Dim LOG_DIR_NAME   As String  = "체결검사"
+    Dim LIST_MAX       As Integer = 15      ' 요약 창에 보여줄 줄 수
+
+    ' 이 글자가 파일 이름이나 설명에 있으면 볼트로 본다.
+    ' 구멍 끝을 볼트가 막고 있으면 "막힘" 이 아니라 체결된 것으로 본다.
+    ' (Content Center 부품은 자동으로 볼트 / 너트 / 와셔로 본다)
+    ' SCREW / 나사 는 넣지 않았다. 볼스크류 / 볼나사까지 걸린다.
+    Dim FASTENER_WORDS As String  = "BOLT,CAP SCREW,SET SCREW,STUD,볼트"
+    ' ────────────────────────────────────────────────────────────────────────
+
+    Dim TTL As String = "체결 검사"
+
+    '--- 1) 조립도 확인 ------------------------------------------------------
+    Dim oAct As Inventor.Document = Nothing
+    Try
+        oAct = ThisApplication.ActiveDocument
+    Catch
+        oAct = Nothing
+    End Try
+
+    If oAct Is Nothing OrElse _
+       oAct.DocumentType <> Inventor.DocumentTypeEnum.kAssemblyDocumentObject Then
+        MessageBox.Show("검사할 조립도를 연 상태에서 실행하세요." & vbCrLf & _
+                        "하위 조립도까지 전부 검사합니다.", TTL)
+        Return
+    End If
+
+    Dim oAsm As Inventor.AssemblyDocument = CType(oAct, Inventor.AssemblyDocument)
+
+    Dim asmPath As String = ""
+    Try
+        asmPath = oAsm.FullFileName
+    Catch
+    End Try
+
+    If String.IsNullOrEmpty(asmPath) Then
+        MessageBox.Show("조립도를 먼저 저장하세요." & vbCrLf & _
+                        "검사 로그를 조립도 폴더에 남깁니다.", TTL)
+        Return
+    End If
+
+    Dim asmBase As String = System.IO.Path.GetFileNameWithoutExtension(asmPath)
+    Dim asmDir  As String = System.IO.Path.GetDirectoryName(asmPath)
+
+    Dim words() As String = FASTENER_WORDS.Split(","c)
+    Dim spec As List(Of Double()) = SpecTable()
+    Dim tg As Inventor.TransientGeometry = ThisApplication.TransientGeometry
+
+    '--- 2) 하위 조립도까지 모든 부품 ---------------------------------------
+    Dim leafs As New List(Of Inventor.ComponentOccurrence)
+    Dim docKeys As New List(Of String)
+
+    Try
+        For Each lo As Inventor.ComponentOccurrence In _
+                oAsm.ComponentDefinition.Occurrences.AllLeafOccurrences
+
+            Try
+                If lo.Suppressed Then Continue For
+                If lo.DefinitionDocumentType <> Inventor.DocumentTypeEnum.kPartDocumentObject Then Continue For
+                If Not TypeOf lo.Definition Is Inventor.PartComponentDefinition Then Continue For
+
+                Dim dk As String = CType(lo.Definition.Document, Inventor.Document).FullDocumentName
+                leafs.Add(lo)
+                If Not docKeys.Contains(dk) Then docKeys.Add(dk)
+            Catch
+            End Try
+        Next
+    Catch ex As Exception
+        MessageBox.Show("부품 목록을 읽지 못했습니다." & vbCrLf & ex.Message, TTL)
+        Return
+    End Try
+
+    If leafs.Count < 2 Then
+        MessageBox.Show("검사할 부품이 2개 이상 있어야 합니다.", TTL)
+        Return
+    End If
+
+    Dim ask As String = "조립도 : " & System.IO.Path.GetFileName(asmPath) & vbCrLf & vbCrLf & _
+                        "하위 조립도까지 부품 " & leafs.Count & "개" & _
+                        " (서로 다른 파일 " & docKeys.Count & "개) 의" & vbCrLf & _
+                        "탭 / 통과구멍 / 카운터보어 체결을 검사합니다." & vbCrLf & vbCrLf & _
+                        "부품이 많으면 몇 분 걸릴 수 있습니다." & vbCrLf & _
+                        "파일은 수정하지 않습니다." & vbCrLf & vbCrLf & _
+                        "로그 저장 위치 :" & vbCrLf & _
+                        "   " & System.IO.Path.Combine(asmDir, LOG_DIR_NAME)
+
+    If MessageBox.Show(ask, TTL, MessageBoxButtons.OKCancel) <> DialogResult.OK Then Return
+
+    Dim sw As New System.Diagnostics.Stopwatch
+    sw.Start()
+
+    '--- 3) 부품 파일마다 구멍 읽기 (같은 파일은 한 번만) -------------------
+    Dim cache As New Dictionary(Of String, PartData)(StringComparer.OrdinalIgnoreCase)
+    Dim readFail As New List(Of String)
+    Dim occs As New List(Of OccRec)
+
+    For oi As Integer = 0 To leafs.Count - 1
+
+        Dim lo As Inventor.ComponentOccurrence = leafs(oi)
+
+        If oi Mod 20 = 0 Then
+            ThisApplication.StatusBarText = "체결 검사 - 구멍 읽는 중 (" & (oi + 1) & "/" & leafs.Count & ")"
+        End If
+
+        Try
+            Dim pdoc As Inventor.PartDocument = CType(lo.Definition.Document, Inventor.PartDocument)
+            Dim dk As String = pdoc.FullDocumentName
+
+            Dim pd As PartData = Nothing
+            If Not cache.TryGetValue(dk, pd) Then
+                Try
+                    pd = ExtractPart(pdoc, MAX_HOLE_D, words)
+                Catch ex As Exception
+                    pd = Nothing
+                    readFail.Add(System.IO.Path.GetFileName(pdoc.FullFileName) & " : " & ex.Message)
+                End Try
+                cache(dk) = pd
+            End If
+            If pd Is Nothing Then Continue For
+
+            Dim oc As OccRec = MakeOccRec(lo, pd, tg)
+            If oc IsNot Nothing Then occs.Add(oc)
+        Catch ex As Exception
+            readFail.Add(SafeName(lo) & " : " & ex.Message)
+        End Try
+    Next
+
+    '--- 4) 구멍을 조립도 좌표로 ---------------------------------------------
+    Dim insts As New List(Of Inst)
+
+    For oi As Integer = 0 To occs.Count - 1
+        For Each h As HoleRec In occs(oi).Data.Holes
+            insts.Add(MakeInst(oi, h, occs(oi)))
+        Next
+    Next
+
+    If insts.Count = 0 Then
+        ThisApplication.StatusBarText = ""
+        MessageBox.Show("구멍을 하나도 찾지 못했습니다.", TTL)
+        Return
+    End If
+
+    '--- 5) 맞닿은 구멍끼리 짝 짓기 ------------------------------------------
+    '     구멍 끝 점을 격자에 넣고, 가까운 칸끼리만 비교한다.
+    ThisApplication.StatusBarText = "체결 검사 - 구멍 짝 찾는 중 (구멍 " & insts.Count & "개)"
+
+    Dim CELL As Double = 30.0
+    Dim grid As New Dictionary(Of String, List(Of Integer))
+
+    For i As Integer = 0 To insts.Count - 1
+        For e As Integer = 0 To 1
+            Dim p() As Double = EndPt(insts(i), e)
+            Dim gk As String = CellKey(CLng(Math.Floor(p(0) / CELL)), _
+                                       CLng(Math.Floor(p(1) / CELL)), _
+                                       CLng(Math.Floor(p(2) / CELL)))
+            Dim gl As List(Of Integer) = Nothing
+            If Not grid.TryGetValue(gk, gl) Then
+                gl = New List(Of Integer)
+                grid(gk) = gl
+            End If
+            gl.Add(i * 2 + e)
+        Next
+    Next
+
+    Dim par As New List(Of Integer)
+    For i As Integer = 0 To insts.Count - 1
+        par.Add(i)
+    Next
+
+    Dim misA   As New List(Of Integer)     ' 어긋난 짝 : 구멍 i*2+e
+    Dim misB   As New List(Of Integer)     '            구멍 j*2+f
+    Dim misRho As New List(Of Double)      '            중심 거리 mm
+
+    For i As Integer = 0 To insts.Count - 1
+
+        Dim ha As Inst = insts(i)
+
+        For e As Integer = 0 To 1
+
+            Dim pa() As Double = EndPt(ha, e)
+            Dim sa As Double = If(e = 0, 1.0, -1.0)
+            Dim cx As Long = CLng(Math.Floor(pa(0) / CELL))
+            Dim cy As Long = CLng(Math.Floor(pa(1) / CELL))
+            Dim cz As Long = CLng(Math.Floor(pa(2) / CELL))
+
+            For gx As Long = cx - 1 To cx + 1
+                For gy As Long = cy - 1 To cy + 1
+                    For gz As Long = cz - 1 To cz + 1
+
+                        Dim gl As List(Of Integer) = Nothing
+                        If Not grid.TryGetValue(CellKey(gx, gy, gz), gl) Then Continue For
+
+                        For Each code As Integer In gl
+
+                            If code <= i * 2 + e Then Continue For
+
+                            Dim j As Integer = code \ 2
+                            Dim fb As Integer = code Mod 2
+                            Dim hb As Inst = insts(j)
+
+                            If hb.O = ha.O Then Continue For
+
+                            ' 축이 평행한지
+                            Dim dt As Double = ha.D(0) * hb.D(0) + ha.D(1) * hb.D(1) + ha.D(2) * hb.D(2)
+                            If Math.Abs(dt) < 0.99999 Then Continue For
+
+                            ' 구멍 끝이 같은 면에 있는지 (축 방향 틈)
+                            Dim pb() As Double = EndPt(hb, fb)
+                            Dim vx As Double = pb(0) - pa(0)
+                            Dim vy As Double = pb(1) - pa(1)
+                            Dim vz As Double = pb(2) - pa(2)
+                            Dim axd As Double = vx * ha.D(0) + vy * ha.D(1) + vz * ha.D(2)
+                            If Math.Abs(axd) > TOL_GAP Then Continue For
+
+                            ' 서로 반대쪽에서 마주보는지 (구멍 몸통이 면의 양쪽에 있어야 함)
+                            Dim sb As Double = If(fb = 0, 1.0, -1.0)
+                            If sa * sb * dt >= 0 Then Continue For
+
+                            Dim rho As Double = Math.Sqrt(Math.Max(0, vx * vx + vy * vy + vz * vz - axd * axd))
+
+                            If rho <= TOL_COAX Then
+                                Union(par, i, j)
+                                ha.St(e) = ST_LINKED()
+                                hb.St(fb) = ST_LINKED()
+                            ElseIf rho < OpenR(ha, e) + OpenR(hb, fb) Then
+                                misA.Add(i * 2 + e)
+                                misB.Add(code)
+                                misRho.Add(rho)
+                            End If
+                        Next
+                    Next
+                Next
+            Next
+        Next
+    Next
+
+    ' 어긋난 짝 : 어느 쪽이든 다른 구멍과 제대로 짝이 지어졌으면 무시
+    For k As Integer = 0 To misA.Count - 1
+        Dim ia As Inst = insts(misA(k) \ 2)
+        Dim ib As Inst = insts(misB(k) \ 2)
+        Dim ea As Integer = misA(k) Mod 2
+        Dim eb As Integer = misB(k) Mod 2
+        If ia.St(ea) = ST_LINKED() OrElse ib.St(eb) = ST_LINKED() Then Continue For
+        ia.St(ea) = ST_MISALIGN()
+        ib.St(eb) = ST_MISALIGN()
+    Next
+
+    '--- 6) 짝 없는 구멍 끝이 상대 부품 면에 막혔는지 ----------------------
+    Dim rayOk As Boolean = True
+    Dim nTested As Integer = 0
+
+    If CHECK_BLOCKED Then
+        For i As Integer = 0 To insts.Count - 1
+
+            Dim it As Inst = insts(i)
+            If Not FastLike(it.H, spec) Then Continue For
+
+            For e As Integer = 0 To 1
+                If it.St(e) <> ST_NONE() Then Continue For
+                If Not rayOk Then Exit For
+
+                nTested += 1
+                If nTested Mod 200 = 0 Then
+                    ThisApplication.StatusBarText = "체결 검사 - 막힌 구멍 찾는 중 (" & nTested & ")"
+                End If
+
+                TestEnd(it, e, occs, tg, rayOk)
+            Next
+            If Not rayOk Then Exit For
+        Next
+    End If
+
+    '--- 7) 판정 -------------------------------------------------------------
+    ThisApplication.StatusBarText = "체결 검사 - 판정 중"
+
+    Dim results As New List(Of Res)
+
+    ' 7-1) 체결부 (같은 축으로 이어진 구멍들)
+    Dim groups As New Dictionary(Of Integer, List(Of Integer))
+    For i As Integer = 0 To insts.Count - 1
+        Dim rt As Integer = FindRoot(par, i)
+        Dim gl As List(Of Integer) = Nothing
+        If Not groups.TryGetValue(rt, gl) Then
+            gl = New List(Of Integer)
+            groups(rt) = gl
+        End If
+        gl.Add(i)
+    Next
+
+    Dim nJoint As Integer = 0
+    For Each kv As KeyValuePair(Of Integer, List(Of Integer)) In groups
+
+        Dim mem As List(Of Integer) = kv.Value
+        If mem.Count < 2 Then Continue For
+
+        Dim anyFast As Boolean = False
+        For Each m As Integer In mem
+            If FastLike(insts(m).H, spec) Then
+                anyFast = True
+                Exit For
+            End If
+        Next
+        If Not anyFast Then Continue For
+
+        nJoint += 1
+        Dim rs As Res = EvalJoint(mem, insts, occs, spec)
+        If rs IsNot Nothing Then results.Add(rs)
+    Next
+
+    ' 7-2) 축이 어긋난 구멍
+    Dim seenMis As New HashSet(Of String)
+    For k As Integer = 0 To misA.Count - 1
+
+        Dim i As Integer = misA(k) \ 2
+        Dim j As Integer = misB(k) \ 2
+        Dim ia As Inst = insts(i)
+        Dim ib As Inst = insts(j)
+        If ia.St(misA(k) Mod 2) <> ST_MISALIGN() Then Continue For
+        If ib.St(misB(k) Mod 2) <> ST_MISALIGN() Then Continue For
+        If Not (FastLike(ia.H, spec) AndAlso FastLike(ib.H, spec)) Then Continue For
+
+        Dim mk As String = Math.Min(i, j) & "-" & Math.Max(i, j)
+        If seenMis.Contains(mk) Then Continue For
+        seenMis.Add(mk)
+
+        results.Add(EvalMisalign(ia, ib, misRho(k), occs, spec))
+    Next
+
+    ' 7-3) 짝 없이 막힌 구멍
+    For i As Integer = 0 To insts.Count - 1
+        Dim it As Inst = insts(i)
+        If it.St(0) = ST_LINKED() OrElse it.St(1) = ST_LINKED() Then Continue For
+        If it.St(0) = ST_MISALIGN() OrElse it.St(1) = ST_MISALIGN() Then Continue For
+        If it.St(0) <> ST_BLOCKED() AndAlso it.St(1) <> ST_BLOCKED() Then Continue For
+
+        Dim rs As Res = EvalBlocked(it, occs, spec)
+        If rs IsNot Nothing Then results.Add(rs)
+    Next
+
+    ' 오류 -> 경고 -> 참고 -> OK 순
+    results.Sort(Function(a As Res, b As Res) a.Lv.CompareTo(b.Lv))
+
+    sw.Stop()
+    ThisApplication.StatusBarText = ""
+
+    '--- 8) 로그 ---------------------------------------------------------------
+    Dim cnt(3) As Integer
+    For Each rs As Res In results
+        cnt(rs.Lv) += 1
+    Next
+
+    Dim head As New List(Of String)
+    head.Add("체결 검사 결과")
+    head.Add("조립도   : " & asmPath)
+    head.Add("검사 시각 : " & DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") & _
+             "   (걸린 시간 " & CInt(sw.Elapsed.TotalSeconds) & "초)")
+    head.Add("부품     : " & occs.Count & "개 (서로 다른 파일 " & cache.Count & "개)")
+    head.Add("구멍     : " & insts.Count & "개,  체결부 " & nJoint & "곳")
+    head.Add("")
+    head.Add("오류 " & cnt(0) & "건 / 경고 " & cnt(1) & "건 / 참고 " & cnt(2) & "건 / OK " & cnt(3) & "건")
+
+    Dim notes As New List(Of String)
+    If Not rayOk Then
+        notes.Add("※ 막힌 구멍 검사가 이 인벤터에서 동작하지 않아 중간에 껐습니다.")
+    ElseIf Not CHECK_BLOCKED Then
+        notes.Add("※ 막힌 구멍 검사는 꺼져 있습니다 (CHECK_BLOCKED).")
+    End If
+    If readFail.Count > 0 Then
+        notes.Add("※ 읽지 못한 부품 " & readFail.Count & "개 - 로그 참고")
+    End If
+
+    Dim logDir As String = System.IO.Path.Combine(asmDir, LOG_DIR_NAME)
+    Dim stamp As String = DateTime.Now.ToString("yyyyMMdd_HHmmss")
+    Dim csvPath As String = ""
+    Dim txtPath As String = ""
+    Dim saveErr As String = ""
+
+    Try
+        System.IO.Directory.CreateDirectory(logDir)
+        csvPath = System.IO.Path.Combine(logDir, "체결검사_" & asmBase & "_" & stamp & ".csv")
+        txtPath = System.IO.Path.Combine(logDir, "체결검사_" & asmBase & "_" & stamp & ".txt")
+        WriteLogs(csvPath, txtPath, results, head, notes, readFail, LOG_OK, LOG_INFO)
+    Catch ex As Exception
+        saveErr = ex.Message
+        csvPath = ""
+        txtPath = ""
+    End Try
+
+    ' 조립도 폴더에 쓰지 못하면 바탕화면에라도 남긴다
+    If saveErr <> "" Then
+        Try
+            Dim dsk As String = System.IO.Path.Combine( _
+                System.Environment.GetFolderPath(System.Environment.SpecialFolder.DesktopDirectory), _
+                LOG_DIR_NAME)
+            System.IO.Directory.CreateDirectory(dsk)
+            logDir = dsk
+            csvPath = System.IO.Path.Combine(dsk, "체결검사_" & asmBase & "_" & stamp & ".csv")
+            txtPath = System.IO.Path.Combine(dsk, "체결검사_" & asmBase & "_" & stamp & ".txt")
+            WriteLogs(csvPath, txtPath, results, head, notes, readFail, LOG_OK, LOG_INFO)
+        Catch ex As Exception
+            saveErr &= vbCrLf & "바탕화면 저장도 실패 : " & ex.Message
+            csvPath = ""
+        End Try
+    End If
+
+    '--- 9) 오류 구멍 선택 ---------------------------------------------------
+    Dim nSel As Integer = 0
+    If SELECT_ERRORS AndAlso cnt(0) > 0 Then
+        nSel = SelectProblems(oAsm, results, insts, occs)
+    End If
+
+    '--- 10) 요약 창 ---------------------------------------------------------
+    Dim msg As String = String.Join(vbCrLf, head.ToArray()) & vbCrLf
+
+    For Each nt As String In notes
+        msg &= nt & vbCrLf
+    Next
+
+    Dim shown As Integer = 0
+    For Each rs As Res In results
+        If rs.Lv > 1 Then Exit For
+        If shown >= LIST_MAX Then
+            msg &= "   ... 나머지는 로그 참고" & vbCrLf
+            Exit For
+        End If
+        If shown = 0 Then msg &= vbCrLf
+        msg &= "[" & LvName(rs.Lv) & "] " & ShortText(rs.Msg, 90) & vbCrLf & _
+               "        " & ShortText(rs.Who, 110) & vbCrLf
+        shown += 1
+    Next
+
+    If cnt(0) + cnt(1) = 0 Then
+        msg &= vbCrLf & "오류 / 경고가 없습니다." & vbCrLf
+    End If
+
+    If nSel > 0 Then
+        msg &= vbCrLf & "※ 오류 구멍 면을 화면에서 선택해 두었습니다." & vbCrLf
+    End If
+
+    If csvPath <> "" Then
+        If saveErr <> "" Then
+            msg &= vbCrLf & "※ 조립도 폴더에 쓰지 못해 바탕화면에 저장했습니다." & vbCrLf & _
+                   "   (" & ShortText(saveErr, 80) & ")" & vbCrLf
+        End If
+        msg &= vbCrLf & "로그 : " & csvPath & vbCrLf & vbCrLf & _
+               "로그 폴더를 열까요?"
+
+        If MessageBox.Show(msg, TTL, MessageBoxButtons.YesNo) = DialogResult.Yes Then
+            Try
+                System.Diagnostics.Process.Start("explorer.exe", """" & logDir & """")
+            Catch
+            End Try
+        End If
+    Else
+        msg &= vbCrLf & "※ 로그 저장 실패 : " & saveErr
+        MessageBox.Show(msg, TTL)
+    End If
+
+End Sub
+
+
+' ============================================================================
+'  끝 상태 값  (Sub 밖에 Const 를 둘 수 없어서 함수로)
+' ============================================================================
+Function ST_NONE() As Integer
+    Return 0           ' 아직 모름
+End Function
+Function ST_LINKED() As Integer
+    Return 1           ' 다른 부품 구멍과 같은 축으로 맞닿음
+End Function
+Function ST_MISALIGN() As Integer
+    Return 2           ' 다른 부품 구멍과 겹치는데 축이 어긋남
+End Function
+Function ST_BLOCKED() As Integer
+    Return 3           ' 다른 부품 면에 막힘
+End Function
+Function ST_FASTENER() As Integer
+    Return 4           ' 볼트 / 너트 모델이 들어가 있음
+End Function
+Function ST_CLOSED() As Integer
+    Return 5           ' 자기 부품 안쪽 (막힌 구멍 바닥)
+End Function
+Function ST_OPEN() As Integer
+    Return 6           ' 열려 있음
+End Function
+
+
+' ============================================================================
+'  표준표  (mm)  - 회사 표준이 다르면 여기 숫자만 고친다
+'
+'   통과구멍 : JIS B 1001 1급 / 2급 / 3급
+'   카운터보어, 볼트 머리 : 육각 렌치볼트 (JIS B 1176) 기준
+'   탭 내경  : ISO 보통나사 암나사 최소 내경, 기초구멍 : 표준 드릴 지름
+' ============================================================================
+Function SpecTable() As List(Of Double())
+
+    Dim t As New List(Of Double())
+    '                   호칭   내경    기초   1급   2급   3급   CB지름 CB깊이 머리Ø 머리높이
+    '                   0      1       2      3     4     5     6      7      8     9
+    t.Add(New Double() {2,     1.567,  1.6,   2.2,  2.4,  2.6,  4.4,   2.4,   3.8,  2})
+    t.Add(New Double() {2.5,   2.013,  2.05,  2.7,  2.9,  3.1,  5.5,   2.9,   4.5,  2.5})
+    t.Add(New Double() {3,     2.459,  2.5,   3.2,  3.4,  3.6,  6.5,   3.3,   5.5,  3})
+    t.Add(New Double() {4,     3.242,  3.3,   4.3,  4.5,  4.8,  8,     4.4,   7,    4})
+    t.Add(New Double() {5,     4.134,  4.2,   5.3,  5.5,  5.8,  9.5,   5.4,   8.5,  5})
+    t.Add(New Double() {6,     4.917,  5,     6.4,  6.6,  7,    11,    6.5,   10,   6})
+    t.Add(New Double() {8,     6.647,  6.8,   8.4,  9,    10,   14,    8.6,   13,   8})
+    t.Add(New Double() {10,    8.376,  8.5,   10.5, 11,   12,   17.5,  10.8,  16,   10})
+    t.Add(New Double() {12,    10.106, 10.2,  13,   13.5, 14.5, 20,    13,    18,   12})
+    t.Add(New Double() {14,    11.835, 12,    15,   15.5, 16.5, 23,    15.2,  21,   14})
+    t.Add(New Double() {16,    13.835, 14,    17,   17.5, 18.5, 26,    17.5,  24,   16})
+    t.Add(New Double() {20,    17.294, 17.5,  21,   22,   24,   32,    21.5,  30,   20})
+    t.Add(New Double() {24,    20.752, 21,    25,   26,   28,   39,    25.5,  36,   24})
+    Return t
+
+End Function
+
+
+' 호칭 n 의 표 줄. 없으면 Nothing
+Function SpecOf(n As Double, spec As List(Of Double())) As Double()
+    For Each row As Double() In spec
+        If Math.Abs(row(0) - n) < 0.01 Then Return row
+    Next
+    Return Nothing
+End Function
+
+
+' 지름 d 가 탭 구멍(내경 ~ 기초구멍)으로 보이는 호칭들
+Function GeoTapSizes(d As Double, spec As List(Of Double())) As List(Of Double)
+    Dim lst As New List(Of Double)
+    For Each row As Double() In spec
+        If d >= row(1) - 0.05 AndAlso d <= row(2) + 0.05 Then lst.Add(row(0))
+    Next
+    Return lst
+End Function
+
+
+' 지름 d 가 호칭경 그대로면 (탭을 호칭경으로 모델링한 경우 / 핀 구멍) 그 호칭, 아니면 0
+Function NominalOf(d As Double, spec As List(Of Double())) As Double
+    For Each row As Double() In spec
+        If Math.Abs(d - row(0)) <= 0.03 Then Return row(0)
+    Next
+    Return 0
+End Function
+
+
+' 지름 d 가 통과구멍으로 맞는 호칭 (2급에 가장 가까운 것), 없으면 0
+Function ClearOf(d As Double, spec As List(Of Double())) As Double
+    Dim best As Double = 0
+    Dim bestErr As Double = Double.MaxValue
+    For Each row As Double() In spec
+        If d >= row(0) + 0.1 AndAlso d <= row(5) + 0.3 Then
+            Dim er As Double = Math.Abs(d - row(4))
+            If er < bestErr Then
+                bestErr = er
+                best = row(0)
+            End If
+        End If
+    Next
+    Return best
+End Function
+
+
+' ============================================================================
+'  부품 파일 하나에서 구멍 읽기  (부품 좌표, mm)
+' ============================================================================
+Function ExtractPart(pdoc As Inventor.PartDocument, maxD As Double, words() As String) As PartData
+
+    Dim pd As New PartData
+    Dim cd As Inventor.PartComponentDefinition = pdoc.ComponentDefinition
+    pd.CompDef = cd
+
+    Try
+        pd.FileName = System.IO.Path.GetFileName(pdoc.FullFileName)
+    Catch
+    End Try
+
+    ' 볼트 / 너트 / 와셔인지
+    Try
+        pd.IsFastener = cd.IsContentMember
+    Catch
+    End Try
+    If Not pd.IsFastener Then
+        pd.IsFastener = HasWord(pd.FileName, words) OrElse HasWord(GetDesc(pdoc), words)
+    End If
+
+    ' 부품 범위 (막힘 검사 때 빨리 걸러내려고)
+    Try
+        Dim rb As Inventor.Box = cd.RangeBox
+        pd.BMin(0) = rb.MinPoint.X * 10 : pd.BMin(1) = rb.MinPoint.Y * 10 : pd.BMin(2) = rb.MinPoint.Z * 10
+        pd.BMax(0) = rb.MaxPoint.X * 10 : pd.BMax(1) = rb.MaxPoint.Y * 10 : pd.BMax(2) = rb.MaxPoint.Z * 10
+        pd.HasBox = True
+    Catch
+        pd.HasBox = False
+    End Try
+
+    ' 구멍 / 나사 피처 정보 -> 면 별로
+    Dim map As New Dictionary(Of Long, FInfo)
+    CollectInfo(cd, map)
+
+    ' 안쪽으로 오목한 원통 / 원뿔 면
+    Dim segs As New List(Of Seg)
+
+    For Each bd As Inventor.SurfaceBody In cd.SurfaceBodies
+
+        Dim solid As Boolean = False
+        Try
+            solid = bd.IsSolid
+        Catch
+        End Try
+        If Not solid Then Continue For
+
+        For Each fc As Inventor.Face In bd.Faces
+
+            Dim sg As Seg = Nothing
+            Try
+                sg = MakeSeg(fc, maxD)
+            Catch
+                sg = Nothing
+            End Try
+            If sg Is Nothing Then Continue For
+
+            Try
+                Dim fk As Long = CLng(fc.TransientKey)
+                Dim fi As FInfo = Nothing
+                If map.TryGetValue(fk, fi) Then sg.Info = fi
+            Catch
+            End Try
+
+            segs.Add(sg)
+        Next
+    Next
+
+    BuildHoles(segs, pd.Holes)
+    Return pd
+
+End Function
+
+
+' ============================================================================
+'  구멍 피처 / 나사 피처 / 패턴 정보를 면 별로 모은다
+' ============================================================================
+Sub CollectInfo(cd As Inventor.PartComponentDefinition, map As Dictionary(Of Long, FInfo))
+
+    ' 1) 구멍 피처
+    Try
+        For Each hf As Object In cd.Features.HoleFeatures
+            Try
+                If CBool(hf.Suppressed) Then Continue For
+
+                Dim fi As New FInfo
+                fi.IsHoleFeat = True
+                fi.FeatName = CStr(hf.Name)
+
+                Dim tapped As Boolean = False
+                Try
+                    tapped = CBool(hf.Tapped)
+                Catch
+                End Try
+
+                If tapped Then
+                    fi.IsTap = True
+                    Try
+                        Dim ti As Object = hf.TapInfo
+                        fi.TapName = CStr(ti.ThreadDesignation)
+                        fi.TapN = ParseMetric(fi.TapName)
+                        If fi.TapN = 0 Then
+                            Dim tt As String = CStr(ti.ThreadType)
+                            If tt.ToUpperInvariant().Contains("METRIC") Then fi.TapN = ParseNum(CStr(ti.NominalSize))
+                        End If
+                    Catch
+                    End Try
+                Else
+                    Try
+                        Dim ci As Object = hf.ClearanceInfo
+                        If ci IsNot Nothing Then fi.ClearN = ParseMetric(CStr(ci.FastenerSize))
+                    Catch
+                    End Try
+                End If
+
+                AddFaces(hf.Faces, fi, map)
+            Catch
+            End Try
+        Next
+    Catch
+    End Try
+
+    ' 2) 나사 피처 (돌출 컷 구멍에 나사를 입힌 경우)
+    Try
+        For Each tf As Object In cd.Features.ThreadFeatures
+            Try
+                If CBool(tf.Suppressed) Then Continue For
+
+                Dim fi As New FInfo
+                fi.IsTap = True
+                fi.FeatName = CStr(tf.Name)
+                Try
+                    fi.TapName = CStr(tf.ThreadInfo.ThreadDesignation)
+                    fi.TapN = ParseMetric(fi.TapName)
+                Catch
+                End Try
+
+                Dim got As Boolean = False
+                Try
+                    Dim tfc As Object = tf.ThreadedFace
+                    If TypeOf tfc Is Inventor.Face Then
+                        AddFace(CType(tfc, Inventor.Face), fi, map)
+                        got = True
+                    ElseIf tfc IsNot Nothing Then
+                        AddFaces(tfc, fi, map)
+                        got = True
+                    End If
+                Catch
+                End Try
+
+                If Not got Then
+                    Try
+                        AddFaces(tf.Faces, fi, map)
+                    Catch
+                    End Try
+                End If
+            Catch
+            End Try
+        Next
+    Catch
+    End Try
+
+    ' 3) 패턴 / 대칭 - 원래 구멍과 반지름이 같은 면에 같은 정보를 준다
+    '    패턴의 패턴도 있으므로 두 번 돈다.
+    For pass As Integer = 1 To 2
+        Try
+            For Each pf As Object In cd.Features
+
+                Dim isPat As Boolean = False
+                Try
+                    isPat = TypeOf pf Is Inventor.RectangularPatternFeature OrElse _
+                            TypeOf pf Is Inventor.CircularPatternFeature OrElse _
+                            TypeOf pf Is Inventor.MirrorFeature
+                    If Not isPat Then
+                        Dim tn As String = TypeName(pf)
+                        isPat = tn.Contains("PatternFeature") OrElse tn.Contains("MirrorFeature")
+                    End If
+                Catch
+                End Try
+                If Not isPat Then Continue For
+
+                Try
+                    If CBool(pf.Suppressed) Then Continue For
+
+                    Dim pr As New List(Of Double)
+                    Dim pInf As New List(Of FInfo)
+
+                    For Each parent As Object In pf.ParentFeatures
+                        Try
+                            For Each fc As Inventor.Face In parent.Faces
+                                Dim fk As Long = CLng(fc.TransientKey)
+                                Dim fi As FInfo = Nothing
+                                If Not map.TryGetValue(fk, fi) Then Continue For
+                                Dim rr As Double = FaceRadius(fc)
+                                If rr > 0 Then
+                                    pr.Add(rr)
+                                    pInf.Add(fi)
+                                End If
+                            Next
+                        Catch
+                        End Try
+                    Next
+                    If pInf.Count = 0 Then Continue For
+
+                    For Each fc As Inventor.Face In pf.Faces
+                        Dim fk As Long = CLng(fc.TransientKey)
+                        If map.ContainsKey(fk) Then Continue For
+                        Dim rr As Double = FaceRadius(fc)
+                        If rr <= 0 Then Continue For
+                        For q As Integer = 0 To pr.Count - 1
+                            If Math.Abs(pr(q) - rr) < 0.002 Then
+                                map(fk) = pInf(q)
+                                Exit For
+                            End If
+                        Next
+                    Next
+                Catch
+                End Try
+            Next
+        Catch
+        End Try
+    Next
+
+End Sub
+
+
+Sub AddFaces(faces As Object, fi As FInfo, map As Dictionary(Of Long, FInfo))
+    If faces Is Nothing Then Return
+    For Each o As Object In faces
+        If TypeOf o Is Inventor.Face Then AddFace(CType(o, Inventor.Face), fi, map)
+    Next
+End Sub
+
+
+Sub AddFace(fc As Inventor.Face, fi As FInfo, map As Dictionary(Of Long, FInfo))
+    Try
+        Dim fk As Long = CLng(fc.TransientKey)
+        If Not map.ContainsKey(fk) Then map(fk) = fi
+    Catch
+    End Try
+End Sub
+
+
+' 원통면이면 반지름 (mm), 아니면 0
+Function FaceRadius(fc As Inventor.Face) As Double
+    Try
+        If fc.SurfaceType = Inventor.SurfaceTypeEnum.kCylinderSurface Then
+            Return CType(fc.Geometry, Inventor.Cylinder).Radius * 10
+        End If
+    Catch
+    End Try
+    Return 0
+End Function
+
+
+' ============================================================================
+'  면 하나 -> 구멍 조각 (오목한 원통 / 원뿔만)
+'
+'  축은 방향을 한쪽으로 맞추고, 원점에서 가장 가까운 축 위의 점을 기준점으로
+'  삼는다. 그래야 같은 축의 면들이 같은 기준을 갖는다.
+'  면 위의 점 13 x 13 개를 찍어 축 방향 범위와 둘레 각도를 구한다.
+'  둘레가 한 바퀴 다 차야 구멍이다 (필렛, 장공 끝, 반쪽 원통은 제외).
+' ============================================================================
+Function MakeSeg(fc As Inventor.Face, maxD As Double) As Seg
+
+    Dim isCone As Boolean = False
+    Dim bp As Inventor.Point = Nothing
+    Dim av As Inventor.UnitVector = Nothing
+    Dim r As Double = 0
+
+    Dim st As Inventor.SurfaceTypeEnum = fc.SurfaceType
+    If st = Inventor.SurfaceTypeEnum.kCylinderSurface Then
+        Dim cyl As Inventor.Cylinder = CType(fc.Geometry, Inventor.Cylinder)
+        r = cyl.Radius * 10
+        If r < 0.4 OrElse 2 * r > maxD Then Return Nothing
+        bp = cyl.BasePoint
+        av = cyl.AxisVector
+    ElseIf st = Inventor.SurfaceTypeEnum.kConeSurface Then
+        Dim con As Inventor.Cone = CType(fc.Geometry, Inventor.Cone)
+        bp = con.BasePoint
+        av = con.AxisVector
+        isCone = True
+    Else
+        Return Nothing
+    End If
+
+    ' 축 방향 : 가장 큰 성분이 + 가 되게
+    Dim ax As Double = av.X, ay As Double = av.Y, az As Double = av.Z
+    Dim big As Double = ax
+    If Math.Abs(ay) > Math.Abs(big) Then big = ay
+    If Math.Abs(az) > Math.Abs(big) Then big = az
+    If big < 0 Then
+        ax = -ax : ay = -ay : az = -az
+    End If
+
+    ' 기준점 : 축 위에서 원점에 가장 가까운 점 (mm)
+    Dim bx As Double = bp.X * 10, by As Double = bp.Y * 10, bz As Double = bp.Z * 10
+    Dim tb As Double = bx * ax + by * ay + bz * az
+    bx -= tb * ax : by -= tb * ay : bz -= tb * az
+
+    ' 둘레 각도용 직교축
+    Dim e1x As Double, e1y As Double, e1z As Double
+    If Math.Abs(ax) < 0.9 Then
+        e1x = 0 : e1y = az : e1z = -ay
+    Else
+        e1x = -az : e1y = 0 : e1z = ax
+    End If
+    Dim el As Double = Math.Sqrt(e1x * e1x + e1y * e1y + e1z * e1z)
+    e1x /= el : e1y /= el : e1z /= el
+    Dim e2x As Double = ay * e1z - az * e1y
+    Dim e2y As Double = az * e1x - ax * e1z
+    Dim e2z As Double = ax * e1y - ay * e1x
+
+    Dim ev As Inventor.SurfaceEvaluator = fc.Evaluator
+    Dim rr As Inventor.Box2d = ev.ParamRangeRect
+    Dim u0 As Double = rr.MinPoint.X, u1 As Double = rr.MaxPoint.X
+    Dim v0 As Double = rr.MinPoint.Y, v1 As Double = rr.MaxPoint.Y
+    If Double.IsNaN(u0 + u1 + v0 + v1) OrElse Double.IsInfinity(u0 + u1 + v0 + v1) Then Return Nothing
+
+    ' 오목한지 : 면 법선이 축 쪽을 보면 구멍 (재료가 바깥에 있음)
+    Dim mp() As Double = {(u0 + u1) / 2, (v0 + v1) / 2}
+    Dim mpt(2) As Double
+    Dim mnr(2) As Double
+    ev.GetPointAtParam(mp, mpt)
+    ev.GetNormal(mp, mnr)
+
+    Dim qx As Double = mpt(0) * 10 - bx, qy As Double = mpt(1) * 10 - by, qz As Double = mpt(2) * 10 - bz
+    Dim qt As Double = qx * ax + qy * ay + qz * az
+    Dim radX As Double = qx - qt * ax, radY As Double = qy - qt * ay, radZ As Double = qz - qt * az
+    If mnr(0) * radX + mnr(1) * radY + mnr(2) * radZ >= 0 Then Return Nothing
+
+    ' 면 위의 점들
+    Dim n As Integer = 13
+    Dim prm(2 * n * n - 1) As Double
+    Dim c As Integer = 0
+    For iu As Integer = 0 To n - 1
+        For iv As Integer = 0 To n - 1
+            prm(c) = u0 + (u1 - u0) * iu / (n - 1)
+            prm(c + 1) = v0 + (v1 - v0) * iv / (n - 1)
+            c += 2
+        Next
+    Next
+    Dim pts(3 * n * n - 1) As Double
+    ev.GetPointAtParam(prm, pts)
+
+    Dim sg As New Seg
+    sg.IsCone = isCone
+    sg.Ax = ax : sg.Ay = ay : sg.Az = az
+    sg.Bx = bx : sg.By = by : sg.Bz = bz
+    sg.T0 = Double.MaxValue : sg.T1 = -Double.MaxValue
+    sg.Rmin = Double.MaxValue : sg.Rmax = 0
+
+    For k As Integer = 0 To n * n - 1
+        Dim px As Double = pts(3 * k) * 10 - bx
+        Dim py As Double = pts(3 * k + 1) * 10 - by
+        Dim pz As Double = pts(3 * k + 2) * 10 - bz
+        Dim t As Double = px * ax + py * ay + pz * az
+        Dim rx As Double = px - t * ax, ry As Double = py - t * ay, rz As Double = pz - t * az
+        Dim rho As Double = Math.Sqrt(rx * rx + ry * ry + rz * rz)
+
+        If t < sg.T0 Then sg.T0 = t
+        If t > sg.T1 Then sg.T1 = t
+        If rho < sg.Rmin Then sg.Rmin = rho
+        If rho > sg.Rmax Then sg.Rmax = rho
+
+        If rho > 0.000001 Then
+            sg.Ang.Add(Math.Atan2(rx * e2x + ry * e2y + rz * e2z, _
+                                  rx * e1x + ry * e1y + rz * e1z) * 180.0 / Math.PI)
+        End If
+    Next
+
+    If isCone Then
+        If 2 * sg.Rmax > maxD + 10 Then Return Nothing
+        sg.R = sg.Rmax
+    Else
+        sg.R = r
+    End If
+
+    sg.Faces.Add(fc)
+    Return sg
+
+End Function
+
+
+' ============================================================================
+'  구멍 조각 -> 구멍
+'   1) 같은 축선끼리 묶는다
+'   2) 같은 반지름으로 이어진 조각 (반으로 쪼개진 원통 등) 을 합치고
+'      둘레가 한 바퀴 다 찬 것만 남긴다
+'   3) 축 방향으로 이어진 조각들을 한 구멍으로 (카운터보어 + 구멍 등)
+' ============================================================================
+Sub BuildHoles(segs As List(Of Seg), holes As List(Of HoleRec))
+
+    Dim lineRep  As New List(Of Seg)
+    Dim lineSegs As New List(Of List(Of Seg))
+
+    For Each s As Seg In segs
+        Dim li As Integer = -1
+        For q As Integer = 0 To lineRep.Count - 1
+            Dim L As Seg = lineRep(q)
+            If s.Ax * L.Ax + s.Ay * L.Ay + s.Az * L.Az < 0.99999 Then Continue For
+            Dim dx As Double = s.Bx - L.Bx, dy As Double = s.By - L.By, dz As Double = s.Bz - L.Bz
+            If dx * dx + dy * dy + dz * dz > 0.0001 Then Continue For     ' 0.01 mm
+            li = q
+            Exit For
+        Next
+        If li < 0 Then
+            lineRep.Add(s)
+            lineSegs.Add(New List(Of Seg))
+            li = lineRep.Count - 1
+        End If
+        lineSegs(li).Add(s)
+    Next
+
+    For Each ls As List(Of Seg) In lineSegs
+
+        ' 2) 같은 반지름 + 겹치는 범위 -> 합치기
+        Dim kept As New List(Of Seg)
+
+        For a As Integer = 0 To ls.Count - 1
+            Dim g As Seg = ls(a)
+            If g.Used Then Continue For
+            g.Used = True
+
+            Dim grew As Boolean = True
+            Do While grew
+                grew = False
+                For b As Integer = 0 To ls.Count - 1
+                    Dim s2 As Seg = ls(b)
+                    If s2.Used Then Continue For
+                    If s2.IsCone <> g.IsCone Then Continue For
+                    Dim rtol As Double = If(g.IsCone, 0.05, 0.002)
+                    If Math.Abs(s2.R - g.R) > rtol Then Continue For
+                    If s2.T0 > g.T1 + 0.01 OrElse s2.T1 < g.T0 - 0.01 Then Continue For
+
+                    g.T0 = Math.Min(g.T0, s2.T0)
+                    g.T1 = Math.Max(g.T1, s2.T1)
+                    g.Rmin = Math.Min(g.Rmin, s2.Rmin)
+                    g.Rmax = Math.Max(g.Rmax, s2.Rmax)
+                    g.Ang.AddRange(s2.Ang)
+                    g.Faces.AddRange(s2.Faces)
+                    If s2.Info IsNot Nothing Then
+                        If g.Info Is Nothing OrElse (s2.Info.IsTap AndAlso Not g.Info.IsTap) Then g.Info = s2.Info
+                    End If
+                    s2.Used = True
+                    grew = True
+                Next
+            Loop
+
+            If Coverage(g.Ang) >= 300 Then kept.Add(g)
+        Next
+
+        If kept.Count = 0 Then Continue For
+
+        ' 3) 축 방향으로 이어진 조각 -> 한 구멍
+        kept.Sort(Function(x As Seg, y As Seg) x.T0.CompareTo(y.T0))
+
+        Dim cur As New List(Of Seg)
+        Dim curT1 As Double = 0
+        For Each s As Seg In kept
+            If cur.Count > 0 AndAlso s.T0 > curT1 + 0.02 Then
+                AddHole(cur, holes)
+                cur = New List(Of Seg)
+            End If
+            If cur.Count = 0 Then
+                curT1 = s.T1
+            Else
+                curT1 = Math.Max(curT1, s.T1)
+            End If
+            cur.Add(s)
+        Next
+        If cur.Count > 0 Then AddHole(cur, holes)
+    Next
+
+End Sub
+
+
+' 둘레 각도들이 덮는 범위 (도)
+Function Coverage(ang As List(Of Double)) As Double
+    If ang.Count < 3 Then Return 0
+    Dim a As New List(Of Double)(ang)
+    a.Sort()
+    Dim gapMax As Double = a(0) + 360 - a(a.Count - 1)
+    For i As Integer = 1 To a.Count - 1
+        If a(i) - a(i - 1) > gapMax Then gapMax = a(i) - a(i - 1)
+    Next
+    Return 360 - gapMax
+End Function
+
+
+Sub AddHole(cur As List(Of Seg), holes As List(Of HoleRec))
+
+    Dim h As New HoleRec
+    Dim minR As Double = Double.MaxValue
+    h.T0 = Double.MaxValue
+    h.T1 = -Double.MaxValue
+
+    For Each s As Seg In cur
+        If Not s.IsCone AndAlso s.R < minR Then minR = s.R
+        If s.T0 < h.T0 Then h.T0 = s.T0
+        If s.T1 > h.T1 Then h.T1 = s.T1
+        h.Faces.AddRange(s.Faces)
+        If s.Info IsNot Nothing Then
+            If h.Info Is Nothing OrElse (s.Info.IsTap AndAlso Not h.Info.IsTap) Then h.Info = s.Info
+        End If
+    Next
+
+    If minR = Double.MaxValue Then Return       ' 원뿔만 있으면 구멍이 아님
+    If h.T1 - h.T0 < 0.05 Then Return
+
+    Dim s0 As Seg = cur(0)
+    h.Ax = s0.Ax : h.Ay = s0.Ay : h.Az = s0.Az
+    h.Bx = s0.Bx : h.By = s0.By : h.Bz = s0.Bz
+    h.PassD = 2 * minR
+
+    For Each s As Seg In cur
+
+        Dim at0 As Boolean = s.T0 <= h.T0 + 0.02
+        Dim at1 As Boolean = s.T1 >= h.T1 - 0.02
+
+        If at0 Then h.Open0 = Math.Max(h.Open0, 2 * s.R)
+        If at1 Then h.Open1 = Math.Max(h.Open1, 2 * s.R)
+
+        If Not s.IsCone AndAlso s.R > minR + 0.05 Then
+            If at0 AndAlso 2 * s.R > h.CbD Then
+                h.CbD = 2 * s.R
+                h.CbDepth = s.T1 - h.T0
+                h.CbEnd = 0
+            End If
+            If at1 AndAlso 2 * s.R > h.CbD Then
+                h.CbD = 2 * s.R
+                h.CbDepth = h.T1 - s.T0
+                h.CbEnd = 1
+            End If
+        End If
+
+        If s.IsCone AndAlso s.Rmax > minR + 0.05 Then
+            If at0 AndAlso 2 * s.Rmax > h.CsD Then
+                h.CsD = 2 * s.Rmax
+                h.CsEnd = 0
+            End If
+            If at1 AndAlso 2 * s.Rmax > h.CsD Then
+                h.CsD = 2 * s.Rmax
+                h.CsEnd = 1
+            End If
+        End If
+    Next
+
+    ' 카운터보어와 접시가 같은 끝이면 카운터보어로만 본다 (모따기)
+    If h.CbEnd >= 0 AndAlso h.CsEnd = h.CbEnd Then
+        h.CsD = 0
+        h.CsEnd = -1
+    End If
+
+    holes.Add(h)
+
+End Sub
+
+
+' ============================================================================
+'  조립도 안의 부품 하나 : 위치 (부품 좌표 mm -> 조립도 좌표 mm)
+'
+'  행렬 칸 순서에 기대지 않으려고 원점과 단위점 세 개를 직접 옮겨 본다.
+'  world = T + C1 * x + C2 * y + C3 * z
+' ============================================================================
+Function MakeOccRec(lo As Inventor.ComponentOccurrence, pd As PartData, _
+                    tg As Inventor.TransientGeometry) As OccRec
+
+    Dim oc As New OccRec
+    oc.Occ = lo
+    oc.Data = pd
+    oc.Name = SafeName(lo)
+    oc.Path = OccPath(lo)
+
+    Dim m As Inventor.Matrix = lo.Transformation
+
+    Dim p0 As Inventor.Point = tg.CreatePoint(0, 0, 0) : p0.TransformBy(m)
+    Dim p1 As Inventor.Point = tg.CreatePoint(1, 0, 0) : p1.TransformBy(m)
+    Dim p2 As Inventor.Point = tg.CreatePoint(0, 1, 0) : p2.TransformBy(m)
+    Dim p3 As Inventor.Point = tg.CreatePoint(0, 0, 1) : p3.TransformBy(m)
+
+    oc.T(0) = p0.X * 10 : oc.T(1) = p0.Y * 10 : oc.T(2) = p0.Z * 10
+    oc.C(0) = p1.X - p0.X : oc.C(1) = p1.Y - p0.Y : oc.C(2) = p1.Z - p0.Z
+    oc.C(3) = p2.X - p0.X : oc.C(4) = p2.Y - p0.Y : oc.C(5) = p2.Z - p0.Z
+    oc.C(6) = p3.X - p0.X : oc.C(7) = p3.Y - p0.Y : oc.C(8) = p3.Z - p0.Z
+
+    ' 조립도 좌표 범위
+    oc.HasBox = pd.HasBox
+    If pd.HasBox Then
+        For k As Integer = 0 To 2
+            oc.WMin(k) = Double.MaxValue
+            oc.WMax(k) = -Double.MaxValue
+        Next
+        For ix As Integer = 0 To 1
+            For iy As Integer = 0 To 1
+                For iz As Integer = 0 To 1
+                    Dim lp() As Double = {If(ix = 0, pd.BMin(0), pd.BMax(0)), _
+                                          If(iy = 0, pd.BMin(1), pd.BMax(1)), _
+                                          If(iz = 0, pd.BMin(2), pd.BMax(2))}
+                    Dim wp() As Double = ToWorldPt(oc, lp)
+                    For k As Integer = 0 To 2
+                        If wp(k) < oc.WMin(k) Then oc.WMin(k) = wp(k)
+                        If wp(k) > oc.WMax(k) Then oc.WMax(k) = wp(k)
+                    Next
+                Next
+            Next
+        Next
+    End If
+
+    Return oc
+
+End Function
+
+
+Function ToWorldPt(oc As OccRec, p() As Double) As Double()
+    Dim w(2) As Double
+    For k As Integer = 0 To 2
+        w(k) = oc.T(k) + oc.C(k) * p(0) + oc.C(3 + k) * p(1) + oc.C(6 + k) * p(2)
+    Next
+    Return w
+End Function
+
+
+Function ToWorldDir(oc As OccRec, v() As Double) As Double()
+    Dim w(2) As Double
+    For k As Integer = 0 To 2
+        w(k) = oc.C(k) * v(0) + oc.C(3 + k) * v(1) + oc.C(6 + k) * v(2)
+    Next
+    Dim ln As Double = Math.Sqrt(w(0) * w(0) + w(1) * w(1) + w(2) * w(2))
+    If ln > 0 Then
+        w(0) /= ln : w(1) /= ln : w(2) /= ln
+    End If
+    Return w
+End Function
+
+
+' 조립도 좌표 -> 부품 좌표 (회전은 직교라고 본다)
+Function ToLocalPt(oc As OccRec, w() As Double) As Double()
+    Dim qx As Double = w(0) - oc.T(0), qy As Double = w(1) - oc.T(1), qz As Double = w(2) - oc.T(2)
+    Dim p(2) As Double
+    p(0) = oc.C(0) * qx + oc.C(1) * qy + oc.C(2) * qz
+    p(1) = oc.C(3) * qx + oc.C(4) * qy + oc.C(5) * qz
+    p(2) = oc.C(6) * qx + oc.C(7) * qy + oc.C(8) * qz
+    Return p
+End Function
+
+
+Function ToLocalDir(oc As OccRec, w() As Double) As Double()
+    Dim p(2) As Double
+    p(0) = oc.C(0) * w(0) + oc.C(1) * w(1) + oc.C(2) * w(2)
+    p(1) = oc.C(3) * w(0) + oc.C(4) * w(1) + oc.C(5) * w(2)
+    p(2) = oc.C(6) * w(0) + oc.C(7) * w(1) + oc.C(8) * w(2)
+    Return p
+End Function
+
+
+Function MakeInst(oi As Integer, h As HoleRec, oc As OccRec) As Inst
+
+    Dim it As New Inst
+    it.O = oi
+    it.H = h
+    it.PathText = oc.Path
+
+    Dim b() As Double = ToWorldPt(oc, New Double() {h.Bx, h.By, h.Bz})
+    it.D = ToWorldDir(oc, New Double() {h.Ax, h.Ay, h.Az})
+
+    For k As Integer = 0 To 2
+        it.E0(k) = b(k) + it.D(k) * h.T0
+        it.E1(k) = b(k) + it.D(k) * h.T1
+    Next
+
+    Return it
+
+End Function
+
+
+Function EndPt(it As Inst, e As Integer) As Double()
+    If e = 0 Then Return it.E0
+    Return it.E1
+End Function
+
+
+' 구멍 끝의 반지름 (mm)
+Function OpenR(it As Inst, e As Integer) As Double
+    If e = 0 Then Return it.H.Open0 / 2
+    Return it.H.Open1 / 2
+End Function
+
+
+' 축 방향 위치 (구멍 가운데)
+Function AxPos(it As Inst, d() As Double) As Double
+    Return ((it.E0(0) + it.E1(0)) * d(0) + (it.E0(1) + it.E1(1)) * d(1) + (it.E0(2) + it.E1(2)) * d(2)) / 2
+End Function
+
+
+Function PtPos(p() As Double, d() As Double) As Double
+    Return p(0) * d(0) + p(1) * d(1) + p(2) * d(2)
+End Function
+
+
+Function CellKey(x As Long, y As Long, z As Long) As String
+    Return x & "," & y & "," & z
+End Function
+
+
+Function FindRoot(par As List(Of Integer), x As Integer) As Integer
+    Do While par(x) <> x
+        par(x) = par(par(x))
+        x = par(x)
+    Loop
+    Return x
+End Function
+
+
+Sub Union(par As List(Of Integer), a As Integer, b As Integer)
+    Dim ra As Integer = FindRoot(par, a)
+    Dim rb As Integer = FindRoot(par, b)
+    If ra <> rb Then par(rb) = ra
+End Sub
+
+
+' ============================================================================
+'  짝 없는 구멍 끝 : 바로 바깥 점이 어느 부품 안에 있는지
+'
+'  구멍 끝에서 0.05 mm 바깥 점을 잡는다. 맞닿은 부품이 있으면 그 점은 그 부품
+'  재료 안에 있다. 점에서 광선을 쏴 그 부품 면과 몇 번 만나는지 센다.
+'  홀수면 안쪽이다.
+' ============================================================================
+Sub TestEnd(it As Inst, e As Integer, occs As List(Of OccRec), _
+            tg As Inventor.TransientGeometry, ByRef rayOk As Boolean)
+
+    Dim sgn As Double = If(e = 0, -1.0, 1.0)            ' 바깥 방향
+    Dim dir() As Double = {it.D(0) * sgn, it.D(1) * sgn, it.D(2) * sgn}
+    Dim ep() As Double = EndPt(it, e)
+    Dim pt() As Double = {ep(0) + dir(0) * 0.05, ep(1) + dir(1) * 0.05, ep(2) + dir(2) * 0.05}
+
+    ' 자기 부품 안쪽이면 막힌 구멍의 바닥
+    If PointInOcc(occs(it.O), pt, dir, tg, rayOk) Then
+        it.St(e) = ST_CLOSED()
+        Return
+    End If
+    If Not rayOk Then Return
+
+    For k As Integer = 0 To occs.Count - 1
+        If k = it.O Then Continue For
+        Dim oc As OccRec = occs(k)
+        If oc.HasBox Then
+            If pt(0) < oc.WMin(0) - 0.01 OrElse pt(0) > oc.WMax(0) + 0.01 Then Continue For
+            If pt(1) < oc.WMin(1) - 0.01 OrElse pt(1) > oc.WMax(1) + 0.01 Then Continue For
+            If pt(2) < oc.WMin(2) - 0.01 OrElse pt(2) > oc.WMax(2) + 0.01 Then Continue For
+        End If
+
+        If PointInOcc(oc, pt, dir, tg, rayOk) Then
+            If oc.Data.IsFastener Then
+                it.St(e) = ST_FASTENER()
+            Else
+                it.St(e) = ST_BLOCKED()
+                it.Blk(e) = k
+            End If
+            Return
+        End If
+        If Not rayOk Then Return
+    Next
+
+    it.St(e) = ST_OPEN()
+
+End Sub
+
+
+Function PointInOcc(oc As OccRec, w() As Double, wd() As Double, _
+                    tg As Inventor.TransientGeometry, ByRef rayOk As Boolean) As Boolean
+
+    Dim lp() As Double = ToLocalPt(oc, w)
+    Dim pd As PartData = oc.Data
+
+    If pd.HasBox Then
+        For k As Integer = 0 To 2
+            If lp(k) < pd.BMin(k) - 0.01 OrElse lp(k) > pd.BMax(k) + 0.01 Then Return False
+        Next
+    End If
+
+    Dim ld() As Double = ToLocalDir(oc, wd)
+
+    Dim found As Inventor.ObjectsEnumerator = Nothing
+    Dim locs  As Inventor.ObjectsEnumerator = Nothing
+
+    Try
+        pd.CompDef.FindUsingRay(tg.CreatePoint(lp(0) / 10, lp(1) / 10, lp(2) / 10), _
+                                tg.CreateUnitVector(ld(0), ld(1), ld(2)), _
+                                0.00001, found, locs, False)
+    Catch
+        rayOk = False
+        Return False
+    End Try
+
+    If found Is Nothing OrElse locs Is Nothing Then Return False
+
+    ' 가장 가까운 면에서 광선이 빠져나가면 (면 법선과 광선이 같은 방향) 안쪽이다.
+    ' 법선을 못 구하면 만난 횟수로 본다 (홀수 = 안쪽).
+    ' 같은 점에서 두 면이 잡히는 경우 (모서리) 한 번만 센다
+    Dim dists As New List(Of Double)
+    Dim bestD As Double = Double.MaxValue
+    Dim bestF As Inventor.Face = Nothing
+    Dim bestP As Inventor.Point = Nothing
+    For k As Integer = 1 To found.Count
+        Try
+            Dim fc As Inventor.Face = TryCast(found.Item(k), Inventor.Face)
+            If fc Is Nothing Then Continue For
+            If Not fc.SurfaceBody.IsSolid Then Continue For
+            Dim lpt As Inventor.Point = CType(locs.Item(k), Inventor.Point)
+            Dim dd As Double = (lpt.X * 10 - lp(0)) * ld(0) + (lpt.Y * 10 - lp(1)) * ld(1) + (lpt.Z * 10 - lp(2)) * ld(2)
+            If dd < -0.001 Then Continue For
+            If dd < bestD Then
+                bestD = dd
+                bestF = fc
+                bestP = lpt
+            End If
+            Dim dup As Boolean = False
+            For Each d0 As Double In dists
+                If Math.Abs(d0 - dd) < 0.0005 Then
+                    dup = True
+                    Exit For
+                End If
+            Next
+            If Not dup Then dists.Add(dd)
+        Catch
+        End Try
+    Next
+
+    If bestF Is Nothing Then Return False
+
+    Try
+        Dim pp() As Double = {bestP.X, bestP.Y, bestP.Z}
+        Dim nn(2) As Double
+        bestF.Evaluator.GetNormalAtPoint(pp, nn)
+        Dim dn As Double = nn(0) * ld(0) + nn(1) * ld(1) + nn(2) * ld(2)
+        If Math.Abs(dn) > 0.05 Then Return dn > 0
+    Catch
+    End Try
+
+    Return dists.Count Mod 2 = 1
+
+End Function
+
+
+' ============================================================================
+'  판정 1 : 체결부 (같은 축으로 이어진 구멍들)
+' ============================================================================
+Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
+                   occs As List(Of OccRec), spec As List(Of Double())) As Res
+
+    Dim rs As New Res
+    rs.Kind = "체결부"
+
+    ' 축 방향 순서로 (위 -> 아래 또는 그 반대, 한쪽 끝부터)
+    Dim ad() As Double = insts(mem(0)).D
+    mem.Sort(Function(x As Integer, y As Integer) AxPos(insts(x), ad).CompareTo(AxPos(insts(y), ad)))
+
+    Dim n As Integer = mem.Count
+    Dim hs As New List(Of HoleRec)
+    Dim who As New List(Of String)
+    For Each m As Integer In mem
+        hs.Add(insts(m).H)
+        who.Add(occs(insts(m).O).Name & " [" & HoleDesc(insts(m).H) & "]")
+    Next
+    rs.Who = String.Join("  →  ", who.ToArray())
+    SetPos(rs, insts(mem(0)))
+    For p As Integer = 1 To n - 1
+        rs.Insts.Add(insts(mem(p)))
+    Next
+
+    Dim issues As New List(Of String)
+    Dim lv As Integer = 3
+
+    '--- 피처로 확실한 탭 ---
+    Dim taps As New List(Of Integer)
+    For p As Integer = 0 To n - 1
+        If hs(p).Info IsNot Nothing AndAlso hs(p).Info.IsTap Then taps.Add(p)
+    Next
+
+    If taps.Count >= 2 Then
+        Dim n1 As Double = hs(taps(0)).Info.TapN
+        Dim same As Boolean = True
+        For Each p As Integer In taps
+            If Math.Abs(hs(p).Info.TapN - n1) > 0.01 Then same = False
+        Next
+        If same Then
+            rs.Lv = 1
+            rs.Msg = "탭끼리 맞닿음 (" & TapLabel(hs(taps(0))) & ") - 볼트가 지나갈 수 없음 (스터드·무두볼트면 무시)"
+        Else
+            rs.Lv = 0
+            rs.Msg = "탭끼리 맞닿음, 규격도 다름 (" & TapLabel(hs(taps(0))) & " ↔ " & TapLabel(hs(taps(1))) & ")"
+        End If
+        AddAllSel(rs, mem)
+        Return rs
+    End If
+
+    Dim tapPos As Integer = -1
+    Dim tapN As Double = 0
+    Dim est As Boolean = False
+    Dim estNominal As Boolean = False
+
+    If taps.Count = 1 Then
+        tapPos = taps(0)
+        tapN = hs(tapPos).Info.TapN
+        If tapN <= 0 Then
+            rs.Lv = 2
+            rs.Msg = "규격을 읽지 못한 탭 (" & TapLabel(hs(tapPos)) & ") - 인치·관용나사 등은 판정 생략"
+            Return rs
+        End If
+    Else
+        '--- 피처 정보가 없으면 끝 구멍을 탭으로 볼 수 있는지 (형상 추정) ---
+        Dim bestScore As Double = -1
+        Dim endsArr() As Integer = {0, n - 1}
+        For Each p As Integer In endsArr
+            Dim hp As HoleRec = hs(p)
+            If hp.Info IsNot Nothing Then Continue For      ' 구멍 피처인데 탭이 아님 -> 탭 아님
+            If hp.CbEnd >= 0 OrElse hp.CsEnd >= 0 Then Continue For
+
+            Dim cands As New List(Of Double)
+            Dim strong As New List(Of Boolean)
+            For Each cn As Double In GeoTapSizes(hp.PassD, spec)
+                cands.Add(cn)
+                strong.Add(True)
+            Next
+            Dim nm As Double = NominalOf(hp.PassD, spec)
+            If nm > 0 Then
+                cands.Add(nm)
+                strong.Add(False)
+            End If
+
+            For ci As Integer = 0 To cands.Count - 1
+                Dim cn As Double = cands(ci)
+                Dim ok As Boolean = True
+                Dim score As Double = If(strong(ci), 0.5, 0)
+                For q As Integer = 0 To n - 1
+                    If q = p Then Continue For
+                    If hs(q).PassD < cn + 0.05 Then
+                        ok = False
+                        Exit For
+                    End If
+                    If ClearOfH(hs(q), spec) = cn Then score += 1
+                Next
+                If ok AndAlso score > bestScore Then
+                    bestScore = score
+                    tapPos = p
+                    tapN = cn
+                    est = True
+                    estNominal = Not strong(ci)
+                End If
+            Next
+        Next
+    End If
+
+    '--- 탭이 없는 체결부 (볼트+너트, 핀, 또는 탭이 빠짐) ---
+    If tapPos < 0 Then
+
+        ' 양 끝 구멍의 바깥 끝이 상대 부품 면에 막혀 있으면 탭이 빠진 것
+        Dim blkName As String = ""
+        Dim firstIt As Inst = insts(mem(0))
+        Dim lastIt As Inst = insts(mem(n - 1))
+        Dim fe As Integer = OuterEnd(firstIt, ad, True)
+        Dim le As Integer = OuterEnd(lastIt, ad, False)
+        If firstIt.St(fe) = ST_BLOCKED() Then blkName = occs(firstIt.Blk(fe)).Name
+        If blkName = "" AndAlso lastIt.St(le) = ST_BLOCKED() Then blkName = occs(lastIt.Blk(le)).Name
+
+        Dim anyCb As Boolean = False
+        For Each hp As HoleRec In hs
+            If hp.CbEnd >= 0 OrElse hp.CsEnd >= 0 Then anyCb = True
+        Next
+
+        Dim dmin As Double = Double.MaxValue, dmax As Double = 0
+        For Each hp As HoleRec In hs
+            dmin = Math.Min(dmin, hp.PassD)
+            dmax = Math.Max(dmax, hp.PassD)
+        Next
+
+        If blkName <> "" Then
+            If anyCb Then
+                rs.Lv = 0
+                rs.Msg = "카운터보어 볼트가 들어갈 탭이 없음 - 끝이 " & blkName & " 면에 막힘 (피치·위치 확인)"
+            Else
+                rs.Lv = 1
+                rs.Msg = "통과구멍 끝이 " & blkName & " 면에 막힘 - 상대 탭 없음 (피치·위치 확인)"
+            End If
+            AddAllSel(rs, mem)
+            Return rs
+        End If
+
+        If dmax - dmin <= 0.05 Then
+            rs.Lv = 3
+            rs.Msg = "같은 지름 Ø" & F(dmin) & " 관통 (볼트+너트 / 핀)"
+            Return rs
+        End If
+
+        ' 끝 구멍이 탭(추정)인데 상대 구멍이 작아 볼트가 안 들어감
+        For Each p As Integer In New Integer() {0, n - 1}
+            Dim hp As HoleRec = hs(p)
+            If hp.Info IsNot Nothing Then Continue For
+            Dim gts As List(Of Double) = GeoTapSizes(hp.PassD, spec)
+            If gts.Count = 0 Then Continue For
+            Dim gn As Double = gts(gts.Count - 1)
+            For q As Integer = 0 To n - 1
+                If q = p Then Continue For
+                If hs(q).PassD < gn + 0.05 AndAlso Math.Abs(hs(q).PassD - hp.PassD) > 0.05 Then
+                    rs.Lv = If(hs(q).Info IsNot Nothing, 0, 1)
+                    rs.Msg = "M" & F(gn) & " 탭(형상 추정 Ø" & F(hp.PassD) & ") 인데 상대 구멍 Ø" & F(hs(q).PassD) & _
+                             " 에 볼트가 안 들어감"
+                    AddAllSel(rs, mem)
+                    Return rs
+                End If
+            Next
+        Next
+
+        ' 통과구멍 규격이 서로 다름
+        Dim sizes As New List(Of Double)
+        Dim allKnown As Boolean = True
+        For Each hp As HoleRec In hs
+            Dim cs As Double = ClearOfH(hp, spec)
+            If cs <= 0 Then
+                allKnown = False
+            ElseIf Not sizes.Contains(cs) Then
+                sizes.Add(cs)
+            End If
+        Next
+
+        Dim ds As New List(Of String)
+        For Each hp As HoleRec In hs
+            ds.Add("Ø" & F(hp.PassD))
+        Next
+
+        If allKnown AndAlso sizes.Count > 1 Then
+            Dim sl As New List(Of String)
+            For Each sz As Double In sizes
+                sl.Add("M" & F(sz) & "용")
+            Next
+            rs.Lv = 1
+            rs.Msg = "통과구멍 규격이 서로 다름 (" & String.Join(" ↔ ", sl.ToArray()) & ") : " & String.Join(" / ", ds.ToArray())
+        Else
+            rs.Lv = 2
+            rs.Msg = "탭 없이 맞닿은 구멍, 지름이 서로 다름 : " & String.Join(" / ", ds.ToArray())
+        End If
+        Return rs
+    End If
+
+    '--- 탭이 있는 체결부 ---
+    Dim sp() As Double = SpecOf(tapN, spec)
+    Dim lvBad As Integer = If(est, 1, 0)       ' 형상 추정이면 한 단계 낮춤
+    Dim tapLbl As String
+    If est Then
+        tapLbl = "M" & F(tapN) & " 탭(형상 추정" & If(estNominal, ", 호칭경 모델", "") & ")"
+    Else
+        tapLbl = TapLabel(hs(tapPos))
+    End If
+
+    ' 볼트 머리 쪽 : 탭이 끝에 있으면 반대쪽 전부.
+    ' 가운데 있으면 카운터보어 / 접시가 있는 쪽, 없으면 양쪽 다
+    Dim headSide As New List(Of Integer)
+    If tapPos = 0 Then
+        For p As Integer = 1 To n - 1
+            headSide.Add(p)
+        Next
+    ElseIf tapPos = n - 1 Then
+        For p As Integer = 0 To n - 2
+            headSide.Add(p)
+        Next
+    Else
+        Dim cbLow As Boolean = False, cbHigh As Boolean = False
+        For p As Integer = 0 To n - 1
+            If hs(p).CbEnd >= 0 OrElse hs(p).CsEnd >= 0 Then
+                If p < tapPos Then cbLow = True
+                If p > tapPos Then cbHigh = True
+            End If
+        Next
+        For p As Integer = 0 To n - 1
+            If p = tapPos Then Continue For
+            If cbLow AndAlso Not cbHigh AndAlso p > tapPos Then Continue For
+            If cbHigh AndAlso Not cbLow AndAlso p < tapPos Then Continue For
+            headSide.Add(p)
+        Next
+    End If
+
+    Dim tapC As Double = AxPos(insts(mem(tapPos)), ad)
+    Dim passTxt As New List(Of String)
+
+    For Each p As Integer In headSide
+
+        Dim hp As HoleRec = hs(p)
+        Dim nm As String = occs(insts(mem(p)).O).Name
+        Dim d As Double = hp.PassD
+        Dim bad As Boolean = False
+
+        passTxt.Add("Ø" & F(d))
+
+        If d < tapN + 0.05 Then
+            issues.Add(nm & " : 구멍 Ø" & F(d) & " 에 M" & F(tapN) & " 볼트가 안 들어감")
+            lv = Math.Min(lv, lvBad)
+            bad = True
+        ElseIf hp.Info IsNot Nothing AndAlso hp.Info.ClearN > 0 AndAlso Math.Abs(hp.Info.ClearN - tapN) > 0.01 Then
+            issues.Add(nm & " : 통과구멍이 M" & F(hp.Info.ClearN) & "용 (탭은 M" & F(tapN) & ")")
+            lv = Math.Min(lv, lvBad)
+            bad = True
+        ElseIf sp IsNot Nothing AndAlso d > sp(5) + 0.3 Then
+            Dim k As Double = ClearOf(d, spec)
+            issues.Add(nm & " : 통과구멍이 큼 Ø" & F(d) & " (M" & F(tapN) & " 표준 Ø" & F(sp(4)) & ")" & _
+                       If(k > 0 AndAlso k <> tapN, " - M" & F(k) & "용 크기", ""))
+            lv = Math.Min(lv, 1)
+            bad = True
+        ElseIf sp IsNot Nothing AndAlso d < sp(3) - 0.05 Then
+            issues.Add(nm & " : 통과구멍이 빡빡함 Ø" & F(d) & " (M" & F(tapN) & " 표준 Ø" & F(sp(4)) & ")")
+            lv = Math.Min(lv, 1)
+            bad = True
+        End If
+
+        ' 카운터보어 : 탭에서 먼 쪽 끝에 있을 때만 볼트 머리 자리로 본다
+        If hp.CbEnd >= 0 AndAlso sp IsNot Nothing Then
+            Dim it As Inst = insts(mem(p))
+            Dim cbPos As Double = PtPos(EndPt(it, hp.CbEnd), ad)
+            Dim otPos As Double = PtPos(EndPt(it, 1 - hp.CbEnd), ad)
+            If Math.Abs(cbPos - tapC) > Math.Abs(otPos - tapC) Then
+                passTxt(passTxt.Count - 1) &= " CB Ø" & F(hp.CbD) & "x" & F(hp.CbDepth)
+                If hp.CbD < sp(8) + 0.2 Then
+                    issues.Add(nm & " : 카운터보어 Ø" & F(hp.CbD) & " 에 M" & F(tapN) & " 볼트 머리(Ø" & F(sp(8)) & ")가 안 들어감")
+                    lv = Math.Min(lv, lvBad)
+                    bad = True
+                ElseIf hp.CbDepth < sp(9) - 0.05 Then
+                    issues.Add(nm & " : 볼트 머리가 튀어나옴 - 카운터보어 깊이 " & F(hp.CbDepth) & _
+                               " < 머리 높이 " & F(sp(9)))
+                    lv = Math.Min(lv, 1)
+                    bad = True
+                End If
+            End If
+        End If
+
+        If bad Then rs.Sel.Add(mem(p))
+    Next
+
+    rs.Lv = lv
+    If issues.Count = 0 Then
+        rs.Msg = tapLbl & " ↔ " & String.Join(" / ", passTxt.ToArray()) & "  이상 없음"
+    Else
+        rs.Msg = tapLbl & " : " & String.Join(" / ", issues.ToArray())
+        If lv = 0 Then rs.Sel.Add(mem(tapPos))
+    End If
+    Return rs
+
+End Function
+
+
+' 체결부 첫 구멍(low=True)의 아래쪽 끝 / 마지막 구멍의 위쪽 끝 번호
+Function OuterEnd(it As Inst, ad() As Double, low As Boolean) As Integer
+    Dim p0 As Double = PtPos(it.E0, ad)
+    Dim p1 As Double = PtPos(it.E1, ad)
+    If low Then
+        Return If(p0 <= p1, 0, 1)
+    End If
+    Return If(p0 >= p1, 0, 1)
+End Function
+
+
+' ============================================================================
+'  판정 2 : 구멍이 겹치는데 축이 어긋남
+' ============================================================================
+Function EvalMisalign(ia As Inst, ib As Inst, rho As Double, _
+                      occs As List(Of OccRec), spec As List(Of Double())) As Res
+
+    Dim rs As New Res
+    rs.Kind = "축 어긋남"
+    rs.Who = occs(ia.O).Name & " [" & HoleDesc(ia.H) & "]  ↔  " & _
+             occs(ib.O).Name & " [" & HoleDesc(ib.H) & "]"
+    SetPos(rs, ia)
+
+    ' 볼트가 들어갈 여유 : 탭이 있으면 (통과구멍 - 호칭) / 2
+    Dim na As Double = TapSizeOf(ia.H, spec)
+    Dim nb As Double = TapSizeOf(ib.H, spec)
+    Dim allow As Double
+    If na > 0 AndAlso nb = 0 Then
+        allow = (ib.H.PassD - na) / 2
+    ElseIf nb > 0 AndAlso na = 0 Then
+        allow = (ia.H.PassD - nb) / 2
+    Else
+        allow = Math.Abs(ia.H.PassD - ib.H.PassD) / 2
+    End If
+
+    If rho > allow Then
+        rs.Lv = 0
+        rs.Msg = "구멍 위치가 " & F(rho) & "mm 어긋남 - 볼트·핀이 안 들어감 (피치 확인)"
+    Else
+        rs.Lv = 1
+        rs.Msg = "구멍 위치가 " & F(rho) & "mm 어긋남 - 구멍 여유 안이라 조립은 될 수 있음 (피치 확인)"
+    End If
+
+    rs.Insts.Add(ib)
+    Return rs
+
+End Function
+
+
+' ============================================================================
+'  판정 3 : 짝 없는 구멍이 상대 부품 면에 막힘
+' ============================================================================
+Function EvalBlocked(it As Inst, occs As List(Of OccRec), spec As List(Of Double())) As Res
+
+    Dim h As HoleRec = it.H
+    Dim rs As New Res
+    rs.Kind = "막힘"
+    SetPos(rs, it)
+
+    Dim be As Integer = If(it.St(0) = ST_BLOCKED(), 0, 1)
+    Dim blk As String = occs(it.Blk(be)).Name
+    rs.Who = occs(it.O).Name & " [" & HoleDesc(h) & "]  /  막은 부품 : " & blk
+
+    Dim anyOpen As Boolean = False
+    For e As Integer = 0 To 1
+        If it.St(e) = ST_OPEN() OrElse it.St(e) = ST_FASTENER() OrElse it.St(e) = ST_NONE() Then anyOpen = True
+    Next
+
+    Dim headEnd As Integer = -1
+    If h.CbEnd >= 0 Then
+        headEnd = h.CbEnd
+    ElseIf h.CsEnd >= 0 Then
+        headEnd = h.CsEnd
+    End If
+
+    If headEnd >= 0 Then
+        If it.St(1 - headEnd) = ST_BLOCKED() Then
+            rs.Lv = 0
+            rs.Msg = "카운터보어(접시) 구멍 밑에 탭이 없음 - " & occs(it.Blk(1 - headEnd)).Name & " 면에 막힘 (피치·위치 확인)"
+        Else
+            rs.Lv = 2
+            rs.Msg = "카운터보어(접시) 쪽이 " & blk & " 에 덮여 있음 (볼트를 넣을 수 있는지 확인)"
+        End If
+
+    ElseIf h.Info IsNot Nothing AndAlso h.Info.IsTap Then
+        If anyOpen Then Return Nothing          ' 반대쪽에서 볼트를 넣을 수 있음
+        rs.Lv = 1
+        rs.Msg = TapLabel(h) & " 탭 구멍이 " & blk & " 면에 막힘 - 상대 구멍 없음 (피치·위치 확인)"
+
+    ElseIf h.Info IsNot Nothing AndAlso (h.Info.ClearN > 0 OrElse ClearOf(h.PassD, spec) > 0) Then
+        rs.Lv = 1
+        rs.Msg = "통과구멍이 " & blk & " 면에 막힘 - 상대 탭 없음 (피치·위치 확인)"
+
+    ElseIf h.Info Is Nothing Then
+        Dim gts As List(Of Double) = GeoTapSizes(h.PassD, spec)
+        If gts.Count > 0 Then
+            If anyOpen Then Return Nothing
+            rs.Lv = 2
+            rs.Msg = "탭(형상 추정 M" & F(gts(gts.Count - 1)) & ") 구멍이 " & blk & " 면에 막힘"
+        ElseIf ClearOf(h.PassD, spec) > 0 Then
+            rs.Lv = 2
+            rs.Msg = "통과구멍(형상 추정 M" & F(ClearOf(h.PassD, spec)) & "용) 이 " & blk & " 면에 막힘 - 상대 탭 없음?"
+        Else
+            Return Nothing
+        End If
+    Else
+        Return Nothing
+    End If
+
+    Return rs
+
+End Function
+
+
+' ============================================================================
+'  보조
+' ============================================================================
+' 볼트 규격으로 볼 수 있는 구멍인지 (탭, 통과구멍, 카운터보어, 표준 지름)
+Function FastLike(h As HoleRec, spec As List(Of Double())) As Boolean
+    If h.Info IsNot Nothing Then
+        If h.Info.IsTap OrElse h.Info.ClearN > 0 Then Return True
+    End If
+    If GeoTapSizes(h.PassD, spec).Count > 0 Then Return True
+    If ClearOf(h.PassD, spec) > 0 Then Return True
+    If NominalOf(h.PassD, spec) > 0 Then Return True
+    Return False
+End Function
+
+
+' 통과구멍 호칭 : 피처 정보가 있으면 그것, 없으면 지름으로
+Function ClearOfH(h As HoleRec, spec As List(Of Double())) As Double
+    If h.Info IsNot Nothing AndAlso h.Info.ClearN > 0 Then Return h.Info.ClearN
+    If h.Info IsNot Nothing AndAlso h.Info.IsTap Then Return 0
+    Return ClearOf(h.PassD, spec)
+End Function
+
+
+' 탭이면 호칭 (피처 / 형상 추정), 아니면 0
+Function TapSizeOf(h As HoleRec, spec As List(Of Double())) As Double
+    If h.Info IsNot Nothing Then
+        If h.Info.IsTap Then Return h.Info.TapN
+        Return 0
+    End If
+    If h.CbEnd >= 0 OrElse h.CsEnd >= 0 Then Return 0
+    Dim gts As List(Of Double) = GeoTapSizes(h.PassD, spec)
+    If gts.Count > 0 Then Return gts(gts.Count - 1)
+    Return 0
+End Function
+
+
+Function TapLabel(h As HoleRec) As String
+    If h.Info Is Nothing Then Return "탭"
+    If Not String.IsNullOrEmpty(h.Info.TapName) Then Return h.Info.TapName
+    If h.Info.TapN > 0 Then Return "M" & F(h.Info.TapN)
+    Return "탭"
+End Function
+
+
+Function HoleDesc(h As HoleRec) As String
+
+    Dim s As String
+    If h.Info IsNot Nothing AndAlso h.Info.IsTap Then
+        s = TapLabel(h) & " 탭"
+    ElseIf h.Info IsNot Nothing AndAlso h.Info.ClearN > 0 Then
+        s = "M" & F(h.Info.ClearN) & " 통과 Ø" & F(h.PassD)
+    Else
+        s = "Ø" & F(h.PassD)
+        If h.Info Is Nothing Then s &= "(형상)"
+    End If
+
+    If h.CbEnd >= 0 Then s &= " + 카운터보어 Ø" & F(h.CbD) & " 깊이 " & F(h.CbDepth)
+    If h.CsEnd >= 0 Then s &= " + 접시 Ø" & F(h.CsD)
+    Return s
+
+End Function
+
+
+Sub SetPos(rs As Res, it As Inst)
+    rs.X = (it.E0(0) + it.E1(0)) / 2
+    rs.Y = (it.E0(1) + it.E1(1)) / 2
+    rs.Z = (it.E0(2) + it.E1(2)) / 2
+    rs.Insts.Add(it)
+End Sub
+
+
+Sub AddAllSel(rs As Res, mem As List(Of Integer))
+    For Each m As Integer In mem
+        If Not rs.Sel.Contains(m) Then rs.Sel.Add(m)
+    Next
+End Sub
+
+
+Function LvName(lv As Integer) As String
+    Select Case lv
+        Case 0 : Return "오류"
+        Case 1 : Return "경고"
+        Case 2 : Return "참고"
+    End Select
+    Return "OK"
+End Function
+
+
+Function F(d As Double) As String
+    Return Math.Round(d, 2).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)
+End Function
+
+
+Function ParseNum(s As String) As Double
+    Dim v As Double = 0
+    If String.IsNullOrEmpty(s) Then Return 0
+    If Double.TryParse(s.Trim(), System.Globalization.NumberStyles.Float, _
+                       System.Globalization.CultureInfo.InvariantCulture, v) Then Return v
+    Return 0
+End Function
+
+
+' "M6x1" -> 6,  "M2.5x0.45" -> 2.5,  "M6" -> 6,  "1/4-20 UNC" -> 0
+Function ParseMetric(s As String) As Double
+    If String.IsNullOrEmpty(s) Then Return 0
+    Dim u As String = s.Trim().ToUpperInvariant()
+    Dim p As Integer = u.IndexOf("M"c)
+    If p < 0 Then Return 0
+    Dim num As String = ""
+    For q As Integer = p + 1 To u.Length - 1
+        Dim ch As Char = u(q)
+        If Char.IsDigit(ch) OrElse (ch = "."c AndAlso num <> "") Then
+            num &= ch
+        ElseIf num = "" AndAlso ch = " "c Then
+            ' 공백 건너뜀
+        Else
+            Exit For
+        End If
+    Next
+    Return ParseNum(num)
+End Function
+
+
+Function HasWord(s As String, words() As String) As Boolean
+    If String.IsNullOrEmpty(s) Then Return False
+    Dim u As String = s.ToUpperInvariant()
+    For Each w As String In words
+        Dim t As String = w.Trim().ToUpperInvariant()
+        If t <> "" AndAlso u.Contains(t) Then Return True
+    Next
+    Return False
+End Function
+
+
+Function GetDesc(doc As Inventor.Document) As String
+    Try
+        Return CStr(doc.PropertySets.Item("Design Tracking Properties").Item("Description").Value)
+    Catch
+        Return ""
+    End Try
+End Function
+
+
+Function SafeName(lo As Inventor.ComponentOccurrence) As String
+    Try
+        Return lo.Name
+    Catch
+        Return "(이름 없음)"
+    End Try
+End Function
+
+
+' 하위 조립도 경로 :  하위조립:1 > 부품:2
+Function OccPath(lo As Inventor.ComponentOccurrence) As String
+    Dim names As New List(Of String)
+    Try
+        For Each o As Inventor.ComponentOccurrence In lo.OccurrencePath
+            names.Add(o.Name)
+        Next
+    Catch
+    End Try
+    If names.Count = 0 Then Return SafeName(lo)
+    Return String.Join(" > ", names.ToArray())
+End Function
+
+
+Function ShortText(s As String, maxLen As Integer) As String
+    If s Is Nothing Then Return ""
+    If s.Length <= maxLen Then Return s
+    Return s.Substring(0, maxLen) & "..."
+End Function
+
+
+Function CsvQ(s As String) As String
+    If s Is Nothing Then s = ""
+    Return """" & s.Replace("""", """""") & """"
+End Function
+
+
+' ============================================================================
+'  로그 쓰기 : csv (엑셀용, 전체 목록) + txt (요약)
+' ============================================================================
+Sub WriteLogs(csvPath As String, txtPath As String, results As List(Of Res), _
+              head As List(Of String), notes As List(Of String), readFail As List(Of String), _
+              logOk As Boolean, logInfo As Boolean)
+
+    Dim csv As New System.Text.StringBuilder
+    csv.AppendLine("번호,판정,종류,내용,구멍 (축 방향 순서) / 부품,X(mm),Y(mm),Z(mm),부품 경로")
+
+    Dim txt As New System.Text.StringBuilder
+    For Each ln As String In head
+        txt.AppendLine(ln)
+    Next
+    For Each ln As String In notes
+        txt.AppendLine(ln)
+    Next
+    txt.AppendLine("")
+    txt.AppendLine("좌표는 최상위 조립도 원점 기준 (mm) 입니다.")
+    txt.AppendLine("판정 기준은 JIS/KS 표준, 렌치볼트 기준입니다. (규칙 안 SpecTable)")
+    txt.AppendLine("'형상' 은 구멍 피처 정보가 없어 지름으로 추정한 구멍입니다.")
+    txt.AppendLine("")
+
+    Dim no As Integer = 0
+    Dim lastLv As Integer = -1
+
+    For Each rs As Res In results
+
+        If rs.Lv = 3 AndAlso Not logOk Then Continue For
+        If rs.Lv = 2 AndAlso Not logInfo Then Continue For
+
+        no += 1
+
+        Dim paths As New List(Of String)
+        For Each it As Inst In rs.Insts
+            paths.Add(it.PathText)
+        Next
+
+        csv.AppendLine(no & "," & CsvQ(LvName(rs.Lv)) & "," & CsvQ(rs.Kind) & "," & CsvQ(rs.Msg) & "," & _
+                       CsvQ(rs.Who) & "," & F(rs.X) & "," & F(rs.Y) & "," & F(rs.Z) & "," & _
+                       CsvQ(String.Join(" | ", paths.ToArray())))
+
+        If rs.Lv <= 2 Then
+            If rs.Lv <> lastLv Then
+                txt.AppendLine("")
+                txt.AppendLine("──── " & LvName(rs.Lv) & " ────")
+                lastLv = rs.Lv
+            End If
+            txt.AppendLine(no & ". [" & rs.Kind & "] " & rs.Msg)
+            txt.AppendLine("     " & rs.Who)
+            txt.AppendLine("     위치 X " & F(rs.X) & "  Y " & F(rs.Y) & "  Z " & F(rs.Z))
+        End If
+    Next
+
+    If readFail.Count > 0 Then
+        txt.AppendLine("")
+        txt.AppendLine("──── 읽지 못한 부품 ────")
+        For Each ln As String In readFail
+            txt.AppendLine("   " & ln)
+        Next
+    End If
+
+    ' UTF-8 (BOM 포함) - 엑셀에서 한글이 깨지지 않게
+    System.IO.File.WriteAllText(csvPath, csv.ToString(), New System.Text.UTF8Encoding(True))
+    System.IO.File.WriteAllText(txtPath, txt.ToString(), New System.Text.UTF8Encoding(True))
+
+End Sub
+
+
+' ============================================================================
+'  오류 구멍의 면을 화면에서 선택해 둔다
+' ============================================================================
+Function SelectProblems(oAsm As Inventor.AssemblyDocument, results As List(Of Res), _
+                        insts As List(Of Inst), occs As List(Of OccRec)) As Integer
+
+    Dim nSel As Integer = 0
+    Try
+        oAsm.SelectSet.Clear()
+    Catch
+    End Try
+
+    For Each rs As Res In results
+        If rs.Lv <> 0 Then Continue For
+
+        Dim targets As New List(Of Inst)
+        For Each m As Integer In rs.Sel
+            targets.Add(insts(m))
+        Next
+        If targets.Count = 0 Then targets.AddRange(rs.Insts)
+
+        For Each it As Inst In targets
+            Dim lo As Inventor.ComponentOccurrence = occs(it.O).Occ
+            For Each fc As Inventor.Face In it.H.Faces
+                If nSel >= 300 Then Return nSel
+                Try
+                    Dim px As Object = Nothing
+                    lo.CreateGeometryProxy(fc, px)
+                    If px IsNot Nothing Then
+                        oAsm.SelectSet.Select(px)
+                        nSel += 1
+                    End If
+                Catch
+                End Try
+            Next
+        Next
+    Next
+
+    Return nSel
+
+End Function
+
+
+' ============================================================================
+'  데이터 묶음
+' ============================================================================
+Class FInfo
+    Public IsHoleFeat As Boolean = False   ' 구멍 피처로 만든 구멍
+    Public IsTap As Boolean = False
+    Public TapN As Double = 0              ' 미터 호칭 (모르면 0)
+    Public TapName As String = ""          ' M6x1
+    Public ClearN As Double = 0            ' 통과구멍 피처의 볼트 호칭
+    Public FeatName As String = ""
+End Class
+
+
+Class Seg
+    Public IsCone As Boolean = False
+    Public Ax As Double, Ay As Double, Az As Double
+    Public Bx As Double, By As Double, Bz As Double
+    Public R As Double = 0
+    Public Rmin As Double = 0
+    Public Rmax As Double = 0
+    Public T0 As Double = 0
+    Public T1 As Double = 0
+    Public Ang As New List(Of Double)
+    Public Faces As New List(Of Inventor.Face)
+    Public Info As FInfo = Nothing
+    Public Used As Boolean = False
+End Class
+
+
+Class HoleRec
+    Public Ax As Double, Ay As Double, Az As Double     ' 축 방향 (부품 좌표)
+    Public Bx As Double, By As Double, Bz As Double     ' 축 기준점 (부품 좌표 mm)
+    Public T0 As Double = 0                             ' 축 방향 범위 (mm)
+    Public T1 As Double = 0
+    Public PassD As Double = 0                          ' 가장 좁은 지름 (볼트가 지나가는 곳)
+    Public Open0 As Double = 0                          ' T0 끝 지름
+    Public Open1 As Double = 0                          ' T1 끝 지름
+    Public CbD As Double = 0
+    Public CbDepth As Double = 0
+    Public CbEnd As Integer = -1                        ' 카운터보어가 있는 끝 (0/1, 없으면 -1)
+    Public CsD As Double = 0
+    Public CsEnd As Integer = -1                        ' 접시가 있는 끝
+    Public Info As FInfo = Nothing                      ' Nothing 이면 형상만으로 찾은 구멍
+    Public Faces As New List(Of Inventor.Face)
+End Class
+
+
+Class PartData
+    Public CompDef As Inventor.PartComponentDefinition = Nothing
+    Public FileName As String = ""
+    Public IsFastener As Boolean = False
+    Public HasBox As Boolean = False
+    Public BMin(2) As Double
+    Public BMax(2) As Double
+    Public Holes As New List(Of HoleRec)
+End Class
+
+
+Class OccRec
+    Public Occ As Inventor.ComponentOccurrence = Nothing
+    Public Data As PartData = Nothing
+    Public Name As String = ""
+    Public Path As String = ""
+    Public T(2) As Double                ' 이동 (mm)
+    Public C(8) As Double                ' 회전 : 부품 X, Y, Z 축의 조립도 방향
+    Public HasBox As Boolean = False
+    Public WMin(2) As Double
+    Public WMax(2) As Double
+End Class
+
+
+Class Inst
+    Public O As Integer = 0              ' occs 번호
+    Public H As HoleRec = Nothing
+    Public D(2) As Double                ' 축 방향 (조립도)
+    Public E0(2) As Double               ' T0 끝 (조립도 mm)
+    Public E1(2) As Double               ' T1 끝
+    Public St(1) As Integer              ' 끝 상태 (ST_...)
+    Public Blk(1) As Integer             ' 막은 부품 occs 번호
+    Public PathText As String = ""
+End Class
+
+
+Class Res
+    Public Lv As Integer = 3             ' 0 오류 / 1 경고 / 2 참고 / 3 OK
+    Public Kind As String = ""
+    Public Msg As String = ""
+    Public Who As String = ""
+    Public X As Double, Y As Double, Z As Double
+    Public Sel As New List(Of Integer)   ' 선택할 구멍 (insts 번호)
+    Public Insts As New List(Of Inst)
+End Class
