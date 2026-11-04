@@ -1,115 +1,22 @@
-' ============================================================================
-'  Inventor iLogic Rule : 가공 형상 색상(made by pjh)
-'
-'  [하는 일]
-'   조립도 안의 가공품에서 구멍과 나사를 종류별로 다른 색으로 칠한다.
-'   확인만 하는 용도라서 부품 파일은 저장하지 않는다.
-'   같은 rule 을 다시 실행해 [원래대로] 를 고르면 처음 색으로 돌아간다.
-'
-'     홀(드릴)     파랑      구멍 피처 - 드릴
-'     카운터보어   주황      구멍 피처 - 카운터보어
-'     카운터싱크   초록      구멍 피처 - 카운터싱크
-'     스폿페이스   보라      구멍 피처 - 스폿페이스
-'     탭           빨강      구멍 피처 - 탭 구멍
-'     나사산       노랑      나사(Thread) 피처
-'     (색은 아래 설정에서 바꿀 수 있다)
-'
-'  [가공품 고르기]
-'   부품번호 또는 파일명이 아래 두 조건에 모두 맞으면 가공품이다.
-'     1) 설정한 접두어로 시작한다           (예: GMKS-)
-'     2) 끝이 "-숫자" 이고 뒤에 리비전 문자가 붙을 수 있다
-'        GMKS-ST2601-ETR01-59   GMKS-ST2601-ETR01-59A   -> 가공품
-'        GMKS-ST2601-ETR01-33A_MIR  (미러 부품, _MIR 꼬리는 떼고 봄) -> 가공품
-'        GMKS-ST2601-ETR01      M6x20 볼트                -> 제외
-'   Content Center 부품은 번호와 관계없이 제외한다.
-'   부품 하나만 열고 실행하면 번호와 관계없이 그 부품을 칠한다.
-'
-'  [어떤 면을 칠하나]
-'   - 구멍 피처가 만든 면 전체 (카운터보어면, 드릴면, 끝 원뿔면 모두)
-'   - 탭 구멍은 종류와 관계없이 탭 색 (TAP_OVER_TYPE)
-'   - 나사(Thread) 피처는 나사가 걸린 면. 구멍 색 위에 덮어 칠한다.
-'   - 구멍을 패턴/미러한 것도 같은 색으로 칠한다.
-'     패턴 안에 구멍과 다른 피처(돌출 등)가 섞여 있거나, 종류가 다른 구멍이
-'     섞여 있으면 칠하지 않고 결과 창에 이름을 알려준다.
-'   - 돌출 컷으로 판 원통 구멍, 조립품 피처로 판 구멍은 칠하지 않는다.
-'
-'  [속도]
-'   면 색을 하나 바꿀 때마다 인벤터가 모델을 갱신하므로 면을 하나하나 칠하면
-'   부품 수백 개에서 몇 분이 걸린다. 구멍/패턴은 피처에 색을 한 번 주어 그
-'   피처가 만든 면 전체에 들어가게 한다. 나사산과, 면에 따로 색이 지정된 면만
-'   면 단위로 칠한다. 칠하고 되돌리는 동안 진행 막대를 보여준다.
-'
-'  [원래대로 돌아가는 방법]
-'   칠하기 전에 피처/면마다 원래 색 설정을 속성(Attribute)으로 적어 둔다.
-'   [원래대로] 는 지금 연 조립도와 그 안의 부품만 그 기록대로 되돌린다.
-'   (다른 조립도에만 들어 있는 칠한 부품은 건드리지 않고 개수만 알려준다) 이 rule 이 만든 색(HFC_*)은 지우지 않고
-'   남겨 두었다가 다시 칠할 때 쓴다 (지우면 다시 칠하기가 실패했다).
-'
-'  [저장하지 않는 방법]
-'   칠하기 전에 저장 안 된 변경이 없던 부품은, 칠한 뒤 "변경 없음" 으로
-'   표시한다 (KEEP_CLEAN). 그래서 조립도를 저장하거나 닫아도 부품을 저장하라고
-'   묻지 않고, 닫으면 색은 그냥 사라진다. Vault 체크아웃도 필요 없다.
-'   이미 저장 안 된 변경이 있던 부품은 그 변경을 지키기 위해 손대지 않는다.
-'
-'   ★ 색이 칠해진 채로 부품을 고치고 저장하면 색도 같이 저장된다.
-'     부품을 고치기 전에 [원래대로] 를 먼저 실행한다.
-'     실수로 저장했더라도 [원래대로] 로 되돌린 뒤 다시 저장하면 된다.
-'
-'  [조립도에서 색을 덮어쓴 부품]
-'   조립도에서 부품에 색을 지정해 두었으면 부품 면 색이 가려 보이지 않는다.
-'   하위 조립품 전체에 색을 지정해 둔 경우도 그 안의 부품이 모두 가려진다.
-'   그래서 부품부터 맨 위 하위 조립품까지 덮어쓴 색을 위쪽부터 차례로 푼다.
-'   그런 부품이 있으면 뷰 표현 "가공색상 확인(임시)" 을 새로 만들어 그 안에서만
-'   덮어쓴 색을 풀어 준다. 원래 뷰 표현은 건드리지 않는다.
-'   [원래대로] 는 원래 뷰 표현으로 돌아가고 임시 뷰 표현을 지운다.
-'
-'  [Inventor 2026 주의]
-'   폼을 쓰지 않고 MessageBox 만 쓴다. Regex, Using, Registry 를 쓰지 않는다.
-'
-'  [iLogic 문법 주의]
-'   Inventor 네임스페이스에도 Path / File 타입이 있으므로
-'   System.IO.Path 처럼 반드시 풀네임으로 씁니다.
-'   Sub / Function 바깥에는 Const, Dim 선언을 둘 수 없습니다.
-'   VB 예약어와 철자가 같은 변수 이름을 쓰지 않습니다.
-' ============================================================================
-
+' 가공 형상 색상 (made by pjh)
 
 Sub Main()
 
-    ' ── 설정 ────────────────────────────────────────────────────────────────
-    ' 가공품 번호 접두어. 여러 개면 쉼표로 구분 ("GMKS-, ABC-")
-    ' 비워 두면 접두어는 보지 않고 끝 형식만 본다.
-    Dim PREFIXES As String = "GMKS-"
+    Dim PREFIXES As String = "GMKS-"              ' 가공품 번호 접두어 (쉼표로 여러 개)
+    Dim MAX_REV_LETTERS As Integer = 2            ' 번호 끝 리비전 문자 최대 개수
+    Dim SUFFIXES As String = "_MIR"               ' 떼고 볼 번호 꼬리 (쉼표로 여러 개)
 
-    ' 번호 끝에 붙을 수 있는 리비전 문자 최대 개수 (59A, 59AB ...)
-    Dim MAX_REV_LETTERS As Integer = 2
-
-    ' 번호 맨 끝에 붙어도 가공품으로 볼 꼬리. 여러 개면 쉼표로 구분
-    ' 조립품 [구성요소 미러] 로 만든 부품은 GMKS-...-33A_MIR 처럼 _MIR 이 붙는다.
-    ' 이 꼬리를 떼고 번호 규칙을 본다.
-    Dim SUFFIXES As String = "_MIR"
-
-    ' 색상  "이름:R,G,B"   (이름은 결과 창에 보여주는 용도)
-    Dim C_DRILL  As String = "파랑:0,112,255"
+    Dim C_DRILL  As String = "파랑:0,112,255"     ' 색상 "이름:R,G,B"
     Dim C_CBORE  As String = "주황:255,128,0"
     Dim C_CSINK  As String = "초록:0,176,80"
     Dim C_SPOT   As String = "보라:150,60,220"
     Dim C_TAP    As String = "빨강:230,0,0"
     Dim C_THREAD As String = "노랑:255,210,0"
 
-    ' True  : 탭 구멍은 카운터보어/카운터싱크여도 탭 색
-    ' False : 카운터보어/카운터싱크/스폿페이스 색이 우선, 드릴 탭만 탭 색
-    Dim TAP_OVER_TYPE As Boolean = True
-
-    ' 조립도에서 색을 덮어쓴 가공품을 임시 뷰 표현에서 풀어 보이게 할지
-    Dim SHOW_THROUGH_ASM_COLOR As Boolean = True
-
-    ' 칠한 부품을 "변경 없음" 으로 표시해 저장하라고 묻지 않게 할지
-    Dim KEEP_CLEAN As Boolean = True
-
-    ' 확인 창에 보여줄 목록 최대 줄 수
-    Dim LIST_MAX As Integer = 12
-    ' ────────────────────────────────────────────────────────────────────────
+    Dim TAP_OVER_TYPE As Boolean = True           ' 탭 구멍은 종류와 관계없이 탭 색
+    Dim SHOW_THROUGH_ASM_COLOR As Boolean = True  ' 조립도에서 덮어쓴 색을 임시 뷰 표현에서 풀기
+    Dim KEEP_CLEAN As Boolean = True              ' 칠한 부품을 저장하라고 묻지 않게
+    Dim LIST_MAX As Integer = 12                  ' 결과 창 목록 최대 줄 수
 
     Dim TTL As String = "가공 형상 색상"
 
@@ -155,24 +62,17 @@ Sub Main()
 End Sub
 
 
-' ============================================================================
-'  색 칠하기
-' ============================================================================
 Sub PaintMode(top As Inventor.Document, prefixes As List(Of String), maxRev As Integer, _
               suffixes As List(Of String), _
               rgbs As Integer(,), cNames As String(), tapWins As Boolean, _
               showThrough As Boolean, keepClean As Boolean, listMax As Integer, TTL As String)
 
-    '--- 1) 가공품 고르기 -----------------------------------------------------
     Dim targets As New List(Of PartDocument)
-    Dim tNames As New List(Of String)
     Dim skipNames As New List(Of String)
-    Dim ccCount As Integer = 0
 
     If top.DocumentType = DocumentTypeEnum.kPartDocumentObject Then
 
         targets.Add(CType(top, PartDocument))
-        tNames.Add(DocLabel(top))
 
     Else
 
@@ -182,17 +82,13 @@ Sub PaintMode(top As Inventor.Document, prefixes As List(Of String), maxRev As I
 
             Dim pd As PartDocument = CType(d, PartDocument)
 
-            If IsContentPart(pd) Then
-                ccCount += 1
-                Continue For
-            End If
+            If IsContentPart(pd) Then Continue For
 
             Dim pn As String = ReadPN(d)
             Dim fn As String = FileTitle(d)
 
             If IsMachinedNo(pn, prefixes, maxRev, suffixes) OrElse IsMachinedNo(fn, prefixes, maxRev, suffixes) Then
                 targets.Add(pd)
-                tNames.Add(DocLabel(d))
             Else
                 skipNames.Add(DocLabel(d))
             End If
@@ -200,7 +96,6 @@ Sub PaintMode(top As Inventor.Document, prefixes As List(Of String), maxRev As I
 
     End If
 
-    tNames.Sort(StringComparer.OrdinalIgnoreCase)
     skipNames.Sort(StringComparer.OrdinalIgnoreCase)
 
     If targets.Count = 0 Then
@@ -212,12 +107,10 @@ Sub PaintMode(top As Inventor.Document, prefixes As List(Of String), maxRev As I
         Return
     End If
 
-    '--- 2) 조립도에서 색을 덮어쓴 가공품 찾기 -------------------------------
     Dim covered As New List(Of ComponentOccurrence)
 
     If showThrough AndAlso top.DocumentType = DocumentTypeEnum.kAssemblyDocumentObject Then
 
-        ' 부품 수백 개 x 배치 수천 개를 비교하므로 목록 대신 HashSet 으로 찾는다
         Dim tPaths As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
         For Each pd As PartDocument In targets
             tPaths.Add(DocPath(pd))
@@ -236,25 +129,6 @@ Sub PaintMode(top As Inventor.Document, prefixes As List(Of String), maxRev As I
 
     End If
 
-    '--- 3) 확인 ------------------------------------------------------------
-    Dim msg As String = _
-        "가공품 " & targets.Count & "개의 구멍·나사에 색을 칠합니다." & vbCrLf & vbCrLf & _
-        ListLines(tNames, listMax) & vbCrLf & _
-        "제외 : 번호 규칙에 안 맞는 부품 " & skipNames.Count & "개, Content Center " & ccCount & "개" & vbCrLf & _
-        "규칙 : " & RuleText(prefixes, maxRev, suffixes) & vbCrLf & vbCrLf & _
-        Legend(cNames) & vbCrLf
-
-    If covered.Count > 0 Then
-        msg &= "조립도에서 색을 덮어쓴 가공품 " & covered.Count & "개는" & vbCrLf & _
-               "뷰 표현 """ & TempDvrName() & """ 을 새로 만들어 그 안에서 보이게 합니다." & vbCrLf & vbCrLf
-    End If
-
-    msg &= "부품은 저장하지 않습니다." & vbCrLf & _
-           "다 보고 나면 이 rule 의 [원래대로] 로 되돌리세요."
-
-    If MessageBox.Show(msg, TTL & " - 확인", MessageBoxButtons.OKCancel) <> DialogResult.OK Then Return
-
-    '--- 4) 칠하기 ----------------------------------------------------------
     Dim counts(5) As Integer
     Dim faceCount As Integer = 0
     Dim failCount As Integer = 0
@@ -267,9 +141,6 @@ Sub PaintMode(top As Inventor.Document, prefixes As List(Of String), maxRev As I
     Dim stillNames As New List(Of String)
     Dim dvrFail As Boolean = False
 
-    ' 칠하기 전에 저장 안 된 변경이 없었던 것만 나중에 "변경 없음" 으로 되돌린다.
-    ' 사용자가 고쳐 둔 것을 지우지 않기 위해서다. 트랜잭션을 걸면 지금 문서에
-    ' 변경 표시가 생길 수 있으므로 트랜잭션 전에 모두 읽어 둔다.
     Dim topWasClean As Boolean = Not IsDirtyDoc(top)
     Dim wasClean As New List(Of Boolean)
     For Each pd As PartDocument In targets
@@ -288,7 +159,6 @@ Sub PaintMode(top As Inventor.Document, prefixes As List(Of String), maxRev As I
         ThisApplication.SilentOperation = True
         ThisApplication.ScreenUpdating = False
 
-        ' 한 번의 실행 취소(Ctrl+Z)로 묶는다. 실패해도 칠하기는 계속한다.
         Try
             tx = ThisApplication.TransactionManager.StartGlobalTransaction(top, "가공 형상 색칠")
         Catch
@@ -325,7 +195,6 @@ Sub PaintMode(top As Inventor.Document, prefixes As List(Of String), maxRev As I
     End Try
 
     Try
-        ' 뷰 표현 작업은 트랜잭션 밖에서 한다
         If covered.Count > 0 Then
 
             StepProgress(pb, "조립도 색 덮어쓰기 푸는 중")
@@ -334,15 +203,11 @@ Sub PaintMode(top As Inventor.Document, prefixes As List(Of String), maxRev As I
 
             If ActivateTempDvr(asmDoc) Then
 
-                ' 하위 조립품에 준 색이 그 안의 부품 색을 덮는다.
-                ' 그래서 부품만 풀면 안 되고, 위쪽 하위 조립품부터 차례로 푼다.
-                ' 같은 하위 조립품을 여러 번 풀지 않도록 지나간 것을 기억한다.
                 Dim doneKeys As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
                 For Each occ As ComponentOccurrence In covered
                     ClearCoverChain(occ, doneKeys)
                 Next
 
-                ' 부품 자신과 위쪽 어디에도 덮어쓴 색이 남지 않아야 보인다
                 For Each occ As ComponentOccurrence In covered
                     If IsColorCovered(occ) Then
                         occStill += 1
@@ -378,7 +243,6 @@ Sub PaintMode(top As Inventor.Document, prefixes As List(Of String), maxRev As I
     Catch
     End Try
 
-    '--- 5) 결과 ------------------------------------------------------------
     Dim res As String = "색칠을 마쳤습니다." & vbCrLf & vbCrLf & _
                         "   칠한 가공품 : " & paintedParts & " / " & targets.Count & "개" & vbCrLf & _
                         "   칠한 면     : " & faceCount & "개" & vbCrLf & _
@@ -426,18 +290,11 @@ Sub PaintMode(top As Inventor.Document, prefixes As List(Of String), maxRev As I
 End Sub
 
 
-' ============================================================================
-'  원래대로
-'  지금 연 문서와 그 안에 들어 있는 문서에서 이 rule 이 남긴 기록을 찾아 되돌린다.
-' ============================================================================
 Sub RestoreMode(keepClean As Boolean, listMax As Integer, TTL As String)
 
     Dim parts As New List(Of PartDocument)
     Dim asms As New List(Of AssemblyDocument)
 
-    ' 되돌리는 범위 = 지금 연 문서와 그 안에 들어 있는 문서만.
-    ' (처음 판은 메모리에 열린 모든 문서를 되돌려서, 따로 열어 둔 다른 조립도의
-    '  칠한 색까지 지워 버렸다)
     Dim top As Inventor.Document = ThisApplication.ActiveDocument
     Dim scope As New List(Of Inventor.Document)
     Dim scopePaths As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
@@ -463,7 +320,6 @@ Sub RestoreMode(keepClean As Boolean, listMax As Integer, TTL As String)
         End Try
     Next
 
-    ' 범위 밖(다른 조립도에만 있는 부품)에 칠한 것이 남아 있는지 - 알려만 준다
     Dim otherCount As Integer = 0
     For Each d As Inventor.Document In SnapshotDocs()
         Try
@@ -494,9 +350,6 @@ Sub RestoreMode(keepClean As Boolean, listMax As Integer, TTL As String)
     Dim cleanList As New List(Of Inventor.Document)
     Dim savedList As New List(Of String)
 
-    ' "변경 없음" 으로 되돌려도 되는지 트랜잭션 전에 먼저 판단한다
-    '  - 지금 저장 안 된 변경이 있으면 사용자가 고친 것이므로 그대로 둔다
-    '  - 칠한 색이 파일에 저장되어 있었으면, 되돌린 것도 저장해야 하므로 그대로 둔다
     Dim partClean As New List(Of Boolean)
     For Each pd As PartDocument In parts
         Dim inMemoryOnly As Boolean = PaintedThisSession(pd, "HFC_DOC")
@@ -511,7 +364,6 @@ Sub RestoreMode(keepClean As Boolean, listMax As Integer, TTL As String)
         asmClean.Add(keepClean AndAlso inMemoryOnly AndAlso Not IsDirtyDoc(asmDoc))
     Next
 
-    ' 트랜잭션을 거는 지금 문서가 되돌릴 대상이 아니면, 변경 표시만 생기지 않게 한다
     Dim act As Inventor.Document = ThisApplication.ActiveDocument
     Dim actWasClean As Boolean = Not IsDirtyDoc(act)
 
@@ -634,24 +486,12 @@ Sub RestoreMode(keepClean As Boolean, listMax As Integer, TTL As String)
 End Sub
 
 
-' ============================================================================
-'  부품 하나 칠하기
-'   1차 : 구멍 피처와 구멍 패턴  -> 피처 단위로 한 번에 칠한다 (빠름)
-'   2차 : 나사 피처              -> 나사가 걸린 면만 칠한다 (구멍 색 위에 덮어)
-'
-'  [속도]
-'   면 색을 하나 바꿀 때마다 인벤터가 모델을 갱신하므로, 면을 하나하나 칠하면
-'   부품이 많을 때 매우 느리다. 구멍/패턴은 피처에 색을 주면 그 피처가 만든
-'   면 전체에 한 번에 들어간다. 면에 따로 지정된 색이 있는 면만 따로 칠한다.
-'   피처 단위로 칠하지 못하면 예전처럼 면 하나하나 칠한다.
-' ============================================================================
 Sub PaintPart(pd As PartDocument, rgbs As Integer(,), tapWins As Boolean, _
               counts As Integer(), ByRef faceCount As Integer, ByRef failCount As Integer, _
               mixed As List(Of String), ByRef faceMarked As Boolean, errs As List(Of String))
 
     Dim cd As PartComponentDefinition = pd.ComponentDefinition
 
-    ' 구멍도 나사도 없는 부품은 건너뛴다 (피처를 하나하나 보지 않도록)
     Dim nHole As Integer = 0
     Dim nThread As Integer = 0
     Try
@@ -667,7 +507,6 @@ Sub PaintPart(pd As PartDocument, rgbs As Integer(,), tapWins As Boolean, _
 
     For pass As Integer = 1 To 2
 
-        ' 나사 피처가 없으면 2차는 건너뛴다
         If pass = 2 AndAlso nThread = 0 Then Exit For
 
         For Each o As Object In cd.Features
@@ -695,7 +534,6 @@ Sub PaintPart(pd As PartDocument, rgbs As Integer(,), tapWins As Boolean, _
                 k = PatternClass(f, tapWins, 0)
                 If k = -1 Then Continue For
                 If k = -2 Then
-                    ' 섞인 패턴/미러는 면마다 원본 구멍 면과 맞춰 칠한다
                     If pass = 1 Then
                         Dim nMix As Integer = PaintMixedPattern(pd, f, tapWins, rgbs, cache, counts, _
                                                                  faceCount, failCount, errs)
@@ -719,8 +557,6 @@ Sub PaintPart(pd As PartDocument, rgbs As Integer(,), tapWins As Boolean, _
             Dim failBefore As Integer = failCount
             Dim n As Integer = PaintWith(pd, f, k, faceList, cache(k), failCount, faceMarked, errs)
 
-            ' 하나도 못 칠했으면, 남아 있던 색이 망가졌을 수 있으므로
-            ' 새 색을 만들어 한 번 더 칠해 본다 (부품당 종류별 한 번)
             If n = 0 AndAlso failCount > failBefore AndAlso Not retried(k) Then
                 retried(k) = True
                 Dim fresh As Asset = GetAsset(pd, k, rgbs, True, errs)
@@ -741,9 +577,6 @@ Sub PaintPart(pd As PartDocument, rgbs As Integer(,), tapWins As Boolean, _
 End Sub
 
 
-' ============================================================================
-'  구멍 종류  0 드릴 / 1 카운터보어 / 2 카운터싱크 / 3 스폿페이스 / 4 탭
-' ============================================================================
 Function HoleClass(h As HoleFeature, tapWins As Boolean) As Integer
 
     Dim t As Integer = 0
@@ -771,15 +604,6 @@ Function HoleClass(h As HoleFeature, tapWins As Boolean) As Integer
 End Function
 
 
-' ============================================================================
-'  패턴/미러가 복사한 것이 무엇인지
-'   0~4 : 그 종류의 구멍만 복사함
-'   5   : 나사 피처만 복사함
-'   -1  : 구멍과 관계없음 (칠하지 않음)
-'   -2  : 섞여 있음 - 종류가 다른 구멍, 구멍 + 나사, 구멍 + 다른 피처(돌출 등)
-'         -> 피처 단위로는 칠할 수 없으므로 면마다 원본 면과 맞춰 칠한다
-'            (PaintMixedPattern)
-' ============================================================================
 Function PatternClass(f As PartFeature, tapWins As Boolean, depth As Integer) As Integer
 
     If depth > 8 Then Return -1
@@ -795,7 +619,7 @@ Function PatternClass(f As PartFeature, tapWins As Boolean, depth As Integer) As
     Catch
         Return -1
     End Try
-    If parents Is Nothing Then Return -1      ' 솔리드 전체 패턴 등
+    If parents Is Nothing Then Return -1
 
     Dim found As Integer = -1
     Dim hasOther As Boolean = False
@@ -832,17 +656,6 @@ Function PatternClass(f As PartFeature, tapWins As Boolean, depth As Integer) As
 End Function
 
 
-' ============================================================================
-'  섞인 패턴/미러 칠하기
-'   미러/패턴이 복사한 면은 원본 면과 모양(면 종류)과 넓이가 같다.
-'   그래서 원본 구멍/나사 피처의 면을 (면 종류, 넓이, 색 종류) 로 모아 두고,
-'   복사된 면마다 같은 것을 찾아 그 색으로 칠한다.
-'   예) Ø4 깊이 410 드릴 + 같은 자리 M5 탭을 같이 미러
-'       -> 미러된 쪽도 드릴 면은 파랑, 탭 면은 빨강 (원본 쪽과 똑같이)
-'   같은 면이 구멍 면이면서 나사 면이면 나사 색 (원본 쪽에서도 나사 색이 위에 칠해짐)
-'   원본과 맞는 면이 없는 면(같이 미러한 돌출 등)은 칠하지 않는다.
-'  돌려주는 값은 칠한 면 개수.
-' ============================================================================
 Function PaintMixedPattern(pd As PartDocument, f As PartFeature, tapWins As Boolean, _
                            rgbs As Integer(,), cache As Asset(), counts As Integer(), _
                            ByRef faceCount As Integer, ByRef failCount As Integer, _
@@ -855,7 +668,6 @@ Function PaintMixedPattern(pd As PartDocument, f As PartFeature, tapWins As Bool
     CollectSigs(f, tapWins, sigType, sigArea, sigCls, 0)
     If sigType.Count = 0 Then Return 0
 
-    ' 종류별로 면 모으기
     Dim groups(5) As List(Of Object)
     Try
         For Each o As Object In f.Faces
@@ -887,7 +699,6 @@ Function PaintMixedPattern(pd As PartDocument, f As PartFeature, tapWins As Bool
 End Function
 
 
-' 패턴/미러의 원본 구멍/나사 피처 면을 모은다 (패턴 안의 패턴도 따라 들어간다)
 Sub CollectSigs(f As PartFeature, tapWins As Boolean, sigType As List(Of Integer), _
                 sigArea As List(Of Double), sigCls As List(Of Integer), depth As Integer)
 
@@ -942,8 +753,6 @@ Sub AddSigs(faceList As Object, c As Integer, sigType As List(Of Integer), _
 End Sub
 
 
-' 같은 면 종류이고 넓이가 같은(0.01% 이내) 원본 면의 색 종류. 없으면 -1
-' 여러 개와 맞으면 나사(5)가 우선, 아니면 처음 맞은 것
 Function MatchSig(fc As Face, sigType As List(Of Integer), sigArea As List(Of Double), _
                   sigCls As List(Of Integer)) As Integer
 
@@ -988,10 +797,6 @@ Function IsSuppressedFeature(f As PartFeature) As Boolean
 End Function
 
 
-' ============================================================================
-'  나사 피처가 걸린 면
-'  ThreadedFace 가 면 하나를 주는 경우와 면 모음을 주는 경우를 모두 받는다.
-' ============================================================================
 Function ThreadFaces(tf As ThreadFeature) As List(Of Object)
 
     Dim res As New List(Of Object)
@@ -1025,7 +830,6 @@ Function ThreadFaces(tf As ThreadFeature) As List(Of Object)
 End Function
 
 
-' 나사산(5)은 면 단위, 나머지는 피처 단위로 칠한다
 Function PaintWith(pd As PartDocument, f As PartFeature, k As Integer, faceList As Object, a As Asset, _
                    ByRef failCount As Integer, ByRef faceMarked As Boolean, errs As List(Of String)) As Integer
     If k = 5 Then
@@ -1037,11 +841,6 @@ Function PaintWith(pd As PartDocument, f As PartFeature, k As Integer, faceList 
 End Function
 
 
-' ============================================================================
-'  피처에 색 칠하기. 피처가 만든 면 전체에 한 번에 들어간다.
-'  면에 따로 색이 지정된 면은 피처 색이 가려지므로 그 면만 따로 칠한다.
-'  돌려주는 값은 칠한 면 개수.
-' ============================================================================
 Function PaintFeature(pd As PartDocument, f As PartFeature, faceList As Object, a As Asset, _
                       ByRef failCount As Integer, ByRef faceMarked As Boolean, _
                       errs As List(Of String)) As Integer
@@ -1072,7 +871,6 @@ Function PaintFeature(pd As PartDocument, f As PartFeature, faceList As Object, 
     Try
         SaveOriginal(f, "HFC_FEAT")
         f.Appearance = a
-        ' 들어갔는지 확인한다. 안 들어갔으면 면 단위로 칠한다.
         Dim srcNow As Integer = CInt(f.AppearanceSourceType)
         featOk = (srcNow = CInt(AppearanceSourceTypeEnum.kOverrideAppearance))
         If Not featOk Then AddErr(errs, "피처 색 확인", "색이 들어가지 않음 (AppearanceSourceType=" & srcNow & ")", pd)
@@ -1082,7 +880,6 @@ Function PaintFeature(pd As PartDocument, f As PartFeature, faceList As Object, 
     End Try
 
     If Not featOk Then
-        ' 피처 단위로 안 되면 면 하나하나 칠한다
         Dim n As Integer = PaintFaces(pd, faceList, a, failCount, errs)
         If n > 0 Then faceMarked = True
         Return n
@@ -1097,9 +894,6 @@ Function PaintFeature(pd As PartDocument, f As PartFeature, faceList As Object, 
 End Function
 
 
-' ============================================================================
-'  면에 색 칠하기 (나사산, 또는 피처 단위로 칠하지 못한 경우)
-' ============================================================================
 Function PaintFaces(pd As PartDocument, faceList As Object, a As Asset, _
                     ByRef failCount As Integer, errs As List(Of String)) As Integer
 
@@ -1132,10 +926,6 @@ Function PaintFaces(pd As PartDocument, faceList As Object, a As Asset, _
 End Function
 
 
-' ============================================================================
-'  원래 색 설정 적어 두기 / 되돌리기  (면, 피처 공통)
-'  이미 적어 둔 것이 있으면 (두 번째 실행) 처음 것을 그대로 둔다.
-' ============================================================================
 Sub SaveOriginal(obj As Object, setName As String)
 
     If obj.AttributeSets.NameIsUsed(setName) Then Return
@@ -1167,7 +957,6 @@ Sub RestoreOriginal(pd As PartDocument, obj As Object, setName As String)
     Dim lastErr As String = ""
 
     If srcVal = CInt(AppearanceSourceTypeEnum.kOverrideAppearance) Then
-        ' 원래 따로 지정한 색이 있었으면 그 색으로
         Dim a As Asset = FindAsset(pd, aName)
         If a IsNot Nothing AndAlso Not IsMyAsset(a, -1) Then
             Try
@@ -1178,13 +967,9 @@ Sub RestoreOriginal(pd As PartDocument, obj As Object, setName As String)
             End Try
         End If
     Else
-        ' 원래 피처/바디/부품 색을 따르고 있었으면 그 값으로
         done = TrySource(obj, CType(srcVal, AppearanceSourceTypeEnum), lastErr)
     End If
 
-    ' 원래 값이 안 받아지면, 덮어쓴 색만 풀리는 다른 값을 차례로 넣어 본다.
-    ' (피처/면은 받아 주는 값이 정해져 있어서, 읽어 온 값을 그대로 넣으면
-    '  거부되는 경우가 있었다)
     If Not done Then done = ClearObjOverride(obj, lastErr)
 
     If Not done Then
@@ -1196,7 +981,6 @@ Sub RestoreOriginal(pd As PartDocument, obj As Object, setName As String)
 End Sub
 
 
-' 값을 넣고, 덮어쓴 색이 풀렸는지까지 확인한다
 Function TrySource(obj As Object, v As AppearanceSourceTypeEnum, ByRef lastErr As String) As Boolean
     Try
         obj.AppearanceSourceType = v
@@ -1231,17 +1015,11 @@ Function ClearObjOverride(obj As Object, ByRef lastErr As String) As Boolean
 End Function
 
 
-' ============================================================================
-'  부품 하나 되돌리기
-'   피처 : 피처 목록을 훑어 기록이 있는 것만 되돌린다 (빠름)
-'   면   : 면을 따로 칠한 부품만 찾는다. 면 찾기(FindObjects)는 느리기 때문이다.
-' ============================================================================
 Sub RestorePart(pd As PartDocument, ByRef nItems As Integer, ByRef nFail As Integer, _
                 errs As List(Of String))
 
     Dim failBefore As Integer = nFail
 
-    ' 피처 - 면보다 먼저. 면 기록이 피처 색 위에 다시 원래 면 색을 얹는다.
     Try
         For Each o As Object In pd.ComponentDefinition.Features
             Dim f As PartFeature = TryCast(o, PartFeature)
@@ -1259,7 +1037,6 @@ Sub RestorePart(pd As PartDocument, ByRef nItems As Integer, ByRef nFail As Inte
     Catch
     End Try
 
-    ' 면
     If NeedFaceSearch(pd) Then
 
         Dim objs As ObjectCollection = Nothing
@@ -1285,13 +1062,7 @@ Sub RestorePart(pd As PartDocument, ByRef nItems As Integer, ByRef nFail As Inte
 
     End If
 
-    ' 이 rule 이 만든 색(HFC_*)은 지우지 않는다. 지우면 다시 칠할 때 같은 이름으로
-    ' 만들 수 없어 칠하기가 실패했다. 아무 면도 쓰지 않는 색이라 보이지 않고,
-    ' 부품을 저장하지 않으면 남지도 않는다. 다음에 칠할 때 그대로 다시 쓴다.
 
-    ' 다 되돌렸으면 "되돌림 완료" 표시를 남긴다. 다음 [원래대로] 에서 이 부품은
-    ' 건너뛴다 (남아 있는 HFC 색 때문에 매번 느린 면 찾기를 하지 않도록).
-    ' 못 되돌린 것이 있으면 표시를 그대로 두어, 다시 실행하면 남은 것만 되돌린다.
     If nFail = failBefore Then
         Try
             Dim st As AttributeSet = MarkDoc(pd, "HFC_DOC")
@@ -1305,7 +1076,6 @@ Sub RestorePart(pd As PartDocument, ByRef nItems As Integer, ByRef nFail As Inte
 End Sub
 
 
-' 피처 종류 이름 (실패 이유에 같이 보여준다)
 Function TypeLabel(f As PartFeature) As String
     If TypeOf f Is HoleFeature Then Return "구멍"
     If TypeOf f Is ThreadFeature Then Return "나사"
@@ -1317,7 +1087,6 @@ Function TypeLabel(f As PartFeature) As String
 End Function
 
 
-' 면을 따로 칠했다는 표시. 되돌릴 때 이 표시가 있는 부품만 면을 찾는다.
 Sub FlagFaces(d As Inventor.Document)
     Try
         Dim st As AttributeSet = d.AttributeSets.Item("HFC_DOC")
@@ -1327,9 +1096,6 @@ Sub FlagFaces(d As Inventor.Document)
 End Sub
 
 
-' 면 기록을 찾아야 하는 부품인지
-'  - 이번 판으로 칠한 부품 : 면을 따로 칠한 표시가 있을 때만
-'  - 처음 판으로 칠한 부품 : 모든 면을 하나하나 칠했으므로 항상 찾는다
 Function NeedFaceSearch(pd As PartDocument) As Boolean
     Try
         If Not pd.AttributeSets.NameIsUsed("HFC_DOC") Then Return True
@@ -1342,19 +1108,14 @@ Function NeedFaceSearch(pd As PartDocument) As Boolean
 End Function
 
 
-' 이 rule 이 칠한 부품인지 - 문서에 붙은 표시만 본다.
-' (면 찾기는 느려서, 메모리에 있는 부품 수백 개에 다 하면 인벤터가 멈춘 것처럼 된다)
 Function HasPartMarks(pd As PartDocument) As Boolean
     Try
         If pd.AttributeSets.NameIsUsed("HFC_DOC") Then
-            ' 다 되돌린 부품은 건너뛴다
             Return Not pd.AttributeSets.Item("HFC_DOC").NameIsUsed("restored")
         End If
     Catch
     End Try
 
-    ' 표시가 없는데 이 rule 의 색이 남아 있으면, 앞 판이 못 되돌린 것이 있어도
-    ' 표시를 지워 버린 부품이다. 색 목록은 몇 개 안 되므로 빠르다.
     Try
         For Each a As Asset In pd.AppearanceAssets
             If IsMyAsset(a, -1) Then Return True
@@ -1366,20 +1127,6 @@ Function HasPartMarks(pd As PartDocument) As Boolean
 End Function
 
 
-' ============================================================================
-'  색(외관) 만들기 - 부품 안에 HFC_종류 이름으로 만든다
-'  이미 있으면 그것을 다시 쓰고 색만 설정값으로 맞춘다.
-'
-'  [다시 칠하기가 안 되던 문제]
-'   처음 판은 [원래대로] 에서 이 색을 지웠다. 지운 색은 실행 취소(Ctrl+Z)를
-'   위해 인벤터가 이름을 붙잡고 있어서, 같은 이름으로 다시 만들면 실패했다.
-'   그래서 되돌린 뒤 다시 칠하면 아무것도 칠해지지 않았다.
-'   -> 이제 [원래대로] 는 색을 지우지 않고 남겨 두었다가 다시 쓴다.
-'   -> 같은 이름을 만들 수 없으면 HFC_TAP_2 처럼 뒤에 번호를 붙여 만든다.
-'   -> 인벤터는 표시 이름(가공색 - 탭)이 겹쳐도 만들기를 거부한다 (0x80070057).
-'      그래서 남은 색은 Name 과 DisplayName 둘 다로 찾고, 새로 만들 때는
-'      표시 이름에도 번호를 붙인다 ("가공색 - 탭 (2)").
-' ============================================================================
 Function GetAsset(pd As PartDocument, k As Integer, rgbs As Integer(,), _
                   forceNew As Boolean, errs As List(Of String)) As Asset
 
@@ -1387,7 +1134,6 @@ Function GetAsset(pd As PartDocument, k As Integer, rgbs As Integer(,), _
     Dim disp As String = "가공색 - " & ClassLabel(k)
     Dim a As Asset = Nothing
 
-    ' 1) 남아 있는 것 다시 쓰기 (forceNew 면 건너뛴다 - 남은 것이 망가진 경우)
     If Not forceNew Then
         a = FindMyAsset(pd, k)
         If a IsNot Nothing Then
@@ -1395,9 +1141,6 @@ Function GetAsset(pd As PartDocument, k As Integer, rgbs As Integer(,), _
         End If
     End If
 
-    ' 2) 새로 만들기
-    '    이름뿐 아니라 표시 이름도 문서 안에서 겹치면 안 된다 (겹치면 0x80070057).
-    '    둘 다 겹치지 않는 번호를 찾아 만든다.
     For n As Integer = 1 To 20
         Dim tryName As String = nm
         Dim tryDisp As String = disp
@@ -1422,12 +1165,6 @@ Function GetAsset(pd As PartDocument, k As Integer, rgbs As Integer(,), _
 End Function
 
 
-' ============================================================================
-'  이 rule 이 만든 색인지
-'  인벤터가 Add 에 준 이름(HFC_TAP)을 그대로 Name 으로 쓰지 않을 수 있으므로
-'  Name 과 DisplayName(가공색 - 탭) 둘 다 본다.
-'  k = -1 이면 종류와 관계없이 이 rule 의 색인지만 본다.
-' ============================================================================
 Function IsMyAsset(a As Asset, k As Integer) As Boolean
 
     Dim an As String = ""
@@ -1458,7 +1195,6 @@ Function IsMyAsset(a As Asset, k As Integer) As Boolean
 End Function
 
 
-' 이 종류의 색 중 처음 것
 Function FindMyAsset(pd As PartDocument, k As Integer) As Asset
     Try
         For Each a As Asset In pd.AppearanceAssets
@@ -1470,7 +1206,6 @@ Function FindMyAsset(pd As PartDocument, k As Integer) As Asset
 End Function
 
 
-' 이름이나 표시 이름이 이미 쓰이고 있는지
 Function AssetNameUsed(pd As PartDocument, nm As String, disp As String) As Boolean
     Try
         For Each a As Asset In pd.AppearanceAssets
@@ -1503,7 +1238,6 @@ Function SetAssetColor(a As Asset, k As Integer, rgbs As Integer(,), _
 End Function
 
 
-' 실패 이유 모으기 - 같은 단계·같은 메시지는 한 번만, 처음 생긴 부품 이름과 함께
 Sub AddErr(errs As List(Of String), stage As String, msg As String, pd As PartDocument)
     If errs Is Nothing Then Return
     Dim head As String = stage & " : " & msg
@@ -1531,11 +1265,6 @@ Function FindAsset(pd As PartDocument, nm As String) As Asset
 End Function
 
 
-' ============================================================================
-'  조립도 색 덮어쓰기
-' ============================================================================
-
-' 이 부품 또는 위쪽 하위 조립품에 조립도 색이 덮어씌워져 있는지
 Function IsColorCovered(occ As ComponentOccurrence) As Boolean
 
     Dim cur As ComponentOccurrence = occ
@@ -1569,10 +1298,6 @@ Function IsOverridden(occ As ComponentOccurrence) As Boolean
 End Function
 
 
-' ============================================================================
-'  부품부터 맨 위 하위 조립품까지 덮어쓴 색을 푼다. 위쪽부터 푼다.
-'  (임시 뷰 표현 안에서만 바뀌고, [원래대로] 에서 원래 뷰 표현으로 돌아간다)
-' ============================================================================
 Sub ClearCoverChain(leaf As ComponentOccurrence, doneKeys As HashSet(Of String))
 
     Dim chain As New List(Of ComponentOccurrence)
@@ -1601,10 +1326,6 @@ Sub ClearCoverChain(leaf As ComponentOccurrence, doneKeys As HashSet(Of String))
 End Sub
 
 
-' 덮어쓴 색 풀기
-'  먼저 "부품 색 따르기" 로 바꿔 본다.
-'  하위 조립품은 그 값이 안 받아질 수 있어서, 안 풀리면 인벤터가 가진 다른
-'  색 출처 값을 차례로 넣어 본다. 덮어쓰기/기본색 값은 넣지 않는다.
 Function ClearOverride(o As ComponentOccurrence) As Boolean
 
     Try
@@ -1635,7 +1356,6 @@ Function ClearOverride(o As ComponentOccurrence) As Boolean
 End Function
 
 
-' 배치 경로 이름 (최상위 조립도 기준)  예: 하위조립:1\부품:3
 Function OccKey(occ As ComponentOccurrence) As String
 
     Dim parts As New List(Of String)
@@ -1662,13 +1382,11 @@ Function TempDvrName() As String
 End Function
 
 
-' 임시 뷰 표현을 만들어 활성화한다. 원래 뷰 표현 이름은 속성으로 적어 둔다.
 Function ActivateTempDvr(asmDoc As AssemblyDocument) As Boolean
 
     Dim reps As DesignViewRepresentations = _
         asmDoc.ComponentDefinition.RepresentationsManager.DesignViewRepresentations
 
-    ' 두 번째 실행 : 이미 만들어 둔 것을 다시 활성화
     If asmDoc.AttributeSets.NameIsUsed("HFC_ASM") Then
         Try
             Dim prevTemp As String = CStr(asmDoc.AttributeSets.Item("HFC_ASM").Item("tempDvr").Value)
@@ -1690,10 +1408,8 @@ Function ActivateTempDvr(asmDoc As AssemblyDocument) As Boolean
     Dim tmp As DesignViewRepresentation = Nothing
     Dim tName As String = ""
 
-    ' 전에 쓰고 남은 임시 뷰 표현은 지운다
     DeleteTempDvrs(asmDoc, orig)
 
-    ' 지운 이름은 실행 취소를 위해 막혀 있을 수 있으므로, 안 되면 번호를 붙인다
     For n As Integer = 1 To 9
         tName = TempDvrName()
         If n > 1 Then tName = TempDvrName() & " " & n
@@ -1760,7 +1476,7 @@ Function RestoreAsm(asmDoc As AssemblyDocument) As Boolean
     Try
         reps.Item(origName).Activate()
     Catch
-        Return False      ' 기록은 남겨 두어 다시 시도할 수 있게 한다
+        Return False
     End Try
 
     Try
@@ -1768,7 +1484,6 @@ Function RestoreAsm(asmDoc As AssemblyDocument) As Boolean
     Catch
     End Try
 
-    ' 번호가 붙은 것이나 전에 남은 것도 같이 지운다
     Try
         DeleteTempDvrs(asmDoc, asmDoc.ComponentDefinition.RepresentationsManager.ActiveDesignViewRepresentation)
     Catch
@@ -1784,7 +1499,6 @@ Function RestoreAsm(asmDoc As AssemblyDocument) As Boolean
 End Function
 
 
-' 이름이 "가공색상 확인(임시)" 로 시작하는 뷰 표현을 지운다 (keep 은 남긴다)
 Sub DeleteTempDvrs(asmDoc As AssemblyDocument, keep As DesignViewRepresentation)
 
     Dim reps As DesignViewRepresentations = _
@@ -1819,17 +1533,10 @@ Function DvrExists(reps As DesignViewRepresentations, nm As String) As Boolean
 End Function
 
 
-' ============================================================================
-'  "이 rule 이 칠했다" 표시
-'   session : 칠한 인벤터 실행 (껐다 켜면 달라진다)
-'   time    : 칠한 시각
-'  되돌릴 때, 칠한 뒤 파일이 저장된 적이 없을 때만 "변경 없음" 으로 돌린다.
-' ============================================================================
 Function MarkDoc(d As Inventor.Document, setName As String) As AttributeSet
 
     If d.AttributeSets.NameIsUsed(setName) Then
         Dim old As AttributeSet = d.AttributeSets.Item(setName)
-        ' 다 되돌린 뒤 다시 칠하는 것이면 표시를 새로 만든다 (칠한 시각을 새로)
         If old.NameIsUsed("restored") Then
             old.Delete()
         Else
@@ -1840,7 +1547,7 @@ Function MarkDoc(d As Inventor.Document, setName As String) As AttributeSet
     Dim st As AttributeSet = d.AttributeSets.Add(setName)
     st.Add("session", ValueTypeEnum.kStringType, SessionId())
     st.Add("time", ValueTypeEnum.kStringType, DateTime.UtcNow.Ticks.ToString())
-    st.Add("ver", ValueTypeEnum.kIntegerType, 2)     ' 2 = 피처 단위로 칠하는 판
+    st.Add("ver", ValueTypeEnum.kIntegerType, 2)
     Return st
 
 End Function
@@ -1876,10 +1583,6 @@ Function SessionId() As String
 End Function
 
 
-' ============================================================================
-'  가공품 번호 판정
-'   접두어로 시작하고, 끝이 "-숫자" + 리비전 문자 0 ~ maxRev 개
-' ============================================================================
 Function IsMachinedNo(s As String, prefixes As List(Of String), maxRev As Integer, _
                       suffixes As List(Of String)) As Boolean
 
@@ -1887,7 +1590,6 @@ Function IsMachinedNo(s As String, prefixes As List(Of String), maxRev As Intege
 
     Dim t As String = s.Trim().ToUpperInvariant()
 
-    ' 미러 부품의 _MIR 같은 꼬리는 떼고 본다 (한 번만)
     For Each sf As String In suffixes
         Dim su As String = sf.ToUpperInvariant()
         If su <> "" AndAlso t.Length > su.Length AndAlso t.EndsWith(su) Then
@@ -1949,9 +1651,6 @@ Function RuleText(prefixes As List(Of String), maxRev As Integer, suffixes As Li
 End Function
 
 
-' ============================================================================
-'  종류 이름 / 색
-' ============================================================================
 Function ClassLabel(k As Integer) As String
     Select Case k
         Case 0 : Return "홀(드릴)"
@@ -1978,17 +1677,6 @@ Function ClassKey(k As Integer) As String
 End Function
 
 
-Function Legend(cNames As String()) As String
-    Dim s As String = "색 : "
-    For k As Integer = 0 To 5
-        If k > 0 Then s &= ",  "
-        s &= ClassLabel(k) & "=" & cNames(k)
-    Next
-    Return s & vbCrLf
-End Function
-
-
-' "이름:R,G,B" 읽기. 잘못 적으면 회색
 Sub SetColor(rgbs As Integer(,), cNames As String(), k As Integer, spec As String)
 
     Dim nm As String = ClassLabel(k)
@@ -2029,9 +1717,6 @@ Function Clamp255(v As Integer) As Integer
 End Function
 
 
-' ============================================================================
-'  공통
-' ============================================================================
 Function ReadPN(d As Inventor.Document) As String
     Try
         Return CStr(d.PropertySets.Item("Design Tracking Properties").Item("Part Number").Value)
@@ -2059,7 +1744,6 @@ Function FileTitle(d As Inventor.Document) As String
 End Function
 
 
-' 파일명, 부품번호가 다르면 [부품번호] 를 덧붙인다
 Function DocLabel(d As Inventor.Document) As String
     Dim fn As String = FileTitle(d)
     Dim pn As String = ReadPN(d)
@@ -2112,11 +1796,6 @@ Function ListLines(items As List(Of String), maxLines As Integer) As String
 End Function
 
 
-' ============================================================================
-'  진행 표시
-'  인벤터 진행 막대를 쓰고, 상태 표시줄에도 같이 적는다.
-'  진행 막대를 만들지 못해도 작업은 그대로 한다.
-' ============================================================================
 Function MakeProgress(steps As Integer, title As String) As Inventor.ProgressBar
     Try
         Return ThisApplication.CreateProgressBar(False, Math.Max(steps, 1), title)
