@@ -455,6 +455,7 @@ Sub RestoreMode(keepClean As Boolean, listMax As Integer, TTL As String)
 
     Dim nFaces As Integer = 0
     Dim nFail As Integer = 0
+    Dim errs As New List(Of String)
     Dim nAsm As Integer = 0
     Dim asmFail As New List(Of String)
     Dim cleanList As New List(Of Inventor.Document)
@@ -503,9 +504,10 @@ Sub RestoreMode(keepClean As Boolean, listMax As Integer, TTL As String)
         For i As Integer = 0 To parts.Count - 1
             StepProgress(pb, (i + 1) & " / " & parts.Count & "   " & FileTitle(parts(i)))
             Try
-                RestorePart(parts(i), nFaces, nFail)
-            Catch
+                RestorePart(parts(i), nFaces, nFail, errs)
+            Catch ex As Exception
                 nFail += 1
+                AddErr(errs, "부품 되돌리기", ex.Message, parts(i))
             End Try
 
             If partClean(i) Then cleanList.Add(parts(i))
@@ -570,7 +572,13 @@ Sub RestoreMode(keepClean As Boolean, listMax As Integer, TTL As String)
     res &= vbCrLf
 
     If nFail > 0 Then
-        res &= "되돌리지 못한 피처/면 : " & nFail & "개" & vbCrLf & vbCrLf
+        res &= "되돌리지 못한 피처/면 : " & nFail & "개" & vbCrLf & _
+               "   [원래대로] 를 한 번 더 실행하면 남은 것만 다시 시도합니다." & vbCrLf & vbCrLf
+    End If
+
+    If errs.Count > 0 Then
+        res &= "실패 이유 (인벤터 오류 메시지 - 이 화면을 그대로 알려주세요)" & vbCrLf & _
+               ListLines(errs, 8) & vbCrLf
     End If
 
     If asmFail.Count > 0 Then
@@ -972,30 +980,71 @@ Sub RestoreOriginal(pd As PartDocument, obj As Object, setName As String)
     Dim srcVal As Integer = CInt(st.Item("src").Value)
     Dim aName As String = CStr(st.Item("asset").Value)
     Dim done As Boolean = False
+    Dim lastErr As String = ""
 
     If srcVal = CInt(AppearanceSourceTypeEnum.kOverrideAppearance) Then
         ' 원래 따로 지정한 색이 있었으면 그 색으로
         Dim a As Asset = FindAsset(pd, aName)
         If a IsNot Nothing AndAlso Not IsMyAsset(a, -1) Then
-            obj.Appearance = a
-            done = True
+            Try
+                obj.Appearance = a
+                done = True
+            Catch ex As Exception
+                lastErr = ex.Message
+            End Try
         End If
     Else
-        ' 원래 피처/바디/부품 색을 따르고 있었으면 그대로
-        Try
-            obj.AppearanceSourceType = CType(srcVal, AppearanceSourceTypeEnum)
-            done = True
-        Catch
-            done = False
-        End Try
+        ' 원래 피처/바디/부품 색을 따르고 있었으면 그 값으로
+        done = TrySource(obj, CType(srcVal, AppearanceSourceTypeEnum), lastErr)
     End If
 
-    ' 원래대로 못 돌리면 부품 색을 따르게 한다
-    If Not done Then obj.AppearanceSourceType = AppearanceSourceTypeEnum.kPartAppearance
+    ' 원래 값이 안 받아지면, 덮어쓴 색만 풀리는 다른 값을 차례로 넣어 본다.
+    ' (피처/면은 받아 주는 값이 정해져 있어서, 읽어 온 값을 그대로 넣으면
+    '  거부되는 경우가 있었다)
+    If Not done Then done = ClearObjOverride(obj, lastErr)
+
+    If Not done Then
+        Throw New Exception("원래 색 설정을 넣지 못함 (원래 값=" & srcVal & ") " & lastErr)
+    End If
 
     st.Delete()
 
 End Sub
+
+
+' 값을 넣고, 덮어쓴 색이 풀렸는지까지 확인한다
+Function TrySource(obj As Object, v As AppearanceSourceTypeEnum, ByRef lastErr As String) As Boolean
+    Try
+        obj.AppearanceSourceType = v
+    Catch ex As Exception
+        lastErr = ex.Message
+        Return False
+    End Try
+    Try
+        Return CInt(obj.AppearanceSourceType) <> CInt(AppearanceSourceTypeEnum.kOverrideAppearance)
+    Catch
+        Return True
+    End Try
+End Function
+
+
+Function ClearObjOverride(obj As Object, ByRef lastErr As String) As Boolean
+
+    If TrySource(obj, AppearanceSourceTypeEnum.kPartAppearance, lastErr) Then Return True
+
+    Try
+        For Each v As AppearanceSourceTypeEnum In [Enum].GetValues(GetType(AppearanceSourceTypeEnum))
+            Dim vn As String = v.ToString()
+            If vn.Contains("Override") OrElse vn.Contains("Default") Then Continue For
+            If v = AppearanceSourceTypeEnum.kPartAppearance Then Continue For
+            If TrySource(obj, v, lastErr) Then Return True
+        Next
+    Catch
+    End Try
+
+    Return False
+
+End Function
 
 
 ' ============================================================================
@@ -1003,7 +1052,10 @@ End Sub
 '   피처 : 피처 목록을 훑어 기록이 있는 것만 되돌린다 (빠름)
 '   면   : 면을 따로 칠한 부품만 찾는다. 면 찾기(FindObjects)는 느리기 때문이다.
 ' ============================================================================
-Sub RestorePart(pd As PartDocument, ByRef nItems As Integer, ByRef nFail As Integer)
+Sub RestorePart(pd As PartDocument, ByRef nItems As Integer, ByRef nFail As Integer, _
+                errs As List(Of String))
+
+    Dim failBefore As Integer = nFail
 
     ' 피처 - 면보다 먼저. 면 기록이 피처 색 위에 다시 원래 면 색을 얹는다.
     Try
@@ -1015,8 +1067,9 @@ Sub RestorePart(pd As PartDocument, ByRef nItems As Integer, ByRef nFail As Inte
                     RestoreOriginal(pd, f, "HFC_FEAT")
                     nItems += 1
                 End If
-            Catch
+            Catch ex As Exception
                 nFail += 1
+                AddErr(errs, "피처 되돌리기 (" & TypeLabel(f) & ")", ex.Message, pd)
             End Try
         Next
     Catch
@@ -1039,8 +1092,9 @@ Sub RestorePart(pd As PartDocument, ByRef nItems As Integer, ByRef nFail As Inte
                 Try
                     RestoreOriginal(pd, fc, "HFC_FACE")
                     nItems += 1
-                Catch
+                Catch ex As Exception
                     nFail += 1
+                    AddErr(errs, "면 되돌리기", ex.Message, pd)
                 End Try
             Next
         End If
@@ -1051,12 +1105,32 @@ Sub RestorePart(pd As PartDocument, ByRef nItems As Integer, ByRef nFail As Inte
     ' 만들 수 없어 칠하기가 실패했다. 아무 면도 쓰지 않는 색이라 보이지 않고,
     ' 부품을 저장하지 않으면 남지도 않는다. 다음에 칠할 때 그대로 다시 쓴다.
 
-    Try
-        If pd.AttributeSets.NameIsUsed("HFC_DOC") Then pd.AttributeSets.Item("HFC_DOC").Delete()
-    Catch
-    End Try
+    ' 다 되돌렸으면 "되돌림 완료" 표시를 남긴다. 다음 [원래대로] 에서 이 부품은
+    ' 건너뛴다 (남아 있는 HFC 색 때문에 매번 느린 면 찾기를 하지 않도록).
+    ' 못 되돌린 것이 있으면 표시를 그대로 두어, 다시 실행하면 남은 것만 되돌린다.
+    If nFail = failBefore Then
+        Try
+            Dim st As AttributeSet = MarkDoc(pd, "HFC_DOC")
+            If Not st.NameIsUsed("restored") Then st.Add("restored", ValueTypeEnum.kIntegerType, 1)
+            If Not st.NameIsUsed("ver") Then st.Add("ver", ValueTypeEnum.kIntegerType, 2)
+            If st.NameIsUsed("faces") Then st.Item("faces").Delete()
+        Catch
+        End Try
+    End If
 
 End Sub
+
+
+' 피처 종류 이름 (실패 이유에 같이 보여준다)
+Function TypeLabel(f As PartFeature) As String
+    If TypeOf f Is HoleFeature Then Return "구멍"
+    If TypeOf f Is ThreadFeature Then Return "나사"
+    If TypeOf f Is MirrorFeature Then Return "미러"
+    If TypeOf f Is RectangularPatternFeature Then Return "직사각형 패턴"
+    If TypeOf f Is CircularPatternFeature Then Return "원형 패턴"
+    If TypeOf f Is SketchDrivenPatternFeature Then Return "스케치 패턴"
+    Return "기타"
+End Function
 
 
 ' 면을 따로 칠했다는 표시. 되돌릴 때 이 표시가 있는 부품만 면을 찾는다.
@@ -1088,10 +1162,23 @@ End Function
 ' (면 찾기는 느려서, 메모리에 있는 부품 수백 개에 다 하면 인벤터가 멈춘 것처럼 된다)
 Function HasPartMarks(pd As PartDocument) As Boolean
     Try
-        Return pd.AttributeSets.NameIsUsed("HFC_DOC")
+        If pd.AttributeSets.NameIsUsed("HFC_DOC") Then
+            ' 다 되돌린 부품은 건너뛴다
+            Return Not pd.AttributeSets.Item("HFC_DOC").NameIsUsed("restored")
+        End If
     Catch
-        Return False
     End Try
+
+    ' 표시가 없는데 이 rule 의 색이 남아 있으면, 앞 판이 못 되돌린 것이 있어도
+    ' 표시를 지워 버린 부품이다. 색 목록은 몇 개 안 되므로 빠르다.
+    Try
+        For Each a As Asset In pd.AppearanceAssets
+            If IsMyAsset(a, -1) Then Return True
+        Next
+    Catch
+    End Try
+
+    Return False
 End Function
 
 
@@ -1556,7 +1643,15 @@ End Function
 ' ============================================================================
 Function MarkDoc(d As Inventor.Document, setName As String) As AttributeSet
 
-    If d.AttributeSets.NameIsUsed(setName) Then Return d.AttributeSets.Item(setName)
+    If d.AttributeSets.NameIsUsed(setName) Then
+        Dim old As AttributeSet = d.AttributeSets.Item(setName)
+        ' 다 되돌린 뒤 다시 칠하는 것이면 표시를 새로 만든다 (칠한 시각을 새로)
+        If old.NameIsUsed("restored") Then
+            old.Delete()
+        Else
+            Return old
+        End If
+    End If
 
     Dim st As AttributeSet = d.AttributeSets.Add(setName)
     st.Add("session", ValueTypeEnum.kStringType, SessionId())
