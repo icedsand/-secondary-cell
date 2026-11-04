@@ -32,8 +32,14 @@
 '     섞여 있으면 칠하지 않고 결과 창에 이름을 알려준다.
 '   - 돌출 컷으로 판 원통 구멍, 조립품 피처로 판 구멍은 칠하지 않는다.
 '
+'  [속도]
+'   면 색을 하나 바꿀 때마다 인벤터가 모델을 갱신하므로 면을 하나하나 칠하면
+'   부품 수백 개에서 몇 분이 걸린다. 구멍/패턴은 피처에 색을 한 번 주어 그
+'   피처가 만든 면 전체에 들어가게 한다. 나사산과, 면에 따로 색이 지정된 면만
+'   면 단위로 칠한다. 칠하고 되돌리는 동안 진행 막대를 보여준다.
+'
 '  [원래대로 돌아가는 방법]
-'   칠하기 전에 면마다 원래 색 설정을 속성(Attribute)으로 적어 둔다.
+'   칠하기 전에 피처/면마다 원래 색 설정을 속성(Attribute)으로 적어 둔다.
 '   [원래대로] 는 그 기록대로 되돌리고, 이 rule 이 만든 색(HFC_*)을 지운다.
 '   메모리에 올라와 있는 모든 문서를 찾으므로 조립도를 바꿔서 실행해도 된다.
 '
@@ -201,7 +207,8 @@ Sub PaintMode(top As Inventor.Document, prefixes As List(Of String), maxRev As I
 
     If showThrough AndAlso top.DocumentType = DocumentTypeEnum.kAssemblyDocumentObject Then
 
-        Dim tPaths As New List(Of String)
+        ' 부품 수백 개 x 배치 수천 개를 비교하므로 목록 대신 HashSet 으로 찾는다
+        Dim tPaths As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
         For Each pd As PartDocument In targets
             tPaths.Add(DocPath(pd))
         Next
@@ -211,7 +218,7 @@ Sub PaintMode(top As Inventor.Document, prefixes As List(Of String), maxRev As I
         For Each occ As ComponentOccurrence In asmDoc.ComponentDefinition.Occurrences.AllLeafOccurrences
             Try
                 If occ.Suppressed Then Continue For
-                If Not ContainsPath(tPaths, occ.ReferencedDocumentDescriptor.FullDocumentName) Then Continue For
+                If Not tPaths.Contains(occ.ReferencedDocumentDescriptor.FullDocumentName) Then Continue For
                 If IsColorCovered(occ) Then covered.Add(occ)
             Catch
             End Try
@@ -257,9 +264,13 @@ Sub PaintMode(top As Inventor.Document, prefixes As List(Of String), maxRev As I
         wasClean.Add(Not IsDirtyDoc(pd))
     Next
 
+    Dim sw As New System.Diagnostics.Stopwatch()
+    sw.Start()
+
     Dim prevSilent As Boolean = ThisApplication.SilentOperation
     Dim prevScreen As Boolean = ThisApplication.ScreenUpdating
     Dim tx As Transaction = Nothing
+    Dim pb As Inventor.ProgressBar = MakeProgress(targets.Count + 1, TTL & " - 칠하는 중")
 
     Try
         ThisApplication.SilentOperation = True
@@ -275,10 +286,14 @@ Sub PaintMode(top As Inventor.Document, prefixes As List(Of String), maxRev As I
         For i As Integer = 0 To targets.Count - 1
 
             Dim pd As PartDocument = targets(i)
+            StepProgress(pb, (i + 1) & " / " & targets.Count & "   " & FileTitle(pd))
+
             Dim before As Integer = faceCount
+            Dim faceMarked As Boolean = False
             Try
                 MarkDoc(pd, "HFC_DOC")
-                PaintPart(pd, rgbs, tapWins, counts, faceCount, failCount, mixed)
+                PaintPart(pd, rgbs, tapWins, counts, faceCount, failCount, mixed, faceMarked)
+                If faceMarked Then FlagFaces(pd)
             Catch
                 failCount += 1
             End Try
@@ -299,6 +314,8 @@ Sub PaintMode(top As Inventor.Document, prefixes As List(Of String), maxRev As I
     Try
         ' 뷰 표현 작업은 트랜잭션 밖에서 한다
         If covered.Count > 0 Then
+
+            StepProgress(pb, "조립도 색 덮어쓰기 푸는 중")
 
             Dim asmDoc As AssemblyDocument = CType(top, AssemblyDocument)
 
@@ -325,6 +342,7 @@ Sub PaintMode(top As Inventor.Document, prefixes As List(Of String), maxRev As I
     Finally
         ThisApplication.ScreenUpdating = prevScreen
         ThisApplication.SilentOperation = prevSilent
+        CloseProgress(pb)
     End Try
 
     If keepClean AndAlso topWasClean AndAlso Not cleanList.Contains(top) Then cleanList.Add(top)
@@ -344,7 +362,8 @@ Sub PaintMode(top As Inventor.Document, prefixes As List(Of String), maxRev As I
     '--- 5) 결과 ------------------------------------------------------------
     Dim res As String = "색칠을 마쳤습니다." & vbCrLf & vbCrLf & _
                         "   칠한 가공품 : " & paintedParts & " / " & targets.Count & "개" & vbCrLf & _
-                        "   칠한 면     : " & faceCount & "개" & vbCrLf & vbCrLf
+                        "   칠한 면     : " & faceCount & "개" & vbCrLf & _
+                        "   걸린 시간   : " & ElapsedText(sw) & vbCrLf & vbCrLf
 
     For k As Integer = 0 To 5
         res &= "   " & ClassLabel(k).PadRight(6) & " (" & cNames(k) & ")  : 피처 " & counts(k) & "개" & vbCrLf
@@ -435,9 +454,13 @@ Sub RestoreMode(keepClean As Boolean, listMax As Integer, TTL As String)
     Dim act As Inventor.Document = ThisApplication.ActiveDocument
     Dim actWasClean As Boolean = Not IsDirtyDoc(act)
 
+    Dim sw As New System.Diagnostics.Stopwatch()
+    sw.Start()
+
     Dim prevSilent As Boolean = ThisApplication.SilentOperation
     Dim prevScreen As Boolean = ThisApplication.ScreenUpdating
     Dim tx As Transaction = Nothing
+    Dim pb As Inventor.ProgressBar = MakeProgress(parts.Count + asms.Count, TTL & " - 되돌리는 중")
 
     Try
         ThisApplication.SilentOperation = True
@@ -451,6 +474,7 @@ Sub RestoreMode(keepClean As Boolean, listMax As Integer, TTL As String)
         End Try
 
         For i As Integer = 0 To parts.Count - 1
+            StepProgress(pb, (i + 1) & " / " & parts.Count & "   " & FileTitle(parts(i)))
             Try
                 RestorePart(parts(i), nFaces, nFail)
             Catch
@@ -471,6 +495,7 @@ Sub RestoreMode(keepClean As Boolean, listMax As Integer, TTL As String)
 
     Try
         For i As Integer = 0 To asms.Count - 1
+            StepProgress(pb, "조립도 뷰 표현 되돌리는 중   " & FileTitle(asms(i)))
             If RestoreAsm(asms(i)) Then
                 nAsm += 1
             Else
@@ -483,6 +508,7 @@ Sub RestoreMode(keepClean As Boolean, listMax As Integer, TTL As String)
     Finally
         ThisApplication.ScreenUpdating = prevScreen
         ThisApplication.SilentOperation = prevSilent
+        CloseProgress(pb)
     End Try
 
     Dim actIsTarget As Boolean = False
@@ -507,8 +533,9 @@ Sub RestoreMode(keepClean As Boolean, listMax As Integer, TTL As String)
     End Try
 
     Dim res As String = "원래 색으로 되돌렸습니다." & vbCrLf & vbCrLf & _
-                        "   부품 : " & parts.Count & "개" & vbCrLf & _
-                        "   면   : " & nFaces & "개" & vbCrLf
+                        "   부품      : " & parts.Count & "개" & vbCrLf & _
+                        "   피처/면   : " & nFaces & "개" & vbCrLf & _
+                        "   걸린 시간 : " & ElapsedText(sw) & vbCrLf
 
     If asms.Count > 0 Then
         res &= "   조립도 뷰 표현 : " & nAsm & "개 원래대로" & vbCrLf
@@ -516,7 +543,7 @@ Sub RestoreMode(keepClean As Boolean, listMax As Integer, TTL As String)
     res &= vbCrLf
 
     If nFail > 0 Then
-        res &= "되돌리지 못한 면 : " & nFail & "개" & vbCrLf & vbCrLf
+        res &= "되돌리지 못한 피처/면 : " & nFail & "개" & vbCrLf & vbCrLf
     End If
 
     If asmFail.Count > 0 Then
@@ -539,12 +566,18 @@ End Sub
 
 ' ============================================================================
 '  부품 하나 칠하기
-'   1차 : 구멍 피처와 구멍 패턴
-'   2차 : 나사 피처 (구멍 색 위에 덮어 칠한다)
+'   1차 : 구멍 피처와 구멍 패턴  -> 피처 단위로 한 번에 칠한다 (빠름)
+'   2차 : 나사 피처              -> 나사가 걸린 면만 칠한다 (구멍 색 위에 덮어)
+'
+'  [속도]
+'   면 색을 하나 바꿀 때마다 인벤터가 모델을 갱신하므로, 면을 하나하나 칠하면
+'   부품이 많을 때 매우 느리다. 구멍/패턴은 피처에 색을 주면 그 피처가 만든
+'   면 전체에 한 번에 들어간다. 면에 따로 지정된 색이 있는 면만 따로 칠한다.
+'   피처 단위로 칠하지 못하면 예전처럼 면 하나하나 칠한다.
 ' ============================================================================
 Sub PaintPart(pd As PartDocument, rgbs As Integer(,), tapWins As Boolean, _
               counts As Integer(), ByRef faceCount As Integer, ByRef failCount As Integer, _
-              mixed As List(Of String))
+              mixed As List(Of String), ByRef faceMarked As Boolean)
 
     Dim cd As PartComponentDefinition = pd.ComponentDefinition
 
@@ -562,26 +595,32 @@ Sub PaintPart(pd As PartDocument, rgbs As Integer(,), tapWins As Boolean, _
     Dim cache(5) As Asset
 
     For pass As Integer = 1 To 2
+
+        ' 나사 피처가 없으면 2차는 건너뛴다
+        If pass = 2 AndAlso nThread = 0 Then Exit For
+
         For Each o As Object In cd.Features
 
             Dim f As PartFeature = TryCast(o, PartFeature)
             If f Is Nothing Then Continue For
-            If IsSuppressedFeature(f) Then Continue For
 
             Dim k As Integer
             Dim faceList As Object = Nothing
 
             If TypeOf f Is HoleFeature Then
                 If pass <> 1 Then Continue For
+                If IsSuppressedFeature(f) Then Continue For
                 k = HoleClass(CType(f, HoleFeature), tapWins)
                 faceList = f.Faces
 
             ElseIf TypeOf f Is ThreadFeature Then
                 If pass <> 2 Then Continue For
+                If IsSuppressedFeature(f) Then Continue For
                 k = 5
                 faceList = ThreadFaces(CType(f, ThreadFeature))
 
             ElseIf IsPatternType(f) Then
+                If IsSuppressedFeature(f) Then Continue For
                 k = PatternClass(f, tapWins, 0)
                 If k = -1 Then Continue For
                 If k = -2 Then
@@ -597,7 +636,14 @@ Sub PaintPart(pd As PartDocument, rgbs As Integer(,), tapWins As Boolean, _
 
             If cache(k) Is Nothing Then cache(k) = GetAsset(pd, k, rgbs)
 
-            Dim n As Integer = PaintFaces(faceList, cache(k), failCount)
+            Dim n As Integer
+            If k = 5 Then
+                n = PaintFaces(faceList, cache(k), failCount)
+                If n > 0 Then faceMarked = True
+            Else
+                n = PaintFeature(f, faceList, cache(k), failCount, faceMarked)
+            End If
+
             If n > 0 Then
                 counts(k) += 1
                 faceCount += n
@@ -753,7 +799,56 @@ End Function
 
 
 ' ============================================================================
-'  면에 색 칠하기. 칠하기 전에 원래 색 설정을 속성으로 적어 둔다.
+'  피처에 색 칠하기. 피처가 만든 면 전체에 한 번에 들어간다.
+'  면에 따로 색이 지정된 면은 피처 색이 가려지므로 그 면만 따로 칠한다.
+'  돌려주는 값은 칠한 면 개수.
+' ============================================================================
+Function PaintFeature(f As PartFeature, faceList As Object, a As Asset, _
+                      ByRef failCount As Integer, ByRef faceMarked As Boolean) As Integer
+
+    If faceList Is Nothing Then Return 0
+
+    Dim nFace As Integer = 0
+    Dim covered As New List(Of Object)
+
+    For Each o As Object In faceList
+        Dim fc As Face = TryCast(o, Face)
+        If fc Is Nothing Then Continue For
+        nFace += 1
+        Try
+            If fc.AppearanceSourceType = AppearanceSourceTypeEnum.kOverrideAppearance Then covered.Add(fc)
+        Catch
+        End Try
+    Next
+
+    If nFace = 0 Then Return 0
+
+    If a Is Nothing Then
+        failCount += nFace
+        Return 0
+    End If
+
+    Try
+        SaveOriginal(f, "HFC_FEAT")
+        f.Appearance = a
+    Catch
+        ' 피처 단위로 안 되면 면 하나하나 칠한다
+        Dim n As Integer = PaintFaces(faceList, a, failCount)
+        If n > 0 Then faceMarked = True
+        Return n
+    End Try
+
+    If covered.Count > 0 Then
+        If PaintFaces(covered, a, failCount) > 0 Then faceMarked = True
+    End If
+
+    Return nFace
+
+End Function
+
+
+' ============================================================================
+'  면에 색 칠하기 (나사산, 또는 피처 단위로 칠하지 못한 경우)
 ' ============================================================================
 Function PaintFaces(faceList As Object, a As Asset, ByRef failCount As Integer) As Integer
 
@@ -772,7 +867,7 @@ Function PaintFaces(faceList As Object, a As Asset, ByRef failCount As Integer) 
         End If
 
         Try
-            SaveFaceOriginal(fc)
+            SaveOriginal(fc, "HFC_FACE")
             fc.Appearance = a
             n += 1
         Catch
@@ -785,47 +880,50 @@ Function PaintFaces(faceList As Object, a As Asset, ByRef failCount As Integer) 
 End Function
 
 
-' 이미 적어 둔 것이 있으면 (두 번째 실행) 처음 것을 그대로 둔다
-Sub SaveFaceOriginal(fc As Face)
+' ============================================================================
+'  원래 색 설정 적어 두기 / 되돌리기  (면, 피처 공통)
+'  이미 적어 둔 것이 있으면 (두 번째 실행) 처음 것을 그대로 둔다.
+' ============================================================================
+Sub SaveOriginal(obj As Object, setName As String)
 
-    If fc.AttributeSets.NameIsUsed("HFC_FACE") Then Return
+    If obj.AttributeSets.NameIsUsed(setName) Then Return
 
-    Dim srcVal As Integer = CInt(fc.AppearanceSourceType)
+    Dim srcVal As Integer = CInt(obj.AppearanceSourceType)
     Dim aName As String = "-"
 
-    If fc.AppearanceSourceType = AppearanceSourceTypeEnum.kOverrideAppearance Then
+    If srcVal = CInt(AppearanceSourceTypeEnum.kOverrideAppearance) Then
         Try
-            aName = fc.Appearance.Name
+            aName = CStr(obj.Appearance.Name)
         Catch
             aName = "-"
         End Try
     End If
 
-    Dim st As AttributeSet = fc.AttributeSets.Add("HFC_FACE")
+    Dim st As AttributeSet = obj.AttributeSets.Add(setName)
     st.Add("src", ValueTypeEnum.kIntegerType, srcVal)
     st.Add("asset", ValueTypeEnum.kStringType, aName)
 
 End Sub
 
 
-Sub RestoreFace(pd As PartDocument, fc As Face)
+Sub RestoreOriginal(pd As PartDocument, obj As Object, setName As String)
 
-    Dim st As AttributeSet = fc.AttributeSets.Item("HFC_FACE")
+    Dim st As AttributeSet = obj.AttributeSets.Item(setName)
     Dim srcVal As Integer = CInt(st.Item("src").Value)
     Dim aName As String = CStr(st.Item("asset").Value)
     Dim done As Boolean = False
 
     If srcVal = CInt(AppearanceSourceTypeEnum.kOverrideAppearance) Then
-        ' 원래 면에 따로 지정한 색이 있었으면 그 색으로
+        ' 원래 따로 지정한 색이 있었으면 그 색으로
         Dim a As Asset = FindAsset(pd, aName)
         If a IsNot Nothing AndAlso Not aName.StartsWith("HFC_") Then
-            fc.Appearance = a
+            obj.Appearance = a
             done = True
         End If
     Else
         ' 원래 피처/바디/부품 색을 따르고 있었으면 그대로
         Try
-            fc.AppearanceSourceType = CType(srcVal, AppearanceSourceTypeEnum)
+            obj.AppearanceSourceType = CType(srcVal, AppearanceSourceTypeEnum)
             done = True
         Catch
             done = False
@@ -833,36 +931,63 @@ Sub RestoreFace(pd As PartDocument, fc As Face)
     End If
 
     ' 원래대로 못 돌리면 부품 색을 따르게 한다
-    If Not done Then fc.AppearanceSourceType = AppearanceSourceTypeEnum.kPartAppearance
+    If Not done Then obj.AppearanceSourceType = AppearanceSourceTypeEnum.kPartAppearance
 
     st.Delete()
 
 End Sub
 
 
-Sub RestorePart(pd As PartDocument, ByRef nFaces As Integer, ByRef nFail As Integer)
+' ============================================================================
+'  부품 하나 되돌리기
+'   피처 : 피처 목록을 훑어 기록이 있는 것만 되돌린다 (빠름)
+'   면   : 면을 따로 칠한 부품만 찾는다. 면 찾기(FindObjects)는 느리기 때문이다.
+' ============================================================================
+Sub RestorePart(pd As PartDocument, ByRef nItems As Integer, ByRef nFail As Integer)
 
-    Dim objs As ObjectCollection = Nothing
+    ' 피처 - 면보다 먼저. 면 기록이 피처 색 위에 다시 원래 면 색을 얹는다.
     Try
-        objs = pd.AttributeManager.FindObjects("HFC_FACE")
-    Catch
-        objs = Nothing
-    End Try
-
-    If objs IsNot Nothing Then
-        For Each o As Object In objs
-            Dim fc As Face = TryCast(o, Face)
-            If fc Is Nothing Then Continue For
+        For Each o As Object In pd.ComponentDefinition.Features
+            Dim f As PartFeature = TryCast(o, PartFeature)
+            If f Is Nothing Then Continue For
             Try
-                RestoreFace(pd, fc)
-                nFaces += 1
+                If f.AttributeSets.NameIsUsed("HFC_FEAT") Then
+                    RestoreOriginal(pd, f, "HFC_FEAT")
+                    nItems += 1
+                End If
             Catch
                 nFail += 1
             End Try
         Next
+    Catch
+    End Try
+
+    ' 면
+    If NeedFaceSearch(pd) Then
+
+        Dim objs As ObjectCollection = Nothing
+        Try
+            objs = pd.AttributeManager.FindObjects("HFC_FACE")
+        Catch
+            objs = Nothing
+        End Try
+
+        If objs IsNot Nothing Then
+            For Each o As Object In objs
+                Dim fc As Face = TryCast(o, Face)
+                If fc Is Nothing Then Continue For
+                Try
+                    RestoreOriginal(pd, fc, "HFC_FACE")
+                    nItems += 1
+                Catch
+                    nFail += 1
+                End Try
+            Next
+        End If
+
     End If
 
-    ' 이 rule 이 만든 색 지우기 (아직 쓰는 면이 있으면 지워지지 않으므로 남는다)
+    ' 이 rule 이 만든 색 지우기 (아직 쓰는 곳이 있으면 지워지지 않으므로 남는다)
     Dim mine As New List(Of Asset)
     Try
         For Each a As Asset In pd.AppearanceAssets
@@ -886,21 +1011,39 @@ Sub RestorePart(pd As PartDocument, ByRef nFaces As Integer, ByRef nFail As Inte
 End Sub
 
 
+' 면을 따로 칠했다는 표시. 되돌릴 때 이 표시가 있는 부품만 면을 찾는다.
+Sub FlagFaces(d As Inventor.Document)
+    Try
+        Dim st As AttributeSet = d.AttributeSets.Item("HFC_DOC")
+        If Not st.NameIsUsed("faces") Then st.Add("faces", ValueTypeEnum.kIntegerType, 1)
+    Catch
+    End Try
+End Sub
+
+
+' 면 기록을 찾아야 하는 부품인지
+'  - 이번 판으로 칠한 부품 : 면을 따로 칠한 표시가 있을 때만
+'  - 처음 판으로 칠한 부품 : 모든 면을 하나하나 칠했으므로 항상 찾는다
+Function NeedFaceSearch(pd As PartDocument) As Boolean
+    Try
+        If Not pd.AttributeSets.NameIsUsed("HFC_DOC") Then Return True
+        Dim st As AttributeSet = pd.AttributeSets.Item("HFC_DOC")
+        If Not st.NameIsUsed("ver") Then Return True
+        Return st.NameIsUsed("faces")
+    Catch
+        Return True
+    End Try
+End Function
+
+
+' 이 rule 이 칠한 부품인지 - 문서에 붙은 표시만 본다.
+' (면 찾기는 느려서, 메모리에 있는 부품 수백 개에 다 하면 인벤터가 멈춘 것처럼 된다)
 Function HasPartMarks(pd As PartDocument) As Boolean
-
     Try
-        If pd.AttributeSets.NameIsUsed("HFC_DOC") Then Return True
+        Return pd.AttributeSets.NameIsUsed("HFC_DOC")
     Catch
+        Return False
     End Try
-
-    Try
-        Dim objs As ObjectCollection = pd.AttributeManager.FindObjects("HFC_FACE")
-        If objs IsNot Nothing AndAlso objs.Count > 0 Then Return True
-    Catch
-    End Try
-
-    Return False
-
 End Function
 
 
@@ -1109,6 +1252,7 @@ Function MarkDoc(d As Inventor.Document, setName As String) As AttributeSet
     Dim st As AttributeSet = d.AttributeSets.Add(setName)
     st.Add("session", ValueTypeEnum.kStringType, SessionId())
     st.Add("time", ValueTypeEnum.kStringType, DateTime.UtcNow.Ticks.ToString())
+    st.Add("ver", ValueTypeEnum.kIntegerType, 2)     ' 2 = 피처 단위로 칠하는 판
     Return st
 
 End Function
@@ -1344,15 +1488,6 @@ Function IsDirtyDoc(d As Inventor.Document) As Boolean
 End Function
 
 
-Function ContainsPath(list As List(Of String), p As String) As Boolean
-    If list Is Nothing OrElse String.IsNullOrEmpty(p) Then Return False
-    For Each s As String In list
-        If String.Equals(s, p, StringComparison.OrdinalIgnoreCase) Then Return True
-    Next
-    Return False
-End Function
-
-
 Function SnapshotDocs() As List(Of Inventor.Document)
     Dim lst As New List(Of Inventor.Document)
     Try
@@ -1374,4 +1509,54 @@ Function ListLines(items As List(Of String), maxLines As Integer) As String
     Next
     If items.Count > n Then s &= "   ... 외 " & (items.Count - n) & "개" & vbCrLf
     Return s
+End Function
+
+
+' ============================================================================
+'  진행 표시
+'  인벤터 진행 막대를 쓰고, 상태 표시줄에도 같이 적는다.
+'  진행 막대를 만들지 못해도 작업은 그대로 한다.
+' ============================================================================
+Function MakeProgress(steps As Integer, title As String) As Inventor.ProgressBar
+    Try
+        Return ThisApplication.CreateProgressBar(False, Math.Max(steps, 1), title)
+    Catch
+        Return Nothing
+    End Try
+End Function
+
+
+Sub StepProgress(pb As Inventor.ProgressBar, msg As String)
+    Try
+        ThisApplication.StatusBarText = msg
+    Catch
+    End Try
+
+    If pb Is Nothing Then Return
+    Try
+        pb.Message = msg
+        pb.UpdateProgress()
+    Catch
+    End Try
+End Sub
+
+
+Sub CloseProgress(pb As Inventor.ProgressBar)
+    Try
+        ThisApplication.StatusBarText = ""
+    Catch
+    End Try
+
+    If pb Is Nothing Then Return
+    Try
+        pb.Close()
+    Catch
+    End Try
+End Sub
+
+
+Function ElapsedText(sw As System.Diagnostics.Stopwatch) As String
+    Dim sec As Integer = CInt(Math.Round(sw.Elapsed.TotalSeconds))
+    If sec < 60 Then Return sec & "초"
+    Return (sec \ 60) & "분 " & (sec Mod 60) & "초"
 End Function
