@@ -41,9 +41,9 @@
 '
 '  [원래대로 돌아가는 방법]
 '   칠하기 전에 피처/면마다 원래 색 설정을 속성(Attribute)으로 적어 둔다.
-'   [원래대로] 는 그 기록대로 되돌린다. 이 rule 이 만든 색(HFC_*)은 지우지 않고
+'   [원래대로] 는 지금 연 조립도와 그 안의 부품만 그 기록대로 되돌린다.
+'   (다른 조립도에만 들어 있는 칠한 부품은 건드리지 않고 개수만 알려준다) 이 rule 이 만든 색(HFC_*)은 지우지 않고
 '   남겨 두었다가 다시 칠할 때 쓴다 (지우면 다시 칠하기가 실패했다).
-'   메모리에 올라와 있는 모든 문서를 찾으므로 조립도를 바꿔서 실행해도 된다.
 '
 '  [저장하지 않는 방법]
 '   칠하기 전에 저장 안 된 변경이 없던 부품은, 칠한 뒤 "변경 없음" 으로
@@ -428,14 +428,30 @@ End Sub
 
 ' ============================================================================
 '  원래대로
-'  메모리에 올라와 있는 모든 문서에서 이 rule 이 남긴 기록을 찾아 되돌린다.
+'  지금 연 문서와 그 안에 들어 있는 문서에서 이 rule 이 남긴 기록을 찾아 되돌린다.
 ' ============================================================================
 Sub RestoreMode(keepClean As Boolean, listMax As Integer, TTL As String)
 
     Dim parts As New List(Of PartDocument)
     Dim asms As New List(Of AssemblyDocument)
 
-    For Each d As Inventor.Document In SnapshotDocs()
+    ' 되돌리는 범위 = 지금 연 문서와 그 안에 들어 있는 문서만.
+    ' (처음 판은 메모리에 열린 모든 문서를 되돌려서, 따로 열어 둔 다른 조립도의
+    '  칠한 색까지 지워 버렸다)
+    Dim top As Inventor.Document = ThisApplication.ActiveDocument
+    Dim scope As New List(Of Inventor.Document)
+    Dim scopePaths As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+    scope.Add(top)
+    scopePaths.Add(DocPath(top))
+    Try
+        For Each d As Inventor.Document In top.AllReferencedDocuments
+            scope.Add(d)
+            scopePaths.Add(DocPath(d))
+        Next
+    Catch
+    End Try
+
+    For Each d As Inventor.Document In scope
         Try
             If d.DocumentType = DocumentTypeEnum.kPartDocumentObject Then
                 Dim pd As PartDocument = CType(d, PartDocument)
@@ -447,9 +463,26 @@ Sub RestoreMode(keepClean As Boolean, listMax As Integer, TTL As String)
         End Try
     Next
 
+    ' 범위 밖(다른 조립도에만 있는 부품)에 칠한 것이 남아 있는지 - 알려만 준다
+    Dim otherCount As Integer = 0
+    For Each d As Inventor.Document In SnapshotDocs()
+        Try
+            If scopePaths.Contains(DocPath(d)) Then Continue For
+            If d.DocumentType = DocumentTypeEnum.kPartDocumentObject Then
+                If HasPartMarks(CType(d, PartDocument)) Then otherCount += 1
+            End If
+        Catch
+        End Try
+    Next
+
+    Dim otherNote As String = ""
+    If otherCount > 0 Then
+        otherNote = "다른 조립도에만 들어 있는 칠한 부품 " & otherCount & "개는 건드리지 않았습니다." & vbCrLf & _
+                    "그 조립도를 열고 [원래대로] 를 실행하세요." & vbCrLf & vbCrLf
+    End If
+
     If parts.Count = 0 AndAlso asms.Count = 0 Then
-        MessageBox.Show("되돌릴 색이 없습니다." & vbCrLf & vbCrLf & _
-                        "이 rule 로 칠한 부품이 지금 열려 있지 않습니다.", TTL)
+        MessageBox.Show("지금 연 조립도에는 되돌릴 색이 없습니다." & vbCrLf & vbCrLf & otherNote, TTL)
         Return
     End If
 
@@ -587,6 +620,8 @@ Sub RestoreMode(keepClean As Boolean, listMax As Integer, TTL As String)
                """" & TempDvrName() & """ 을 지우세요." & vbCrLf & _
                ListLines(asmFail, listMax) & vbCrLf
     End If
+
+    res &= otherNote
 
     If savedList.Count > 0 Then
         res &= "아래 문서는 칠한 색이 파일에 저장되어 있었습니다." & vbCrLf & _
