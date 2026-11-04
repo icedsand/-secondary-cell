@@ -390,8 +390,8 @@ Sub PaintMode(top As Inventor.Document, prefixes As List(Of String), maxRev As I
     res &= vbCrLf
 
     If mixed.Count > 0 Then
-        res &= "아래 패턴/미러는 구멍과 다른 피처, 또는 종류가 다른 구멍이 섞여 있어" & vbCrLf & _
-               "칠하지 않았습니다." & vbCrLf & ListLines(mixed, listMax) & vbCrLf
+        res &= "아래 패턴/미러는 여러 피처가 섞여 있는데, 원본 구멍 면과 같은 면을" & vbCrLf & _
+               "찾지 못해 칠하지 않았습니다." & vbCrLf & ListLines(mixed, listMax) & vbCrLf
     End If
 
     If failCount > 0 Then
@@ -695,7 +695,16 @@ Sub PaintPart(pd As PartDocument, rgbs As Integer(,), tapWins As Boolean, _
                 k = PatternClass(f, tapWins, 0)
                 If k = -1 Then Continue For
                 If k = -2 Then
-                    If pass = 1 Then mixed.Add(FileTitle(pd) & " : " & f.Name)
+                    ' 섞인 패턴/미러는 면마다 원본 구멍 면과 맞춰 칠한다
+                    If pass = 1 Then
+                        Dim nMix As Integer = PaintMixedPattern(pd, f, tapWins, rgbs, cache, counts, _
+                                                                 faceCount, failCount, errs)
+                        If nMix > 0 Then
+                            faceMarked = True
+                        Else
+                            mixed.Add(FileTitle(pd) & " : " & f.Name)
+                        End If
+                    End If
                     Continue For
                 End If
                 If (k = 5) <> (pass = 2) Then Continue For
@@ -767,8 +776,9 @@ End Function
 '   0~4 : 그 종류의 구멍만 복사함
 '   5   : 나사 피처만 복사함
 '   -1  : 구멍과 관계없음 (칠하지 않음)
-'   -2  : 구멍과 다른 것이 섞임 (칠하지 않고 알려줌)
-'  패턴 안에 같이 들어간 나사 피처는 구멍 색을 따른다.
+'   -2  : 섞여 있음 - 종류가 다른 구멍, 구멍 + 나사, 구멍 + 다른 피처(돌출 등)
+'         -> 피처 단위로는 칠할 수 없으므로 면마다 원본 면과 맞춰 칠한다
+'            (PaintMixedPattern)
 ' ============================================================================
 Function PatternClass(f As PartFeature, tapWins As Boolean, depth As Integer) As Integer
 
@@ -816,8 +826,147 @@ Function PatternClass(f As PartFeature, tapWins As Boolean, depth As Integer) As
         Return -1
     End If
 
-    If hasOther OrElse differ Then Return -2
+    If hasOther OrElse differ OrElse hasThread Then Return -2
     Return found
+
+End Function
+
+
+' ============================================================================
+'  섞인 패턴/미러 칠하기
+'   미러/패턴이 복사한 면은 원본 면과 모양(면 종류)과 넓이가 같다.
+'   그래서 원본 구멍/나사 피처의 면을 (면 종류, 넓이, 색 종류) 로 모아 두고,
+'   복사된 면마다 같은 것을 찾아 그 색으로 칠한다.
+'   예) Ø4 깊이 410 드릴 + 같은 자리 M5 탭을 같이 미러
+'       -> 미러된 쪽도 드릴 면은 파랑, 탭 면은 빨강 (원본 쪽과 똑같이)
+'   같은 면이 구멍 면이면서 나사 면이면 나사 색 (원본 쪽에서도 나사 색이 위에 칠해짐)
+'   원본과 맞는 면이 없는 면(같이 미러한 돌출 등)은 칠하지 않는다.
+'  돌려주는 값은 칠한 면 개수.
+' ============================================================================
+Function PaintMixedPattern(pd As PartDocument, f As PartFeature, tapWins As Boolean, _
+                           rgbs As Integer(,), cache As Asset(), counts As Integer(), _
+                           ByRef faceCount As Integer, ByRef failCount As Integer, _
+                           errs As List(Of String)) As Integer
+
+    Dim sigType As New List(Of Integer)
+    Dim sigArea As New List(Of Double)
+    Dim sigCls As New List(Of Integer)
+
+    CollectSigs(f, tapWins, sigType, sigArea, sigCls, 0)
+    If sigType.Count = 0 Then Return 0
+
+    ' 종류별로 면 모으기
+    Dim groups(5) As List(Of Object)
+    Try
+        For Each o As Object In f.Faces
+            Dim fc As Face = TryCast(o, Face)
+            If fc Is Nothing Then Continue For
+            Dim c As Integer = MatchSig(fc, sigType, sigArea, sigCls)
+            If c < 0 Then Continue For
+            If groups(c) Is Nothing Then groups(c) = New List(Of Object)
+            groups(c).Add(fc)
+        Next
+    Catch ex As Exception
+        AddErr(errs, "섞인 패턴 면 읽기", ex.Message, pd)
+    End Try
+
+    Dim total As Integer = 0
+    For c As Integer = 0 To 5
+        If groups(c) Is Nothing Then Continue For
+        If cache(c) Is Nothing Then cache(c) = GetAsset(pd, c, rgbs, False, errs)
+        Dim n As Integer = PaintFaces(pd, groups(c), cache(c), failCount, errs)
+        If n > 0 Then
+            counts(c) += 1
+            faceCount += n
+            total += n
+        End If
+    Next
+
+    Return total
+
+End Function
+
+
+' 패턴/미러의 원본 구멍/나사 피처 면을 모은다 (패턴 안의 패턴도 따라 들어간다)
+Sub CollectSigs(f As PartFeature, tapWins As Boolean, sigType As List(Of Integer), _
+                sigArea As List(Of Double), sigCls As List(Of Integer), depth As Integer)
+
+    If depth > 8 Then Return
+
+    Dim parents As Object = Nothing
+    Try
+        Dim lf As Object = f
+        parents = lf.ParentFeatures
+    Catch
+        Return
+    End Try
+    If parents Is Nothing Then Return
+
+    For Each p As Object In parents
+        Dim pf As PartFeature = TryCast(p, PartFeature)
+        If pf Is Nothing Then Continue For
+
+        Try
+            If TypeOf pf Is HoleFeature Then
+                AddSigs(pf.Faces, HoleClass(CType(pf, HoleFeature), tapWins), sigType, sigArea, sigCls)
+            ElseIf TypeOf pf Is ThreadFeature Then
+                AddSigs(ThreadFaces(CType(pf, ThreadFeature)), 5, sigType, sigArea, sigCls)
+            ElseIf IsPatternType(pf) Then
+                CollectSigs(pf, tapWins, sigType, sigArea, sigCls, depth + 1)
+            End If
+        Catch
+        End Try
+    Next
+
+End Sub
+
+
+Sub AddSigs(faceList As Object, c As Integer, sigType As List(Of Integer), _
+            sigArea As List(Of Double), sigCls As List(Of Integer))
+
+    If faceList Is Nothing Then Return
+
+    For Each o As Object In faceList
+        Dim fc As Face = TryCast(o, Face)
+        If fc Is Nothing Then Continue For
+        Try
+            Dim t As Integer = CInt(fc.SurfaceType)
+            Dim ar As Double = fc.Evaluator.Area
+            sigType.Add(t)
+            sigArea.Add(ar)
+            sigCls.Add(c)
+        Catch
+        End Try
+    Next
+
+End Sub
+
+
+' 같은 면 종류이고 넓이가 같은(0.01% 이내) 원본 면의 색 종류. 없으면 -1
+' 여러 개와 맞으면 나사(5)가 우선, 아니면 처음 맞은 것
+Function MatchSig(fc As Face, sigType As List(Of Integer), sigArea As List(Of Double), _
+                  sigCls As List(Of Integer)) As Integer
+
+    Dim t As Integer
+    Dim ar As Double
+    Try
+        t = CInt(fc.SurfaceType)
+        ar = fc.Evaluator.Area
+    Catch
+        Return -1
+    End Try
+
+    Dim tol As Double = Math.Max(0.000000001, Math.Abs(ar) * 0.0001)
+    Dim best As Integer = -1
+
+    For i As Integer = 0 To sigType.Count - 1
+        If sigType(i) <> t Then Continue For
+        If Math.Abs(sigArea(i) - ar) > tol Then Continue For
+        If sigCls(i) = 5 Then Return 5
+        If best = -1 Then best = sigCls(i)
+    Next
+
+    Return best
 
 End Function
 
