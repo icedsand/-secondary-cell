@@ -251,6 +251,7 @@ Sub PaintMode(top As Inventor.Document, prefixes As List(Of String), maxRev As I
     Dim failCount As Integer = 0
     Dim paintedParts As Integer = 0
     Dim mixed As New List(Of String)
+    Dim errs As New List(Of String)
     Dim cleanList As New List(Of Inventor.Document)
     Dim occShown As Integer = 0
     Dim occStill As Integer = 0
@@ -293,10 +294,11 @@ Sub PaintMode(top As Inventor.Document, prefixes As List(Of String), maxRev As I
             Dim faceMarked As Boolean = False
             Try
                 MarkDoc(pd, "HFC_DOC")
-                PaintPart(pd, rgbs, tapWins, counts, faceCount, failCount, mixed, faceMarked)
+                PaintPart(pd, rgbs, tapWins, counts, faceCount, failCount, mixed, faceMarked, errs)
                 If faceMarked Then FlagFaces(pd)
-            Catch
+            Catch ex As Exception
                 failCount += 1
+                AddErr(errs, "부품 처리", ex.Message, pd)
             End Try
 
             If faceCount > before Then paintedParts += 1
@@ -378,6 +380,11 @@ Sub PaintMode(top As Inventor.Document, prefixes As List(Of String), maxRev As I
 
     If failCount > 0 Then
         res &= "칠하지 못한 면 : " & failCount & "개" & vbCrLf & vbCrLf
+    End If
+
+    If errs.Count > 0 Then
+        res &= "실패 이유 (인벤터 오류 메시지 - 이 화면을 그대로 알려주세요)" & vbCrLf & _
+               ListLines(errs, 6) & vbCrLf
     End If
 
     If covered.Count > 0 Then
@@ -578,7 +585,7 @@ End Sub
 ' ============================================================================
 Sub PaintPart(pd As PartDocument, rgbs As Integer(,), tapWins As Boolean, _
               counts As Integer(), ByRef faceCount As Integer, ByRef failCount As Integer, _
-              mixed As List(Of String), ByRef faceMarked As Boolean)
+              mixed As List(Of String), ByRef faceMarked As Boolean, errs As List(Of String))
 
     Dim cd As PartComponentDefinition = pd.ComponentDefinition
 
@@ -594,6 +601,7 @@ Sub PaintPart(pd As PartDocument, rgbs As Integer(,), tapWins As Boolean, _
     If nHole = 0 AndAlso nThread = 0 Then Return
 
     Dim cache(5) As Asset
+    Dim retried(5) As Boolean
 
     For pass As Integer = 1 To 2
 
@@ -635,14 +643,21 @@ Sub PaintPart(pd As PartDocument, rgbs As Integer(,), tapWins As Boolean, _
                 Continue For
             End If
 
-            If cache(k) Is Nothing Then cache(k) = GetAsset(pd, k, rgbs)
+            If cache(k) Is Nothing Then cache(k) = GetAsset(pd, k, rgbs, False, errs)
 
-            Dim n As Integer
-            If k = 5 Then
-                n = PaintFaces(faceList, cache(k), failCount)
-                If n > 0 Then faceMarked = True
-            Else
-                n = PaintFeature(f, faceList, cache(k), failCount, faceMarked)
+            Dim failBefore As Integer = failCount
+            Dim n As Integer = PaintWith(pd, f, k, faceList, cache(k), failCount, faceMarked, errs)
+
+            ' 하나도 못 칠했으면, 남아 있던 색이 망가졌을 수 있으므로
+            ' 새 색을 만들어 한 번 더 칠해 본다 (부품당 종류별 한 번)
+            If n = 0 AndAlso failCount > failBefore AndAlso Not retried(k) Then
+                retried(k) = True
+                Dim fresh As Asset = GetAsset(pd, k, rgbs, True, errs)
+                If fresh IsNot Nothing Then
+                    cache(k) = fresh
+                    failCount = failBefore
+                    n = PaintWith(pd, f, k, faceList, cache(k), failCount, faceMarked, errs)
+                End If
             End If
 
             If n > 0 Then
@@ -799,13 +814,26 @@ Function ThreadFaces(tf As ThreadFeature) As List(Of Object)
 End Function
 
 
+' 나사산(5)은 면 단위, 나머지는 피처 단위로 칠한다
+Function PaintWith(pd As PartDocument, f As PartFeature, k As Integer, faceList As Object, a As Asset, _
+                   ByRef failCount As Integer, ByRef faceMarked As Boolean, errs As List(Of String)) As Integer
+    If k = 5 Then
+        Dim n As Integer = PaintFaces(pd, faceList, a, failCount, errs)
+        If n > 0 Then faceMarked = True
+        Return n
+    End If
+    Return PaintFeature(pd, f, faceList, a, failCount, faceMarked, errs)
+End Function
+
+
 ' ============================================================================
 '  피처에 색 칠하기. 피처가 만든 면 전체에 한 번에 들어간다.
 '  면에 따로 색이 지정된 면은 피처 색이 가려지므로 그 면만 따로 칠한다.
 '  돌려주는 값은 칠한 면 개수.
 ' ============================================================================
-Function PaintFeature(f As PartFeature, faceList As Object, a As Asset, _
-                      ByRef failCount As Integer, ByRef faceMarked As Boolean) As Integer
+Function PaintFeature(pd As PartDocument, f As PartFeature, faceList As Object, a As Asset, _
+                      ByRef failCount As Integer, ByRef faceMarked As Boolean, _
+                      errs As List(Of String)) As Integer
 
     If faceList Is Nothing Then Return 0
 
@@ -834,20 +862,23 @@ Function PaintFeature(f As PartFeature, faceList As Object, a As Asset, _
         SaveOriginal(f, "HFC_FEAT")
         f.Appearance = a
         ' 들어갔는지 확인한다. 안 들어갔으면 면 단위로 칠한다.
-        featOk = (f.AppearanceSourceType = AppearanceSourceTypeEnum.kOverrideAppearance)
-    Catch
+        Dim srcNow As Integer = CInt(f.AppearanceSourceType)
+        featOk = (srcNow = CInt(AppearanceSourceTypeEnum.kOverrideAppearance))
+        If Not featOk Then AddErr(errs, "피처 색 확인", "색이 들어가지 않음 (AppearanceSourceType=" & srcNow & ")", pd)
+    Catch ex As Exception
         featOk = False
+        AddErr(errs, "피처 색 적용", ex.Message, pd)
     End Try
 
     If Not featOk Then
         ' 피처 단위로 안 되면 면 하나하나 칠한다
-        Dim n As Integer = PaintFaces(faceList, a, failCount)
+        Dim n As Integer = PaintFaces(pd, faceList, a, failCount, errs)
         If n > 0 Then faceMarked = True
         Return n
     End If
 
     If covered.Count > 0 Then
-        If PaintFaces(covered, a, failCount) > 0 Then faceMarked = True
+        If PaintFaces(pd, covered, a, failCount, errs) > 0 Then faceMarked = True
     End If
 
     Return nFace
@@ -858,7 +889,8 @@ End Function
 ' ============================================================================
 '  면에 색 칠하기 (나사산, 또는 피처 단위로 칠하지 못한 경우)
 ' ============================================================================
-Function PaintFaces(faceList As Object, a As Asset, ByRef failCount As Integer) As Integer
+Function PaintFaces(pd As PartDocument, faceList As Object, a As Asset, _
+                    ByRef failCount As Integer, errs As List(Of String)) As Integer
 
     If faceList Is Nothing Then Return 0
 
@@ -878,8 +910,9 @@ Function PaintFaces(faceList As Object, a As Asset, ByRef failCount As Integer) 
             SaveOriginal(fc, "HFC_FACE")
             fc.Appearance = a
             n += 1
-        Catch
+        Catch ex As Exception
             failCount += 1
+            AddErr(errs, "면 색 적용", ex.Message, pd)
         End Try
     Next
 
@@ -1054,30 +1087,35 @@ End Function
 '   -> 이제 [원래대로] 는 색을 지우지 않고 남겨 두었다가 다시 쓴다.
 '   -> 같은 이름을 만들 수 없으면 HFC_TAP_2 처럼 뒤에 번호를 붙여 만든다.
 ' ============================================================================
-Function GetAsset(pd As PartDocument, k As Integer, rgbs As Integer(,)) As Asset
+Function GetAsset(pd As PartDocument, k As Integer, rgbs As Integer(,), _
+                  forceNew As Boolean, errs As List(Of String)) As Asset
 
     Dim nm As String = "HFC_" & ClassKey(k)
     Dim disp As String = "가공색 - " & ClassLabel(k)
+    Dim a As Asset = Nothing
 
-    ' 1) 남아 있는 것 다시 쓰기
-    Dim a As Asset = FindMyAsset(pd, nm)
-    If a IsNot Nothing Then
-        If SetAssetColor(a, k, rgbs) Then Return a
+    ' 1) 남아 있는 것 다시 쓰기 (forceNew 면 건너뛴다 - 남은 것이 망가진 경우)
+    If Not forceNew Then
+        a = FindMyAsset(pd, nm)
+        If a IsNot Nothing Then
+            If SetAssetColor(a, k, rgbs, errs, pd) Then Return a
+        End If
     End If
 
-    ' 2) 새로 만들기 - 이름이 막혀 있으면 번호를 붙인다
+    ' 2) 새로 만들기 - 이름이 막혀 있거나 이미 있으면 번호를 붙인다
     For n As Integer = 1 To 9
         Dim tryName As String = nm
         If n > 1 Then tryName = nm & "_" & n
-        If n > 1 AndAlso FindAsset(pd, tryName) IsNot Nothing Then Continue For
+        If FindAsset(pd, tryName) IsNot Nothing Then Continue For
 
         Try
             a = pd.Assets.Add(AssetTypeEnum.kAssetTypeAppearance, "Generic", tryName, disp)
-        Catch
+        Catch ex As Exception
             a = Nothing
+            AddErr(errs, "색 만들기", ex.Message, pd)
         End Try
 
-        If a IsNot Nothing AndAlso SetAssetColor(a, k, rgbs) Then Return a
+        If a IsNot Nothing AndAlso SetAssetColor(a, k, rgbs, errs, pd) Then Return a
     Next
 
     Return Nothing
@@ -1099,15 +1137,29 @@ Function FindMyAsset(pd As PartDocument, nm As String) As Asset
 End Function
 
 
-Function SetAssetColor(a As Asset, k As Integer, rgbs As Integer(,)) As Boolean
+Function SetAssetColor(a As Asset, k As Integer, rgbs As Integer(,), _
+                       errs As List(Of String), pd As PartDocument) As Boolean
     Try
         Dim cv As ColorAssetValue = CType(a.Item("generic_diffuse"), ColorAssetValue)
         cv.Value = ThisApplication.TransientObjects.CreateColor(rgbs(k, 0), rgbs(k, 1), rgbs(k, 2))
         Return True
-    Catch
+    Catch ex As Exception
+        AddErr(errs, "색 설정", ex.Message, pd)
         Return False
     End Try
 End Function
+
+
+' 실패 이유 모으기 - 같은 단계·같은 메시지는 한 번만, 처음 생긴 부품 이름과 함께
+Sub AddErr(errs As List(Of String), stage As String, msg As String, pd As PartDocument)
+    If errs Is Nothing Then Return
+    Dim head As String = stage & " : " & msg
+    For Each e As String In errs
+        If e.StartsWith(head) Then Return
+    Next
+    If errs.Count >= 20 Then Return
+    errs.Add(head & "   (" & FileTitle(pd) & ")")
+End Sub
 
 
 Function FindAsset(pd As PartDocument, nm As String) As Asset
