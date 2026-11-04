@@ -19,6 +19,7 @@
 '     1) 설정한 접두어로 시작한다           (예: GMKS-)
 '     2) 끝이 "-숫자" 이고 뒤에 리비전 문자가 붙을 수 있다
 '        GMKS-ST2601-ETR01-59   GMKS-ST2601-ETR01-59A   -> 가공품
+'        GMKS-ST2601-ETR01-33A_MIR  (미러 부품, _MIR 꼬리는 떼고 봄) -> 가공품
 '        GMKS-ST2601-ETR01      M6x20 볼트                -> 제외
 '   Content Center 부품은 번호와 관계없이 제외한다.
 '   부품 하나만 열고 실행하면 번호와 관계없이 그 부품을 칠한다.
@@ -83,6 +84,11 @@ Sub Main()
     ' 번호 끝에 붙을 수 있는 리비전 문자 최대 개수 (59A, 59AB ...)
     Dim MAX_REV_LETTERS As Integer = 2
 
+    ' 번호 맨 끝에 붙어도 가공품으로 볼 꼬리. 여러 개면 쉼표로 구분
+    ' 조립품 [구성요소 미러] 로 만든 부품은 GMKS-...-33A_MIR 처럼 _MIR 이 붙는다.
+    ' 이 꼬리를 떼고 번호 규칙을 본다.
+    Dim SUFFIXES As String = "_MIR"
+
     ' 색상  "이름:R,G,B"   (이름은 결과 창에 보여주는 용도)
     Dim C_DRILL  As String = "파랑:0,112,255"
     Dim C_CBORE  As String = "주황:255,128,0"
@@ -137,7 +143,7 @@ Sub Main()
         SetColor(rgbs, cNames, 4, C_TAP)
         SetColor(rgbs, cNames, 5, C_THREAD)
 
-        PaintMode(doc, SplitPrefixes(PREFIXES), MAX_REV_LETTERS, rgbs, cNames, _
+        PaintMode(doc, SplitPrefixes(PREFIXES), MAX_REV_LETTERS, SplitPrefixes(SUFFIXES), rgbs, cNames, _
                   TAP_OVER_TYPE, SHOW_THROUGH_ASM_COLOR, KEEP_CLEAN, LIST_MAX, TTL)
 
     ElseIf ans = DialogResult.No Then
@@ -153,6 +159,7 @@ End Sub
 '  색 칠하기
 ' ============================================================================
 Sub PaintMode(top As Inventor.Document, prefixes As List(Of String), maxRev As Integer, _
+              suffixes As List(Of String), _
               rgbs As Integer(,), cNames As String(), tapWins As Boolean, _
               showThrough As Boolean, keepClean As Boolean, listMax As Integer, TTL As String)
 
@@ -183,7 +190,7 @@ Sub PaintMode(top As Inventor.Document, prefixes As List(Of String), maxRev As I
             Dim pn As String = ReadPN(d)
             Dim fn As String = FileTitle(d)
 
-            If IsMachinedNo(pn, prefixes, maxRev) OrElse IsMachinedNo(fn, prefixes, maxRev) Then
+            If IsMachinedNo(pn, prefixes, maxRev, suffixes) OrElse IsMachinedNo(fn, prefixes, maxRev, suffixes) Then
                 targets.Add(pd)
                 tNames.Add(DocLabel(d))
             Else
@@ -198,7 +205,7 @@ Sub PaintMode(top As Inventor.Document, prefixes As List(Of String), maxRev As I
 
     If targets.Count = 0 Then
         MessageBox.Show("가공품 번호 규칙에 맞는 부품이 없습니다." & vbCrLf & vbCrLf & _
-                        "   지금 규칙 : " & RuleText(prefixes, maxRev) & vbCrLf & vbCrLf & _
+                        "   지금 규칙 : " & RuleText(prefixes, maxRev, suffixes) & vbCrLf & vbCrLf & _
                         "제외된 부품 (" & skipNames.Count & "개)" & vbCrLf & _
                         ListLines(skipNames, listMax) & vbCrLf & _
                         "번호 규칙이 다르면 rule 위쪽 설정의 PREFIXES 를 고치세요.", TTL)
@@ -234,7 +241,7 @@ Sub PaintMode(top As Inventor.Document, prefixes As List(Of String), maxRev As I
         "가공품 " & targets.Count & "개의 구멍·나사에 색을 칠합니다." & vbCrLf & vbCrLf & _
         ListLines(tNames, listMax) & vbCrLf & _
         "제외 : 번호 규칙에 안 맞는 부품 " & skipNames.Count & "개, Content Center " & ccCount & "개" & vbCrLf & _
-        "규칙 : " & RuleText(prefixes, maxRev) & vbCrLf & vbCrLf & _
+        "규칙 : " & RuleText(prefixes, maxRev, suffixes) & vbCrLf & vbCrLf & _
         Legend(cNames) & vbCrLf
 
     If covered.Count > 0 Then
@@ -1594,11 +1601,21 @@ End Function
 '  가공품 번호 판정
 '   접두어로 시작하고, 끝이 "-숫자" + 리비전 문자 0 ~ maxRev 개
 ' ============================================================================
-Function IsMachinedNo(s As String, prefixes As List(Of String), maxRev As Integer) As Boolean
+Function IsMachinedNo(s As String, prefixes As List(Of String), maxRev As Integer, _
+                      suffixes As List(Of String)) As Boolean
 
     If String.IsNullOrWhiteSpace(s) Then Return False
 
     Dim t As String = s.Trim().ToUpperInvariant()
+
+    ' 미러 부품의 _MIR 같은 꼬리는 떼고 본다 (한 번만)
+    For Each sf As String In suffixes
+        Dim su As String = sf.ToUpperInvariant()
+        If su <> "" AndAlso t.Length > su.Length AndAlso t.EndsWith(su) Then
+            t = t.Substring(0, t.Length - su.Length)
+            Exit For
+        End If
+    Next
 
     If prefixes.Count > 0 Then
         Dim okPre As Boolean = False
@@ -1644,10 +1661,12 @@ Function SplitPrefixes(s As String) As List(Of String)
 End Function
 
 
-Function RuleText(prefixes As List(Of String), maxRev As Integer) As String
+Function RuleText(prefixes As List(Of String), maxRev As Integer, suffixes As List(Of String)) As String
     Dim pre As String = "(접두어 안 봄)"
     If prefixes.Count > 0 Then pre = String.Join(" 또는 ", prefixes.ToArray()) & " 로 시작"
-    Return pre & " + 끝이 -숫자 (리비전 문자 " & maxRev & "개까지)"
+    Dim txt As String = pre & " + 끝이 -숫자 (리비전 문자 " & maxRev & "개까지)"
+    If suffixes.Count > 0 Then txt &= " + 꼬리 " & String.Join(", ", suffixes.ToArray()) & " 허용"
+    Return txt
 End Function
 
 
