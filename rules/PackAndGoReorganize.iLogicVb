@@ -82,10 +82,16 @@
 Sub Main()
 
     ' ── 설정 ────────────────────────────────────────────────────────────────
-    ' 원본 : 전체 조립도 iam 과 유닛 폴더들이 있는 폴더
-    Dim SRC_ROOT As String = "O:\새 폴더\Workspaces\작업공간\B5. 개발설계TF 폴더 (아산)\01. GM SAMPLE STACKING 검토"
-    ' Pack and Go 로 같이 복사된 라이브러리
-    Dim LIB_ROOT As String = "O:\새 폴더\Workspaces\작업공간\04. Library"
+    ' 원본 : 전체 조립도 iam 과 유닛 폴더들이 있는 폴더 - Vault 작업 폴더
+    '   Vault 파일은 읽기 전용이어도 된다. 원본은 읽기만 하고, 복사본은 읽기 전용을 푼다.
+    '   돌리기 전에 Vault Explorer 에서 이 폴더와 라이브러리를 "최신 버전 가져오기" 할 것
+    '   (내 PC 에 내려받아진 파일만 가져갈 수 있다)
+    Dim SRC_ROOT As String = "O:\JASTECH1\JASTECH1\B5. 개발설계TF 폴더 (아산)\01. GM SAMPLE STACKING 검토"
+    ' Vault 작업 폴더 안의 라이브러리
+    Dim LIB_ROOT As String = "O:\JASTECH1\JASTECH1\04. Library"
+    '   Pack and Go 폴더로 돌릴 때 (조립도에 안 쓰인 파일은 Pack and Go 가 안 가져온다)
+    '   SRC_ROOT = "O:\새 폴더\Workspaces\작업공간\B5. 개발설계TF 폴더 (아산)\01. GM SAMPLE STACKING 검토"
+    '   LIB_ROOT = "O:\새 폴더\Workspaces\작업공간\04. Library"
     ' 결과를 만들 곳. 이 아래에 원본 폴더 이름(01. GM SAMPLE STACKING 검토)으로 만든다
     Dim DST_BASE As String = "O:\스태킹 PAG"
 
@@ -143,6 +149,13 @@ Sub Main()
     If Not System.IO.Directory.Exists(CStr(S("SRC"))) Then
         MessageBox.Show("원본 폴더가 없습니다." & vbCrLf & CStr(S("SRC")) & vbCrLf & vbCrLf & _
                         "규칙 맨 위 설정의 SRC_ROOT 를 확인하세요.", TTL)
+        Return
+    End If
+    ' 라이브러리 경로가 틀리면 라이브러리 구매품을 가공품으로 착각한다 - 여기서 멈춘다
+    If Not System.IO.Directory.Exists(CStr(S("LIB"))) Then
+        MessageBox.Show("라이브러리 폴더가 없습니다." & vbCrLf & CStr(S("LIB")) & vbCrLf & vbCrLf & _
+                        "규칙 맨 위 설정의 LIB_ROOT 를 확인하세요." & vbCrLf & _
+                        "(인벤터 프로젝트 창에서 Vault 프로젝트의 라이브러리 경로)", TTL)
         Return
     End If
 
@@ -1621,6 +1634,11 @@ Sub DoRelink(S As Dictionary(Of String, Object))
             Dim buy As String = jobs(ji)(2)
             ThisApplication.StatusBarText = TTL & " : " & (ji + 1) & " / " & jobs.Count & "  " & System.IO.Path.GetFileName(jf)
 
+            ' 안전장치 - 결과 폴더 밖 파일(원본 / Vault / 라이브러리)은 열지도 저장하지도 않는다
+            If Not IsUnder(jf, dst) Then
+                logSb.AppendLine(CsvField("건너뜀") & "," & CsvField(jf) & ",,," & CsvField("결과 폴더 밖 파일"))
+                Continue For
+            End If
             If Not System.IO.File.Exists(jf) Then
                 logSb.AppendLine(CsvField("없음") & "," & CsvField(jf) & ",,," & CsvField("복사본이 없음"))
                 nFail += 1

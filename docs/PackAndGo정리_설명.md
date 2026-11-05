@@ -16,14 +16,28 @@ Pack and Go 로 꺼낸 프로젝트를 유닛별 폴더 틀에 맞춰 **새 위�
 
 | 항목 | 값 |
 |---|---|
-| `SRC_ROOT` | `O:\새 폴더\Workspaces\작업공간\B5. 개발설계TF 폴더 (아산)\01. GM SAMPLE STACKING 검토` |
-| `LIB_ROOT` | `O:\새 폴더\Workspaces\작업공간\04. Library` |
+| `SRC_ROOT` | `O:\JASTECH1\JASTECH1\B5. 개발설계TF 폴더 (아산)\01. GM SAMPLE STACKING 검토` (Vault 작업 폴더) |
+| `LIB_ROOT` | `O:\JASTECH1\JASTECH1\04. Library` (없으면 규칙이 멈추고 알려줌) |
 | `DST_BASE` | `O:\스태킹 PAG` → 결과는 `O:\스태킹 PAG\01. GM SAMPLE STACKING 검토\` |
 | `ASIS_FOLDERS` | `99. 자재` (원래 구조 그대로 옮김) |
 | `COMMON_LIB_DIRS` | `Z. BOLT|Z. NUT|Z. WASHER` |
 | `COMMON_KEYWORDS` | `와셔|WASHER` |
 | `PURCH_DIR_KEYS` | `구매품|표준품` (원본에서 구매품 폴더로 볼 이름. `임시구매품` 포함) |
 | `SKIP_DIRS` | `_V|OldVersions` |
+
+### 원본은 Vault 작업 폴더
+
+Pack and Go 는 **조립도가 참조하는 파일만** 모아 오기 때문에, 조립도에서 빠져 있고
+폴더에만 있던 파일은 Pack and Go 폴더에 없습니다. 그래서 원본을 Vault 작업 폴더로
+잡습니다. (Pack and Go 폴더로 돌리던 경로는 규칙 안에 주석으로 남겨 두었습니다.)
+
+- Vault 파일이 읽기 전용이어도 됩니다. 원본은 **읽기만** 하고, 복사본은 읽기 전용을 풉니다.
+  체크아웃도 하지 않습니다.
+- 저장은 결과 폴더 안 파일에만 합니다. 재연결 단계에도 "결과 폴더 밖 파일은 열지도
+  저장하지도 않는다" 는 확인이 들어 있습니다.
+- 규칙은 **내 PC 에 내려받아져 있는 파일만** 볼 수 있습니다. 돌리기 전에 Vault Explorer 에서
+  `01. GM SAMPLE STACKING 검토` 폴더와 `04. Library` 폴더를 오른쪽 클릭 →
+  **최신 버전 가져오기(Get Latest Version)** 로 하위 폴더까지 받아 두세요.
 
 ## 결과 구조
 
@@ -101,7 +115,7 @@ O:\스태킹 PAG\01. GM SAMPLE STACKING 검토\
 
 ### 1) 미리보기 - 아무것도 복사하지 않음
 
-1. 원본 프로젝트(작업공간)로 **원본 조립도**를 엽니다.
+1. Vault 프로젝트를 활성화하고 Vault 작업 폴더의 **원본 조립도**를 엽니다.
    - 시험 : 작은 유닛 조립도 (예: `05. STACK STAGE\00. 조립도\…SST00….iam`)
    - 실제 : 전체 조립도 `GM Sample Stacking ASSY (구미조립도).iam`
 2. 규칙 실행 → `1. 미리보기`
