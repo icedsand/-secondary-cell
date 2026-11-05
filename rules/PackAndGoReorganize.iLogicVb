@@ -118,7 +118,7 @@ Sub Main()
                            "원본 : " & CStr(S("SRC")) & vbCrLf & _
                            "결과 : " & CStr(S("DST")), _
                            modes.ToArray(), MODE_PREVIEW, Title:=TTL, ListName:="단계")
-    If sel Is Nothing Then Return
+    If sel Is Nothing OrElse CStr(sel) = "" Then Return
     Dim mode As String = CStr(sel)
 
     If mode = MODE_RELINK Then
@@ -289,13 +289,13 @@ Function Ext(p As String) As String
 End Function
 
 Function IsDrawingExt(p As String) As Boolean
-    Dim e As String = Ext(p)
-    Return e = ".idw" OrElse e = ".dwg"
+    Dim fe As String = Ext(p)
+    Return fe = ".idw" OrElse fe = ".dwg"
 End Function
 
 Function IsModelExt(p As String) As Boolean
-    Dim e As String = Ext(p)
-    Return e = ".ipt" OrElse e = ".iam"
+    Dim fe As String = Ext(p)
+    Return fe = ".ipt" OrElse fe = ".iam"
 End Function
 
 Function NewDict() As Dictionary(Of String, String)
@@ -323,8 +323,8 @@ Function IsSkipped(S As Dictionary(Of String, Object), p As String) As Boolean
     If nm.StartsWith("~$") Then Return True
     If String.Equals(nm, "Thumbs.db", StringComparison.OrdinalIgnoreCase) Then Return True
     If String.Equals(nm, "desktop.ini", StringComparison.OrdinalIgnoreCase) Then Return True
-    Dim e As String = Ext(p)
-    If e = ".ipj" OrElse e = ".lck" OrElse e = ".dwl" OrElse e = ".dwl2" Then Return True
+    Dim fe As String = Ext(p)
+    If fe = ".ipj" OrElse fe = ".lck" OrElse fe = ".dwl" OrElse fe = ".dwl2" Then Return True
     Return False
 End Function
 
@@ -968,23 +968,48 @@ Sub PlaceNormal(S As Dictionary(Of String, Object), f As String)
     Dim ctx As String = GetCtx(S, f)
     Dim dst As String = NormalDest(S, f, ctx)
     Dim buy As String = CtxDirs(S, ctx)(2)
+    ' 유닛에 속하지 않고 전체 조립도에 바로 들어간 부품은 따로 알린다
+    If ctx = "TOP" AndAlso Not String.Equals(System.IO.Path.GetDirectoryName(f), CStr(S("SRC")), StringComparison.OrdinalIgnoreCase) Then
+        Warn(S, f, TOP_NOTE())
+    End If
     primary(f) = AddPlan(S, "N", f, dst, CategoryOf(f, ctx), buy, WarnOf(S, f))
 End Sub
+
+Function TOP_NOTE() As String
+    Return "전체 조립도에 바로 들어간 부품(유닛 밖)"
+End Function
+
+' 구매품 폴더가 전체 조립도의 것이면 비고를 단다
+Function BuyNote(S As Dictionary(Of String, Object), buy As String) As String
+    If String.Equals(buy, CtxDirs(S, "TOP")(2), StringComparison.OrdinalIgnoreCase) Then Return TOP_NOTE()
+    Return ""
+End Function
 
 Sub PlacePurchased(S As Dictionary(Of String, Object), src As String, buy As String)
     Dim purchKey As Dictionary(Of String, String) = GetDict(S, "purchKey")
     Dim key As String = src & "|" & buy
     If purchKey.ContainsKey(key) Then Return
 
-    Dim pi() As String = PurchInfo(S, src)
-    If pi Is Nothing Then Return
+    Dim pinfo() As String = PurchInfo(S, src)
+    If pinfo Is Nothing Then Return
     Dim cat As String = "구매품"
-    If pi(1).StartsWith("공용부품\") Then cat = "공용부품"
+    If pinfo(1).StartsWith("공용부품\") Then cat = "공용부품"
 
-    If pi(0) <> "" Then PlacePackage(S, pi(0), buy)
+    If pinfo(0) <> "" Then PlacePackage(S, pinfo(0), buy)
 
     If Not purchKey.ContainsKey(key) Then
-        purchKey(key) = AddPlan(S, "P", src, System.IO.Path.Combine(buy, pi(1)), cat, buy, "")
+        Dim made As String = AddPlan(S, "P", src, System.IO.Path.Combine(buy, pinfo(1)), cat, buy, BuyNote(S, buy))
+        purchKey(key) = made
+        ' 품번 폴더 없이 파일만 있는 구매품 - 옆에 같은 이름 도면이 있으면 같이
+        If pinfo(0) = "" AndAlso IsModelExt(src) Then
+            For Each de As String In New String() {".idw", ".dwg"}
+                Dim dp As String = System.IO.Path.ChangeExtension(src, de)
+                If System.IO.File.Exists(dp) AndAlso Not IsSkipped(S, dp) Then
+                    purchKey(dp & "|" & buy) = AddPlan(S, "P", dp, System.IO.Path.ChangeExtension(made, de), cat, buy, BuyNote(S, buy))
+                    GetSet(S, "purchPlaced").Add(dp)
+                End If
+            Next
+        End If
     End If
     GetSet(S, "purchPlaced").Add(src)
 
@@ -1014,8 +1039,8 @@ Sub PlacePackage(S As Dictionary(Of String, Object), pkgRoot As String, buy As S
         dir = System.IO.Path.Combine(buy, pkgName & "_중복" & n)
     Loop
     dirOwner(dir) = pkgRoot
-    Dim note As String = ""
-    If n > 1 Then note = "같은 이름의 다른 품번 폴더가 있어 " & System.IO.Path.GetFileName(dir) & " 로"
+    Dim note As String = BuyNote(S, buy)
+    If n > 1 Then note = AddNote(note, "같은 이름의 다른 품번 폴더가 있어 " & System.IO.Path.GetFileName(dir) & " 로")
 
     Dim cat As String = "구매품"
     Dim purchKey As Dictionary(Of String, String) = GetDict(S, "purchKey")
@@ -1166,8 +1191,10 @@ Function PlanSummary(S As Dictionary(Of String, Object)) As String
     Next
 
     Dim nWarn As Integer = 0
+    Dim nTop As Integer = 0
     For Each it As String() In Plan(S)
         If it(5) <> "" Then nWarn += 1
+        If it(5).Contains(TOP_NOTE()) Then nTop += 1
     Next
 
     Dim msg As String = ""
@@ -1182,6 +1209,9 @@ Function PlanSummary(S As Dictionary(Of String, Object)) As String
     Next
     msg &= "가져가지 않음 : " & CType(S("excluded"), List(Of String())).Count & "개" & vbCrLf
     msg &= "확인할 것(비고 있음) : " & nWarn & "개" & vbCrLf
+    If nTop > 0 Then
+        msg &= "  ※ 유닛 밖, 전체 조립도에 바로 들어간 부품 : " & nTop & "개 -> 00. 전체 조립도 안에 넣음" & vbCrLf
+    End If
     msg &= "원본에서 이미 끊긴 참조 : " & GetList(S, "missing").Count & "개" & vbCrLf
 
     Dim codes As String = ""
@@ -1316,16 +1346,16 @@ Function ExecuteCopy(S As Dictionary(Of String, Object)) As String
     For Each it As String() In items
         map.AppendLine(it(0) & vbTab & it(1) & vbTab & it(2) & vbTab & it(4))
 
-        Dim e As String = Ext(it(2))
-        If e <> ".ipt" AndAlso e <> ".iam" AndAlso e <> ".idw" AndAlso e <> ".dwg" Then Continue For
+        Dim fe As String = Ext(it(2))
+        If fe <> ".ipt" AndAlso fe <> ".iam" AndAlso fe <> ".idw" AndAlso fe <> ".dwg" Then Continue For
         ' 조립에 쓰이는데 아무것도 참조하지 않는 부품은 열 필요가 없다
-        If e = ".ipt" AndAlso graphSet.Contains(it(1)) AndAlso Not hasRefs.Contains(it(1)) Then Continue For
+        If fe = ".ipt" AndAlso graphSet.Contains(it(1)) AndAlso Not hasRefs.Contains(it(1)) Then Continue For
 
         Dim ord As Integer = 0
-        If e = ".iam" Then
+        If fe = ".iam" Then
             ord = 1
             If graphSet.Contains(it(1)) Then ord = 1 + Depth(S, it(1), depthMemo, NewSet())
-        ElseIf e = ".idw" OrElse e = ".dwg" Then
+        ElseIf fe = ".idw" OrElse fe = ".dwg" Then
             ord = 1000
         End If
         jobs.AppendLine(ord & vbTab & it(2) & vbTab & it(4))
@@ -1492,8 +1522,8 @@ Sub DoRelink(S As Dictionary(Of String, Object))
     If MessageBox.Show(ask, TTL, MessageBoxButtons.OKCancel) <> DialogResult.OK Then Return
 
     ' 4) 하나씩 열어 끊긴 참조를 새 위치로
-    Dim log As New System.Text.StringBuilder()
-    log.AppendLine("결과,파일,옛 참조,새 참조,메시지")
+    Dim logSb As New System.Text.StringBuilder()
+    logSb.AppendLine("결과,파일,옛 참조,새 참조,메시지")
     Dim nDone As Integer = 0
     Dim nSaved As Integer = 0
     Dim nRepl As Integer = 0
@@ -1510,7 +1540,7 @@ Sub DoRelink(S As Dictionary(Of String, Object))
             ThisApplication.StatusBarText = TTL & " : " & (ji + 1) & " / " & jobs.Count & "  " & System.IO.Path.GetFileName(jf)
 
             If Not System.IO.File.Exists(jf) Then
-                log.AppendLine(CsvField("없음") & "," & CsvField(jf) & ",,," & CsvField("복사본이 없음"))
+                logSb.AppendLine(CsvField("없음") & "," & CsvField(jf) & ",,," & CsvField("복사본이 없음"))
                 nFail += 1
                 Continue For
             End If
@@ -1529,7 +1559,7 @@ Sub DoRelink(S As Dictionary(Of String, Object))
                 opts.Add("SkipAllUnresolvedFiles", True)
                 doc = ThisApplication.Documents.OpenWithOptions(jf, opts, False)
             Catch ex As Exception
-                log.AppendLine(CsvField("열기 실패") & "," & CsvField(jf) & ",,," & CsvField(ex.Message))
+                logSb.AppendLine(CsvField("열기 실패") & "," & CsvField(jf) & ",,," & CsvField(ex.Message))
                 nFail += 1
                 Continue For
             End Try
@@ -1559,7 +1589,7 @@ Sub DoRelink(S As Dictionary(Of String, Object))
                     Catch
                     End Try
                     If Not (resolved AndAlso IsUnder(oldRef, dst)) Then
-                        log.AppendLine(CsvField("못 찾음") & "," & CsvField(jf) & "," & CsvField(oldRef) & ",," & _
+                        logSb.AppendLine(CsvField("못 찾음") & "," & CsvField(jf) & "," & CsvField(oldRef) & ",," & _
                                        CsvField("복사 목록에 없는 참조"))
                         nLeft += 1
                     End If
@@ -1579,7 +1609,7 @@ Sub DoRelink(S As Dictionary(Of String, Object))
                     changed = True
                     nRepl += 1
                 Catch ex As Exception
-                    log.AppendLine(CsvField("대체 실패") & "," & CsvField(jf) & "," & CsvField(oldRef) & "," & _
+                    logSb.AppendLine(CsvField("대체 실패") & "," & CsvField(jf) & "," & CsvField(oldRef) & "," & _
                                    CsvField(target) & "," & CsvField(ex.Message))
                     nFail += 1
                 End Try
@@ -1589,9 +1619,9 @@ Sub DoRelink(S As Dictionary(Of String, Object))
                 Try
                     doc.Save2(False)
                     nSaved += 1
-                    log.AppendLine(CsvField("저장") & "," & CsvField(jf) & ",,,")
+                    logSb.AppendLine(CsvField("저장") & "," & CsvField(jf) & ",,,")
                 Catch ex As Exception
-                    log.AppendLine(CsvField("저장 실패") & "," & CsvField(jf) & ",,," & CsvField(ex.Message))
+                    logSb.AppendLine(CsvField("저장 실패") & "," & CsvField(jf) & ",,," & CsvField(ex.Message))
                     nFail += 1
                 End Try
             End If
@@ -1605,7 +1635,7 @@ Sub DoRelink(S As Dictionary(Of String, Object))
         Next
 
     Catch ex As Exception
-        log.AppendLine(CsvField("중단") & ",,,," & CsvField(ex.Message))
+        logSb.AppendLine(CsvField("중단") & ",,,," & CsvField(ex.Message))
         nFail += 1
     Finally
         ThisApplication.SilentOperation = prevSilent
@@ -1614,12 +1644,12 @@ Sub DoRelink(S As Dictionary(Of String, Object))
     CloseHiddenDocs()
 
     For Each x As String In GetList(S, "r_extra")
-        log.AppendLine(CsvField("추가 복사") & "," & CsvField(x) & ",,," & CsvField("복사 목록에 없던 구매품을 재연결 중에 복사"))
+        logSb.AppendLine(CsvField("추가 복사") & "," & CsvField(x) & ",,," & CsvField("복사 목록에 없던 구매품을 재연결 중에 복사"))
     Next
 
     Dim logPath As String = System.IO.Path.Combine(logDir, "재연결_" & DateTime.Now.ToString("yyyyMMdd_HHmmss") & ".csv")
     Try
-        System.IO.File.WriteAllText(logPath, log.ToString(), New System.Text.UTF8Encoding(True))
+        System.IO.File.WriteAllText(logPath, logSb.ToString(), New System.Text.UTF8Encoding(True))
     Catch
         logPath = "(로그 저장 실패)"
     End Try
@@ -1655,12 +1685,12 @@ Function MapRef(S As Dictionary(Of String, Object), oldRef As String, buy As Str
     If src = "" Then Return ""
 
     ' 2) 구매품이면 이 파일의 구매품 폴더에 있는 복사본
-    Dim pi() As String = PurchInfo(S, src)
-    If pi IsNot Nothing Then
+    Dim pinfo() As String = PurchInfo(S, src)
+    If pinfo IsNot Nothing Then
         If buy <> "" Then
             Dim key As String = src & "|" & buy
             If purchKey.ContainsKey(key) Then Return purchKey(key)
-            Dim made As String = CopyPurchasedNow(S, src, buy, pi)
+            Dim made As String = CopyPurchasedNow(S, src, buy, pinfo)
             If made <> "" Then
                 purchKey(key) = made
                 reverse(made) = src
@@ -1702,16 +1732,16 @@ Function BestMatch(S As Dictionary(Of String, Object), p As String) As String
 End Function
 
 ' 복사 목록에 없던 구매품 / 구매품 폴더 조합 - 지금 복사한다
-Function CopyPurchasedNow(S As Dictionary(Of String, Object), src As String, buy As String, pi() As String) As String
+Function CopyPurchasedNow(S As Dictionary(Of String, Object), src As String, buy As String, pinfo() As String) As String
     If Not System.IO.File.Exists(src) Then Return ""
     Dim extra As List(Of String) = GetList(S, "r_extra")
-    If pi(0) <> "" Then
-        For Each f As String In EnumFiles(S, pi(0))
-            Dim d2 As String = System.IO.Path.Combine(buy, System.IO.Path.GetFileName(pi(0)), f.Substring(pi(0).Length + 1))
+    If pinfo(0) <> "" Then
+        For Each f As String In EnumFiles(S, pinfo(0))
+            Dim d2 As String = System.IO.Path.Combine(buy, System.IO.Path.GetFileName(pinfo(0)), f.Substring(pinfo(0).Length + 1))
             If CopyFileSafe(f, d2) = "copied" Then extra.Add(d2)
         Next
     End If
-    Dim target As String = System.IO.Path.Combine(buy, pi(1))
+    Dim target As String = System.IO.Path.Combine(buy, pinfo(1))
     Dim r As String = CopyFileSafe(src, target)
     If r = "copied" Then extra.Add(target)
     If System.IO.File.Exists(target) Then Return target
