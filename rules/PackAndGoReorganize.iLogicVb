@@ -10,46 +10,48 @@
 '   <결과>\01. GM SAMPLE STACKING 검토\
 '    ├─ 01. GM SAMPLE STACKING 검토.ipj
 '    ├─ 00. 전체 조립도\            전체 조립도 iam
-'    │   ├─ 부품도\                 유닛에 속하지 않는 부품 (있으면 로그에 표시)
+'    │   ├─ 부품도\                 유닛에 속하지 않는 부품 (있으면 요약 / 비고에 표시)
 '    │   └─ 구매품\
 '    ├─ 99. 자재\                   원래 구조 그대로
-'    └─ 05. STACK STAGE\            유닛 (이름 그대로)
-'        ├─ 05. STACK STAGE.ipj
-'        ├─ 01. 조립도\             SST00 iam
-'        ├─ 02. 하부조립도\          (ipj 없음)
-'        │   └─ 03. Stack Stage\     하부 유닛 (기존 폴더 이름, 없으면 iam 이름)
-'        │       ├─ 03. Stack Stage.ipj
-'        │       ├─ 01. 조립도\      SST03A + 그 안의 하위 iam 전부 (iam 없으면 안 만듦)
-'        │       ├─ 02. 부품도\      SST03-xx 가공품 ipt / idw / 미러
-'        │       └─ 03. 구매품\      품번 폴더째 복사 (_V 제외)
-'        │           └─ 공용부품\    볼트 / 너트 / 와셔
-'        ├─ 03. 부품도\             SST00-xx 가공품
-'        ├─ 04. 구매품\             유닛 조립도에 바로 들어간 구매품
-'        └─ 99. 미분류\             도번도 없고 어디에도 안 쓰인 파일
-'   하부 유닛이 없는 유닛은 01. 조립도 / 02. 부품도 / 03. 구매품
-'   (Pulling Transfer 처럼 유닛 조립도 번호 말고 다른 번호가 없으면 하부 유닛 없음)
+'    ├─ 05. STACK STAGE\            유닛 (이름 그대로), 하부 유닛 있음
+'    │   ├─ 05. STACK STAGE.ipj
+'    │   ├─ 01. 조립도\             원본 00. 조립도 의 내용물
+'    │   ├─ 02. 하부조립도\          (ipj 없음)
+'    │   │   └─ 03. Stack Stage\     원본 하부 유닛 폴더 이름 그대로
+'    │   │       ├─ 03. Stack Stage.ipj
+'    │   │       ├─ 01. 조립도\      원본 01. 조립도 의 내용물
+'    │   │       ├─ 02. 부품도\      원본 02. 가공품 의 내용물 (하위 폴더 그대로)
+'    │   │       └─ 03. 구매품\      쓰는 구매품 (품번 폴더째, _V 제외)
+'    │   │           └─ 공용부품\    볼트 / 너트 / 와셔
+'    │   ├─ 03. 부품도\
+'    │   └─ 04. 구매품\
+'    └─ 08. Pulling Transfer\       하부 유닛 없음
+'        ├─ 01. 조립도\             원본 01. 조립도 의 내용물
+'        ├─ 02. 부품도\             원본 02. 부품도 의 내용물 (개조, GRIP 같은 하위 폴더 그대로)
+'        └─ 03. 구매품\             쓰는 구매품 + 원본 03. 임시구매품
 '
-'  [분류 규칙]
-'   - 도번 GMKS-ST2601-SST03-10A 에서 SST 가 유닛 기호, 03 이 하부 유닛 번호
-'       00            -> 유닛 레벨
-'       01, 02 ...    -> 그 번호의 하부 유닛
-'     유닛 레벨 번호는 열려 있는 조립도에서 유닛 조립도를 찾아 정한다
-'       SST00(구조변경신규).iam -> 00 이 유닛, 01 ~ 07 이 하부 유닛
-'       PUT01.iam               -> 01 이 유닛, 다른 번호가 없으므로 하부조립도 없음
-'   - 하부 유닛 폴더 이름은 그 번호 파일들이 원래 들어 있던 폴더 이름을 따른다
-'     (03. Stack Stage). 원본에 폴더가 없으면 임시 이름 "07. SST07"
-'     유닛 기호는 유닛 폴더 안 파일 이름에서 가장 많이 나오는 것으로 정한다
-'     (SST00 처럼 00 번 iam 이 있으면 그것을 우선한다)
-'   - 도번이 없거나 다른 유닛 기호면 조립 구조로 정한다 (그 파일을 쓰는
-'     조립도와 같은 곳). 어디에도 안 쓰였으면
-'       도번 없음          -> 99. 미분류
-'       다른 유닛 기호     -> 가져가지 않음 (로그에 "제외")
-'   - 구매품 : 라이브러리(04. Library) 또는 원본의 "구매품" 폴더에 있는 파일
+'  [옮기는 규칙]
+'   이 규칙의 목적은 구매품을 각 유닛 / 하부 유닛에 배치하는 것이다.
+'   조립도와 가공품은 원래 폴더의 내용물을 그대로 가져온다 (도번으로 옮기지 않는다).
+'   - 원본 폴더 이름으로 새 틀에 대응시킨다
+'       "조립도"              -> 01. 조립도
+'       "부품도" / "가공품"    -> 02. 부품도 (하부 유닛이 있는 유닛 레벨은 03. 부품도)
+'       "구매품" / "표준품"    -> 구매품 (설정 PURCH_DIR_KEYS)
+'       "하부조립도" 안의 폴더 -> 02. 하부조립도\그 폴더
+'       번호가 붙은 그 밖의 폴더(03. Stack Stage) -> 02. 하부조립도\그 폴더
+'       그 밖의 폴더((참고) 등) -> 원래 구조 그대로
+'     분류 폴더 안쪽(개조, GRIP, 작은 조립도 PUT01-21.iam)은 손대지 않는다.
+'   - 유닛 조립도 폴더에는 유닛 조립도만 둔다. 하부 유닛 조립도(SST03A)가 섞여
+'     있으면 그 번호의 하부 유닛 조립도 폴더로 보낸다. 그 번호 폴더가 원본에
+'     없으면 임시 이름 "07. SST07" 로 만들고 요약에 알린다.
+'     (유닛 레벨 번호는 열린 조립도에서 유닛 조립도를 찾아 정한다. SST00 -> 00, PUT01 -> 01)
+'   - 구매품 : 라이브러리(04. Library) 또는 원본의 구매품 / 표준품 폴더에 있는 파일
 '       Library\[제작사]\[종류]\[품번 폴더]\...  -> 품번 폴더째 복사
-'       Library\[제작사]\[종류]\파일             -> 파일만 복사
+'       Library\[제작사]\[종류]\파일             -> 파일만 복사 (옆의 같은 이름 도면 포함)
 '       Z. BOLT / Z. NUT / Z. WASHER, 이름에 와셔 / WASHER -> 공용부품\
+'     그 구매품을 쓰는 조립도가 원래 있던 유닛 / 하부 유닛의 구매품 폴더로 간다.
 '     같은 구매품을 여러 하부 유닛이 쓰면 하부 유닛마다 복사한다.
-'   - 도면(idw / dwg) 은 같은 이름의 모델과 같은 폴더로 간다.
+'   - 조립에 안 쓰이는 파일도 원래 자리 그대로 전부 가져간다.
 '
 '  [사용법] - 세 단계
 '   1) 미리보기 : 원본 전체 조립도(또는 유닛 조립도)를 열고 실행
@@ -93,6 +95,8 @@ Sub Main()
     Dim COMMON_LIB_DIRS As String = "Z. BOLT|Z. NUT|Z. WASHER"
     ' 파일 / 폴더 이름에 이 글자가 있으면 공용부품
     Dim COMMON_KEYWORDS As String = "와셔|WASHER"
+    ' 원본 폴더 이름에 이 글자가 있으면 구매품 폴더로 본다
+    Dim PURCH_DIR_KEYS  As String = "구매품|표준품"
     ' 가져가지 않을 폴더 이름
     Dim SKIP_DIRS       As String = "_V|OldVersions"
     ' ────────────────────────────────────────────────────────────────────────
@@ -109,6 +113,7 @@ Sub Main()
     S("COMDIRS") = SplitList(COMMON_LIB_DIRS)
     S("COMKEYS") = SplitList(COMMON_KEYWORDS)
     S("SKIPDIRS") = SplitList(SKIP_DIRS)
+    S("PURCHKEYS") = SplitList(PURCH_DIR_KEYS)
     S("LOGDIR") = System.IO.Path.Combine(CStr(S("DST")), "_정리로그")
 
     Dim MODE_PREVIEW As String = "1. 미리보기  - 어디로 갈지 목록(CSV)만 만든다"
@@ -441,9 +446,9 @@ Function PurchInfo(S As Dictionary(Of String, Object), p As String) As String()
 
     If IsUnder(p, srcRoot) Then
         Dim segs() As String = RelSegs(p, srcRoot)
-        ' segs(0) 은 유닛 폴더. 그 아래 어딘가의 "구매품" 폴더
+        ' segs(0) 은 유닛 폴더. 그 아래 어딘가의 구매품 / 임시구매품 / 표준품 폴더
         For k As Integer = 1 To segs.Length - 2
-            If segs(k).Contains("구매품") Then
+            If DirKind(S, segs(k)) = "PURCH" Then
                 Dim baseDir As String = System.IO.Path.Combine(srcRoot, String.Join("\", segs, 0, k + 1))
                 Dim rest As Integer = segs.Length - (k + 1)
                 If rest = 1 Then
@@ -512,10 +517,7 @@ Sub InitPlanState(S As Dictionary(Of String, Object))
     S("unitFiles") = New Dictionary(Of String, List(Of String))(StringComparer.OrdinalIgnoreCase)
     S("unitSubs") = New Dictionary(Of String, List(Of String))(StringComparer.OrdinalIgnoreCase)
     S("tempSubNames") = New List(Of String)    ' 원본에 폴더가 없어 임시 이름을 붙인 하부 유닛
-    S("subNameNotes") = New List(Of String)    ' 폴더 번호와 도번 번호가 다른 경우
-    S("unitLevel") = NewDict()                  ' 유닛 -> 유닛 레벨 번호 (SST00 -> "00", PUT01 -> "01")
-    S("unitLevelFrom") = NewDict()              ' 유닛 -> 번호를 정한 유닛 조립도 파일 이름
-    S("subNames") = NewDict()                   ' "유닛|03" -> "03. Stack Stage"
+    S("moveSub") = NewDict()                    ' 유닛 조립도 폴더에 섞여 있던 하부 유닛 조립도 -> 하부 유닛 폴더 이름
 
     S("plan") = New List(Of String())           ' {종류 N/P, 원본, 새 위치, 분류, 구매품 폴더, 비고}
     S("dstOwner") = NewDict()                   ' 새 위치 -> 원본 (겹침 검사)
@@ -644,7 +646,7 @@ Sub AnalyzeUnits(S As Dictionary(Of String, Object))
     Dim unitCode As Dictionary(Of String, String) = GetDict(S, "unitCode")
     Dim unitFiles As Dictionary(Of String, List(Of String)) = GetDL(S, "unitFiles")
     Dim unitSubs As Dictionary(Of String, List(Of String)) = GetDL(S, "unitSubs")
-    Dim subNames As Dictionary(Of String, String) = GetDict(S, "subNames")
+    Dim moveSub As Dictionary(Of String, String) = GetDict(S, "moveSub")
 
     Dim dirs() As String = System.IO.Directory.GetDirectories(srcRoot)
     Array.Sort(dirs, StringComparer.OrdinalIgnoreCase)
@@ -658,7 +660,44 @@ Sub AnalyzeUnits(S As Dictionary(Of String, Object))
         Dim files As List(Of String) = EnumFiles(S, ud)
         unitFiles(u) = files
 
-        ' 유닛 기호 : 00 번 iam 우선, 없으면 가장 많이 나오는 기호
+        ' 1) 하부 유닛 = 원본에 있는 하부 유닛 폴더 (이름 그대로)
+        '    유닛 바로 아래의 번호 폴더 중 분류 폴더(조립도 / 부품도 / 가공품 / 구매품 / 표준품)가
+        '    아닌 것, 또는 "하부조립도" 폴더 안의 폴더 (이미 정리돼 있던 유닛)
+        '      05. STACK STAGE\01. X축 ... 06. Knife  -> 하부 유닛 6개
+        '      08. Pulling Transfer\01. 조립도 / 02. 부품도 / 03. 임시구매품  -> 하부 유닛 없음
+        Dim subs As New List(Of String)
+        Dim subByNum As Dictionary(Of String, String) = NewDict()
+        Dim lvl1() As String = New String() {}
+        Try
+            lvl1 = System.IO.Directory.GetDirectories(ud)
+        Catch
+        End Try
+        Array.Sort(lvl1, StringComparer.OrdinalIgnoreCase)
+        For Each sd As String In lvl1
+            Dim nm As String = System.IO.Path.GetFileName(sd)
+            If InList(CfgList(S, "SKIPDIRS"), nm) Then Continue For
+            If DirKind(S, nm) = "SUBS" Then
+                Dim lvl2() As String = New String() {}
+                Try
+                    lvl2 = System.IO.Directory.GetDirectories(sd)
+                Catch
+                End Try
+                Array.Sort(lvl2, StringComparer.OrdinalIgnoreCase)
+                For Each sd2 As String In lvl2
+                    Dim nm2 As String = System.IO.Path.GetFileName(sd2)
+                    If InList(CfgList(S, "SKIPDIRS"), nm2) OrElse subs.Contains(nm2) Then Continue For
+                    subs.Add(nm2)
+                Next
+            ElseIf IsSubUnitDir(S, nm) Then
+                If Not subs.Contains(nm) Then subs.Add(nm)
+            End If
+        Next
+        For Each sn As String In subs
+            Dim num As String = LeadingNumber(sn)
+            If num <> "" AndAlso Not subByNum.ContainsKey(num) Then subByNum(num) = sn
+        Next
+
+        ' 2) 유닛 기호와 유닛 레벨 번호 - 유닛 조립도 폴더에 하부 유닛 조립도가 섞여 있을 때만 쓴다
         Dim counts As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
         Dim preferred As String = ""
         For Each f As String In files
@@ -685,164 +724,93 @@ Sub AnalyzeUnits(S As Dictionary(Of String, Object))
         End If
         unitCode(u) = code
 
-        ' 이 유닛의 번호 모으기 (SST00, SST01 ... -> 00, 01 ...)
-        Dim nums As New List(Of String)
+        Dim level As String = UnitLevel(S, u, ud, code, files)
+
+        ' 3) 유닛 조립도 폴더에는 유닛 조립도만 둔다.
+        '    그 안에 하부 유닛 조립도(SST03A, SST03-10 과 그 도면)가 섞여 있으면 그 번호의
+        '    하부 유닛 조립도 폴더로 보낸다. 그 번호 폴더가 원본에 없으면 임시 이름으로 만든다.
         If code <> "" Then
             For Each f As String In files
                 If PurchInfo(S, f) IsNot Nothing Then Continue For
+                Dim e2 As String = Ext(f)
+                If e2 <> ".iam" AndAlso e2 <> ".idw" AndAlso e2 <> ".dwg" Then Continue For
+                Dim segs() As String = RelSegs(f, srcRoot)
+                If segs.Length <> 3 OrElse DirKind(S, segs(1)) <> "ASM" Then Continue For
                 Dim p() As String = ParseCode(f)
                 If p Is Nothing Then Continue For
                 If Not String.Equals(p(0), code, StringComparison.OrdinalIgnoreCase) Then Continue For
-                If Not nums.Contains(p(1)) Then nums.Add(p(1))
-            Next
-        End If
-        nums.Sort()
-
-        ' 유닛 레벨 번호 - 열려 있는 조립도에서 유닛 조립도를 찾아 그 번호로 정한다
-        '   STACK STAGE      : 유닛 조립도 SST00(구조변경신규).iam -> 00
-        '   Pulling Transfer : 유닛 조립도 PUT01.iam               -> 01
-        '  유닛 조립도 = 전체 조립도 바로 아래에 들어간 이 유닛의 iam
-        '               (유닛 조립도에서 실행했으면 그 조립도)
-        '  원본에 00 번 파일이 있으면 언제나 00 이 유닛 레벨이다
-        '  (시험하다가 하부 조립도 SST03A 를 열고 실행해도 03 이 유닛이 되지 않게)
-        Dim level As String = ""
-        Dim levelFrom As String = ""
-        If code <> "" Then
-            Dim unitAsms As New List(Of String)
-            If CBool(S("TOPMODE")) Then
-                unitAsms.AddRange(ChildrenOf(S, CStr(S("HOST"))))
-            Else
-                unitAsms.Add(CStr(S("HOST")))
-            End If
-            For Each ua As String In unitAsms
-                If Ext(ua) <> ".iam" OrElse Not IsUnder(ua, ud) Then Continue For
-                Dim p() As String = ParseCode(ua)
-                If p Is Nothing OrElse p(2) <> "" Then Continue For
-                If Not String.Equals(p(0), code, StringComparison.OrdinalIgnoreCase) Then Continue For
-                If nums.Contains("00") AndAlso p(1) <> "00" Then Continue For
-                level = p(1)
-                levelFrom = System.IO.Path.GetFileName(ua)
-                Exit For
+                If p(1) = "00" OrElse p(1) = level Then Continue For
+                If Not subByNum.ContainsKey(p(1)) Then
+                    Dim tmp As String = p(1) & ". " & code & p(1)
+                    subByNum(p(1)) = tmp
+                    subs.Add(tmp)
+                    GetList(S, "tempSubNames").Add(u & " \ " & tmp)
+                End If
+                moveSub(f) = subByNum(p(1))
             Next
         End If
 
-        ' 유닛 조립도를 못 찾았으면 : 00 이 있으면 00, 00 없이 번호가 하나뿐이면 그 번호
-        If level = "" Then
-            If nums.Contains("00") OrElse nums.Count <> 1 Then
-                level = "00"
-            Else
-                level = nums(0)
-            End If
-        End If
-        GetDict(S, "unitLevel")(u) = level
-        If levelFrom <> "" Then GetDict(S, "unitLevelFrom")(u) = levelFrom
-
-        ' 하부 유닛 = 유닛 레벨(과 00)이 아닌 번호. 없으면 하부조립도를 만들지 않는다
-        Dim subs As New List(Of String)
-        For Each nn As String In nums
-            If nn = "00" OrElse nn = level Then Continue For
-            subs.Add(nn)
-        Next
+        subs.Sort(StringComparer.OrdinalIgnoreCase)
         unitSubs(u) = subs
-
-        ' 하부 유닛 폴더 이름 - 원래 저장되어 있던 폴더 이름을 그대로 따른다
-        '  1) 그 번호(SST03) 파일들이 실제로 들어 있던 폴더  (가장 많이 들어 있는 곳)
-        '       05. STACK STAGE\03. Stack Stage\...SST03-11.ipt  ->  "03. Stack Stage"
-        '  2) 없으면 번호가 같은 기존 폴더 ("03. ..." )
-        '  3) 그것도 없으면 임시 이름 "07. SST07"  (미리보기 요약에 따로 알린다)
-        '  00. 조립도, 부품도, 구매품 같은 분류 폴더는 하부 유닛 폴더로 보지 않는다
-        Dim locCount As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
-        If code <> "" Then
-            For Each f As String In files
-                If PurchInfo(S, f) IsNot Nothing Then Continue For
-                Dim p() As String = ParseCode(f)
-                If p Is Nothing Then Continue For
-                If Not String.Equals(p(0), code, StringComparison.OrdinalIgnoreCase) OrElse p(1) = "00" Then Continue For
-                Dim fn As String = SourceSubFolder(f, srcRoot)
-                If fn = "" Then Continue For
-                Dim lk As String = p(1) & "|" & fn
-                If locCount.ContainsKey(lk) Then
-                    locCount(lk) += 1
-                Else
-                    locCount(lk) = 1
-                End If
-            Next
-        End If
-
-        Dim existing As Dictionary(Of String, String) = NewDict()
-        Dim candDirs As New List(Of String)
-        Try
-            For Each sd As String In System.IO.Directory.GetDirectories(ud)
-                candDirs.Add(sd)
-                If System.IO.Path.GetFileName(sd).Contains("하부조립도") Then
-                    For Each sd2 As String In System.IO.Directory.GetDirectories(sd)
-                        candDirs.Add(sd2)
-                    Next
-                End If
-            Next
-        Catch
-        End Try
-        candDirs.Sort(StringComparer.OrdinalIgnoreCase)
-        For Each sd As String In candDirs
-            Dim nm As String = System.IO.Path.GetFileName(sd)
-            Dim num As String = LeadingNumber(nm)
-            If num = "" OrElse num = "00" OrElse IsCategoryDir(nm) Then Continue For
-            If Not existing.ContainsKey(num) Then existing(num) = nm
-        Next
-
-        Dim used As HashSet(Of String) = NewSet()
-        For Each nn As String In subs
-            Dim name As String = ""
-
-            ' 1) 실제로 들어 있던 폴더
-            Dim best As Integer = 0
-            For Each kv As KeyValuePair(Of String, Integer) In locCount
-                Dim parts() As String = kv.Key.Split("|"c)
-                If parts(0) <> nn OrElse used.Contains(parts(1)) Then Continue For
-                If kv.Value > best Then
-                    best = kv.Value
-                    name = parts(1)
-                End If
-            Next
-            If name <> "" AndAlso LeadingNumber(name) = "" Then name = nn & ". " & name
-
-            ' 2) 번호가 같은 기존 폴더
-            If name = "" AndAlso existing.ContainsKey(nn) AndAlso Not used.Contains(existing(nn)) Then name = existing(nn)
-
-            ' 3) 임시 이름
-            If name = "" Then
-                name = nn & ". " & code & nn
-                GetList(S, "tempSubNames").Add(u & " \ " & name)
-            ElseIf LeadingNumber(name) <> nn Then
-                GetList(S, "subNameNotes").Add(u & " : " & code & nn & " 파일이 """ & name & """ 폴더에 있어 그 이름을 씀")
-            End If
-
-            used.Add(name)
-            subNames(u & "|" & nn) = name
-        Next
     Next
 End Sub
 
-' 원본에서 이 파일이 들어 있는 하부 유닛 폴더 이름. 없으면 ""
-'   유닛\03. Stack Stage\...           -> "03. Stack Stage"
-'   유닛\02. 하부조립도\01. X축\...    -> "01. X축"   (이미 정리돼 있던 유닛)
-'   유닛\00. 조립도\..., 유닛\파일     -> ""
-Function SourceSubFolder(f As String, srcRoot As String) As String
-    Dim segs() As String = RelSegs(f, srcRoot)
-    If segs.Length < 3 Then Return ""
-    Dim nm As String = segs(1)
-    If nm.Contains("하부조립도") Then
-        If segs.Length < 4 Then Return ""
-        nm = segs(2)
+' 유닛 레벨 번호 - 열려 있는 조립도에서 유닛 조립도를 찾아 그 번호로 정한다
+'   STACK STAGE      : SST00(구조변경신규).iam -> 00
+'   Pulling Transfer : PUT01.iam               -> 01
+'  유닛 조립도 = 전체 조립도 바로 아래에 들어간 이 유닛의 iam (유닛에서 실행했으면 그 조립도)
+'  원본에 00 번 파일이 있으면 언제나 00
+Function UnitLevel(S As Dictionary(Of String, Object), u As String, ud As String, code As String, files As List(Of String)) As String
+    If code = "" Then Return "00"
+    Dim nums As New List(Of String)
+    For Each f As String In files
+        If PurchInfo(S, f) IsNot Nothing Then Continue For
+        Dim p() As String = ParseCode(f)
+        If p Is Nothing Then Continue For
+        If Not String.Equals(p(0), code, StringComparison.OrdinalIgnoreCase) Then Continue For
+        If Not nums.Contains(p(1)) Then nums.Add(p(1))
+    Next
+    If nums.Contains("00") Then Return "00"
+
+    Dim unitAsms As New List(Of String)
+    If CBool(S("TOPMODE")) Then
+        unitAsms.AddRange(ChildrenOf(S, CStr(S("HOST"))))
+    Else
+        unitAsms.Add(CStr(S("HOST")))
     End If
-    If LeadingNumber(nm) = "00" OrElse IsCategoryDir(nm) Then Return ""
-    Return nm
+    For Each ua As String In unitAsms
+        If Ext(ua) <> ".iam" OrElse Not IsUnder(ua, ud) Then Continue For
+        Dim p() As String = ParseCode(ua)
+        If p Is Nothing OrElse p(2) <> "" Then Continue For
+        If String.Equals(p(0), code, StringComparison.OrdinalIgnoreCase) Then Return p(1)
+    Next
+    If nums.Count = 1 Then Return nums(0)
+    Return "00"
 End Function
 
-' 조립도 / 부품도 / 구매품 같은 분류 폴더
-Function IsCategoryDir(nm As String) As Boolean
-    Return nm.Contains("조립도") OrElse nm.Contains("부품도") OrElse nm.Contains("구매품") OrElse _
-           nm.Contains("미분류") OrElse nm.Contains("자재") OrElse nm.Contains("공용부품")
+' 원본 폴더 이름으로 종류를 본다
+'   SUBS  : 하부조립도
+'   PURCH : 구매품 / 임시구매품 / 표준품   (설정 PURCH_DIR_KEYS)
+'   ASM   : 조립도
+'   PART  : 부품도 / 가공품
+'   ""    : 그 밖의 폴더
+Function DirKind(S As Dictionary(Of String, Object), nm As String) As String
+    If nm.Contains("하부조립도") Then Return "SUBS"
+    For Each k As String In CfgList(S, "PURCHKEYS")
+        If nm.Contains(k) Then Return "PURCH"
+    Next
+    If nm.Contains("조립도") Then Return "ASM"
+    If nm.Contains("부품도") OrElse nm.Contains("가공품") Then Return "PART"
+    Return ""
+End Function
+
+' 하부 유닛 폴더 : 번호가 붙어 있고(00 제외) 분류 폴더가 아닌 것.  "03. Stack Stage"
+Function IsSubUnitDir(S As Dictionary(Of String, Object), nm As String) As Boolean
+    Dim num As String = LeadingNumber(nm)
+    If num = "" OrElse num = "00" Then Return False
+    If DirKind(S, nm) <> "" Then Return False
+    If nm.Contains("미분류") OrElse nm.Contains("자재") OrElse nm.Contains("공용부품") Then Return False
+    Return True
 End Function
 
 ' "03. Stack Stage" -> "03", "3 Stage" -> "03", 숫자로 시작하지 않으면 ""
@@ -859,30 +827,6 @@ Function LeadingNumber(nm As String) As String
     Return nm.Substring(0, k).PadLeft(2, "0"c)
 End Function
 
-' 계획 도중 처음 보는 하부 유닛 번호가 나오면 이름을 만들어 둔다
-Function SubName(S As Dictionary(Of String, Object), u As String, nn As String) As String
-    Dim subNames As Dictionary(Of String, String) = GetDict(S, "subNames")
-    Dim key As String = u & "|" & nn
-    If Not subNames.ContainsKey(key) Then
-        Dim code As String = ""
-        If GetDict(S, "unitCode").ContainsKey(u) Then code = GetDict(S, "unitCode")(u)
-        subNames(key) = nn & ". " & code & nn
-        GetList(S, "tempSubNames").Add(u & " \ " & subNames(key))
-        Dim subs As Dictionary(Of String, List(Of String)) = GetDL(S, "unitSubs")
-        If Not subs.ContainsKey(u) Then subs(u) = New List(Of String)
-        If Not subs(u).Contains(nn) Then
-            subs(u).Add(nn)
-            subs(u).Sort()
-        End If
-    End If
-    Return subNames(key)
-End Function
-
-Function UnitLevelOf(S As Dictionary(Of String, Object), u As String) As String
-    If GetDict(S, "unitLevel").ContainsKey(u) Then Return GetDict(S, "unitLevel")(u)
-    Return "00"
-End Function
-
 Function UnitHasSub(S As Dictionary(Of String, Object), u As String) As Boolean
     Dim subs As Dictionary(Of String, List(Of String)) = GetDL(S, "unitSubs")
     Return subs.ContainsKey(u) AndAlso subs(u).Count > 0
@@ -891,11 +835,10 @@ End Function
 
 ' ============================================================================
 '  위치(ctx) -> 폴더
-'   TOP            전체 조립도
-'   UNIT|유닛      유닛 레벨
-'   SUB|유닛|03    하부 유닛
-'   ASIS|폴더      원래 구조 그대로 (99. 자재)
-'   MISC|유닛      99. 미분류
+'   TOP                  전체 조립도
+'   UNIT|유닛            유닛 레벨
+'   SUB|유닛|하부폴더    하부 유닛  (SUB|05. STACK STAGE|03. Stack Stage)
+'   ASIS|폴더            원래 구조 그대로 (99. 자재)
 '  돌려주는 값 : {조립도 폴더, 부품도 폴더, 구매품 폴더}
 ' ============================================================================
 Function CtxDirs(S As Dictionary(Of String, Object), ctx As String) As String()
@@ -907,7 +850,7 @@ Function CtxDirs(S As Dictionary(Of String, Object), ctx As String) As String()
             Dim b As String = System.IO.Path.Combine(dst, "00. 전체 조립도")
             Return New String() {b, System.IO.Path.Combine(b, "부품도"), System.IO.Path.Combine(b, "구매품")}
 
-        Case "UNIT", "MISC"
+        Case "UNIT"
             Dim b As String = System.IO.Path.Combine(dst, p(1))
             If UnitHasSub(S, p(1)) Then
                 Return New String() {System.IO.Path.Combine(b, "01. 조립도"), _
@@ -930,12 +873,76 @@ Function CtxDirs(S As Dictionary(Of String, Object), ctx As String) As String()
     End Select
 End Function
 
-Function SubDir(S As Dictionary(Of String, Object), u As String, nn As String) As String
-    Return System.IO.Path.Combine(CStr(S("DST")), u, "02. 하부조립도", SubName(S, u, nn))
+Function SubDir(S As Dictionary(Of String, Object), u As String, subName As String) As String
+    Return System.IO.Path.Combine(CStr(S("DST")), u, "02. 하부조립도", subName)
 End Function
 
 ' ============================================================================
-'  구매품이 아닌 파일의 위치 정하기
+'  유닛 폴더 안 파일의 새 위치 - 원래 폴더를 새 틀에 그대로 옮겨 담는다
+'   원본 유닛\00. 조립도\X.iam                 -> 유닛\01. 조립도\X.iam
+'   원본 유닛\02. 부품도\개조\Y.ipt             -> 유닛\02. 부품도\개조\Y.ipt
+'   원본 유닛\03. Stack Stage\02. 가공품\Z.ipt  -> 유닛\02. 하부조립도\03. Stack Stage\02. 부품도\Z.ipt
+'   원본 유닛\(참고)\W.ipt                      -> 유닛\(참고)\W.ipt   (분류 폴더가 아니면 그대로)
+'  돌려주는 값 : {ctx, 새 경로, 비고}
+' ============================================================================
+Function LocCtx(S As Dictionary(Of String, Object), f As String) As String()
+    ' {ctx, 하부 유닛 폴더 안쪽이 시작하는 칸 번호}
+    Dim segs() As String = RelSegs(f, CStr(S("SRC")))
+    Dim u As String = segs(0)
+    If segs.Length >= 4 AndAlso DirKind(S, segs(1)) = "SUBS" Then
+        Return New String() {"SUB|" & u & "|" & segs(2), "3"}
+    End If
+    If segs.Length >= 3 AndAlso IsSubUnitDir(S, segs(1)) Then
+        Return New String() {"SUB|" & u & "|" & segs(1), "2"}
+    End If
+    Return New String() {"UNIT|" & u, "1"}
+End Function
+
+Function MapUnitFile(S As Dictionary(Of String, Object), f As String) As String()
+    Dim segs() As String = RelSegs(f, CStr(S("SRC")))
+    Dim u As String = segs(0)
+    Dim nm As String = System.IO.Path.GetFileName(f)
+
+    ' 유닛 조립도 폴더에 섞여 있던 하부 유닛 조립도
+    Dim moveSub As Dictionary(Of String, String) = GetDict(S, "moveSub")
+    If moveSub.ContainsKey(f) Then
+        Dim mc As String = "SUB|" & u & "|" & moveSub(f)
+        Return New String() {mc, System.IO.Path.Combine(CtxDirs(S, mc)(0), nm), "하부 유닛 조립도라 그 하부 유닛 조립도 폴더로"}
+    End If
+
+    Dim lc() As String = LocCtx(S, f)
+    Dim ctx As String = lc(0)
+    Dim i As Integer = CInt(lc(1))
+    Dim cd() As String = CtxDirs(S, ctx)
+
+    Dim baseDir As String
+    If ctx.StartsWith("SUB|") Then
+        baseDir = SubDir(S, u, ctx.Split("|"c)(2))
+    Else
+        baseDir = System.IO.Path.Combine(CStr(S("DST")), u)
+    End If
+
+    Dim remain As Integer = segs.Length - i
+    If remain = 1 Then
+        ' 분류 폴더 없이 바로 들어 있는 파일
+        If Ext(f) = ".iam" Then Return New String() {ctx, System.IO.Path.Combine(cd(0), nm), ""}
+        Return New String() {ctx, System.IO.Path.Combine(cd(1), nm), ""}
+    End If
+
+    Dim rest As String = String.Join("\", segs, i + 1, segs.Length - i - 1)
+    Select Case DirKind(S, segs(i))
+        Case "ASM"
+            Return New String() {ctx, System.IO.Path.Combine(cd(0), rest), ""}
+        Case "PART"
+            Return New String() {ctx, System.IO.Path.Combine(cd(1), rest), ""}
+        Case Else
+            Return New String() {ctx, System.IO.Path.Combine(baseDir, String.Join("\", segs, i, remain)), _
+                                 "분류 폴더(조립도 / 부품도 / 가공품)가 아니라 원래 구조 그대로"}
+    End Select
+End Function
+
+' ============================================================================
+'  구매품이 아닌 파일의 위치(ctx) - 구매품을 어느 구매품 폴더에 넣을지 정할 때 쓴다
 ' ============================================================================
 Function GetCtx(S As Dictionary(Of String, Object), f As String) As String
     Dim memo As Dictionary(Of String, String) = GetDict(S, "ctxMemo")
@@ -954,61 +961,27 @@ Function ComputeCtx(S As Dictionary(Of String, Object), f As String) As String
     End If
 
     If Not IsUnder(f, srcRoot) Then
-        ' 원본 폴더 밖 (다른 프로젝트 폴더 등)
-        Warn(S, f, "원본 폴더 밖의 파일")
-        Dim sc As String = StructCtx(S, f, "")
+        ' 원본 폴더 밖 (다른 프로젝트 폴더 등) - 그 파일을 쓰는 조립도를 따른다
+        Warn(S, f, "원본 폴더 밖의 파일 - 쓰는 곳 기준으로 배치")
+        Dim sc As String = StructCtx(S, f)
         If sc = "" Then Return "TOP"
         Return sc
     End If
 
     Dim segs() As String = RelSegs(f, srcRoot)
     If segs.Length = 1 Then Return "TOP"
-
-    Dim u As String = segs(0)
-    If InList(CfgList(S, "ASIS"), u) Then Return "ASIS|" & u
-
-    Dim code As String = ""
-    If GetDict(S, "unitCode").ContainsKey(u) Then code = GetDict(S, "unitCode")(u)
-
-    Dim p() As String = ParseCode(f)
-    If p IsNot Nothing AndAlso code <> "" Then
-        If String.Equals(p(0), code, StringComparison.OrdinalIgnoreCase) Then
-            If p(1) = "00" OrElse UnitLevelOf(S, u) = p(1) Then Return "UNIT|" & u
-            SubName(S, u, p(1))
-            Return "SUB|" & u & "|" & p(1)
-        End If
-        Warn(S, f, "다른 유닛 도번(" & p(0) & ") - 쓰는 곳 기준으로 배치")
-    End If
-
-    ' 유닛 조립도에서 실행했는데 그 조립도에 도번이 없으면 유닛 조립도로 본다
-    If String.Equals(f, CStr(S("HOST")), StringComparison.OrdinalIgnoreCase) Then Return "UNIT|" & u
-
-    Dim sc2 As String = StructCtx(S, f, u)
-    If sc2 <> "" Then
-        If p Is Nothing Then Warn(S, f, "도번 없음 - 쓰는 곳 기준으로 배치")
-        Return sc2
-    End If
-    Return "MISC|" & u
+    If InList(CfgList(S, "ASIS"), segs(0)) Then Return "ASIS|" & segs(0)
+    Return MapUnitFile(S, f)(0)
 End Function
 
-' 이 파일을 쓰는 조립도(부모)의 위치를 따른다
-Function StructCtx(S As Dictionary(Of String, Object), f As String, myUnit As String) As String
+' 이 파일을 쓰는 조립도(부모)의 위치를 따른다 (원본 폴더 밖 파일만)
+Function StructCtx(S As Dictionary(Of String, Object), f As String) As String
     For Each par As String In ParentsOf(S, f)
         If PurchInfo(S, par) IsNot Nothing Then Continue For
         Dim c As String = GetCtx(S, par)
         If c = "" Then Continue For
-        Dim p() As String = c.Split("|"c)
-        Select Case p(0)
-            Case "TOP", "ASIS"
-                If myUnit <> "" Then Return "UNIT|" & myUnit
-                Return "TOP"
-            Case "MISC"
-                Continue For
-            Case Else
-                If myUnit = "" OrElse String.Equals(p(1), myUnit, StringComparison.OrdinalIgnoreCase) Then Return c
-                Warn(S, f, "다른 유닛(" & p(1) & ") 조립도가 사용")
-                Return "UNIT|" & myUnit
-        End Select
+        If c.StartsWith("ASIS|") Then Return "TOP"
+        Return c
     Next
     Return ""
 End Function
@@ -1016,34 +989,34 @@ End Function
 Function NormalDest(S As Dictionary(Of String, Object), f As String, ctx As String) As String
     Dim srcRoot As String = CStr(S("SRC"))
     Dim dst As String = CStr(S("DST"))
-    Dim p() As String = ctx.Split("|"c)
     Dim nm As String = System.IO.Path.GetFileName(f)
 
-    Select Case p(0)
-        Case "ASIS"
-            Return System.IO.Path.Combine(dst, f.Substring(srcRoot.Length + 1))
-        Case "MISC"
-            Dim segs() As String = RelSegs(f, srcRoot)
-            Return System.IO.Path.Combine(dst, p(1), "99. 미분류", String.Join("\", segs, 1, segs.Length - 1))
-        Case "TOP"
-            Dim dirs() As String = CtxDirs(S, ctx)
-            Dim inRoot As Boolean = String.Equals(System.IO.Path.GetDirectoryName(f), srcRoot, StringComparison.OrdinalIgnoreCase)
-            If Ext(f) = ".iam" OrElse inRoot Then Return System.IO.Path.Combine(dirs(0), nm)
-            Return System.IO.Path.Combine(dirs(1), nm)
-        Case Else
-            Dim dirs() As String = CtxDirs(S, ctx)
-            If Ext(f) = ".iam" Then Return System.IO.Path.Combine(dirs(0), nm)
-            Return System.IO.Path.Combine(dirs(1), nm)
-    End Select
+    If ctx.StartsWith("ASIS|") Then Return System.IO.Path.Combine(dst, f.Substring(srcRoot.Length + 1))
+
+    Dim cd() As String = CtxDirs(S, ctx)
+    If ctx = "TOP" Then
+        Dim inRoot As Boolean = String.Equals(System.IO.Path.GetDirectoryName(f), srcRoot, StringComparison.OrdinalIgnoreCase)
+        If Ext(f) = ".iam" OrElse inRoot Then Return System.IO.Path.Combine(cd(0), nm)
+        Return System.IO.Path.Combine(cd(1), nm)
+    End If
+
+    ' 유닛 폴더 안 파일은 원래 폴더 구조를 따라간다
+    If IsUnder(f, srcRoot) Then Return MapUnitFile(S, f)(1)
+
+    ' 원본 폴더 밖 파일은 쓰는 곳의 조립도 / 부품도 폴더로
+    If Ext(f) = ".iam" Then Return System.IO.Path.Combine(cd(0), nm)
+    Return System.IO.Path.Combine(cd(1), nm)
 End Function
 
-Function CategoryOf(f As String, ctx As String) As String
-    Dim k As String = ctx.Split("|"c)(0)
-    If k = "MISC" Then Return "미분류"
-    If k = "ASIS" Then Return "원래구조"
+' CSV 분류 칸 - 새 위치가 어느 폴더 아래인지로 정한다
+Function CategoryOf(S As Dictionary(Of String, Object), f As String, ctx As String, dst As String) As String
+    If ctx.StartsWith("ASIS|") Then Return "원래구조"
     If IsDrawingExt(f) Then Return "도면"
-    If Ext(f) = ".iam" Then Return "조립도"
-    Return "부품도"
+    Dim cd() As String = CtxDirs(S, ctx)
+    If IsUnder(dst, cd(0)) Then Return "조립도"
+    If IsUnder(dst, cd(1)) Then Return "부품도"
+    If ctx = "TOP" Then Return "조립도"
+    Return "원래구조"
 End Function
 
 
@@ -1072,11 +1045,15 @@ Sub PlaceNormal(S As Dictionary(Of String, Object), f As String)
     Dim ctx As String = GetCtx(S, f)
     Dim dst As String = NormalDest(S, f, ctx)
     Dim buy As String = CtxDirs(S, ctx)(2)
+    If IsUnder(f, CStr(S("SRC"))) AndAlso Not ctx.StartsWith("ASIS|") AndAlso ctx <> "TOP" Then
+        Dim mn As String = MapUnitFile(S, f)(2)
+        If mn <> "" Then Warn(S, f, mn)
+    End If
     ' 유닛에 속하지 않고 전체 조립도에 바로 들어간 부품은 따로 알린다
     If ctx = "TOP" AndAlso Not String.Equals(System.IO.Path.GetDirectoryName(f), CStr(S("SRC")), StringComparison.OrdinalIgnoreCase) Then
         Warn(S, f, TOP_NOTE())
     End If
-    primary(f) = AddPlan(S, "N", f, dst, CategoryOf(f, ctx), buy, WarnOf(S, f))
+    primary(f) = AddPlan(S, "N", f, dst, CategoryOf(S, f, ctx, dst), buy, WarnOf(S, f))
 End Sub
 
 Function TOP_NOTE() As String
@@ -1165,7 +1142,6 @@ Sub MakePlan(S As Dictionary(Of String, Object))
     Dim primary As Dictionary(Of String, String) = GetDict(S, "primary")
     Dim graph As List(Of String) = GetList(S, "graph")
     Dim graphSet As HashSet(Of String) = GetSet(S, "graphSet")
-    Dim excluded As List(Of String()) = CType(S("excluded"), List(Of String()))
 
     ' 1) 조립에 쓰이는 파일 (구매품 제외)
     For Each f As String In graph
@@ -1173,7 +1149,7 @@ Sub MakePlan(S As Dictionary(Of String, Object))
         PlaceNormal(S, f)
     Next
 
-    ' 2) 구매품 - 그것을 쓰는 조립도의 구매품 폴더로
+    ' 2) 구매품 - 그것을 쓰는 조립도가 원래 있던 곳(유닛 / 하부 유닛)의 구매품 폴더로
     For Each f As String In graph
         If PurchInfo(S, f) IsNot Nothing Then Continue For
         Dim buy As String = CtxDirs(S, GetCtx(S, f))(2)
@@ -1182,34 +1158,25 @@ Sub MakePlan(S As Dictionary(Of String, Object))
         Next
     Next
 
-    ' 3) 조립에 안 쓰이는 파일 - 대상 유닛 폴더 안의 것 전부
-    Dim drawCands As New List(Of String)
+    ' 3) 조립에 안 쓰이는 파일까지 - 대상 유닛 폴더 안의 것 전부, 원래 구조 그대로
     Dim unitFiles As Dictionary(Of String, List(Of String)) = GetDL(S, "unitFiles")
     For Each u As String In CType(S("targets"), List(Of String))
         If Not unitFiles.ContainsKey(u) Then Continue For
-        Dim code As String = GetDict(S, "unitCode")(u)
         For Each f As String In unitFiles(u)
             If primary.ContainsKey(f) Then Continue For
             If PurchInfo(S, f) IsNot Nothing Then
-                ' 원본의 구매품 폴더에 있었지만 아무도 안 쓰는 것 -> 유닛 구매품 폴더
+                ' 원본의 구매품 / 표준품 폴더에 있었지만 아무도 안 쓰는 것
+                ' -> 그 폴더가 있던 유닛 / 하부 유닛의 구매품 폴더
                 ' (같은 품번 폴더가 이미 복사됐으면 그 안에 같이 들어가 있다)
                 If graphSet.Contains(f) OrElse GetSet(S, "purchPlaced").Contains(f) Then Continue For
-                PlacePurchased(S, f, CtxDirs(S, "UNIT|" & u)(2))
-                Continue For
-            End If
-            If IsDrawingExt(f) Then
-                drawCands.Add(f)
-                Continue For
-            End If
-            Dim p() As String = ParseCode(f)
-            If p IsNot Nothing AndAlso code <> "" AndAlso Not String.Equals(p(0), code, StringComparison.OrdinalIgnoreCase) Then
-                excluded.Add(New String() {f, "다른 유닛 도번(" & p(0) & ")이고 조립에 안 쓰임"})
+                PlacePurchased(S, f, CtxDirs(S, LocCtx(S, f)(0))(2))
                 Continue For
             End If
             PlaceNormal(S, f)
         Next
     Next
 
+    Dim drawCands As New List(Of String)
     If topMode Then
         ' 4) 원본 맨 위 폴더의 파일 (전체 조립도 iam 등)
         For Each f As String In System.IO.Directory.GetFiles(srcRoot)
@@ -1231,7 +1198,7 @@ Sub MakePlan(S As Dictionary(Of String, Object))
         Next
     End If
 
-    ' 6) 도면 - 같은 이름 모델 옆으로
+    ' 6) 도면 - 대상 유닛 밖(다른 유닛, 원본 폴더 밖, 맨 위)에서 가져온 모델의 같은 이름 도면
     Dim models As New List(Of String)(primary.Keys)
     For Each m As String In models
         If Not IsModelExt(m) Then Continue For
@@ -1245,37 +1212,32 @@ Sub MakePlan(S As Dictionary(Of String, Object))
         If primary.ContainsKey(dp) Then Continue For
         If PurchInfo(S, dp) IsNot Nothing Then Continue For      ' 구매품 도면은 품번 폴더와 같이 간다
 
+        ' 유닛 폴더 안이면 원래 구조 그대로 (모델과 같은 폴더였으므로 모델 옆으로 간다)
+        Dim segs() As String = New String() {}
+        If IsUnder(dp, srcRoot) Then segs = RelSegs(dp, srcRoot)
+        If segs.Length > 1 Then
+            PlaceNormal(S, dp)
+            Continue For
+        End If
+
+        ' 원본 폴더 밖이거나 맨 위 폴더 - 같은 이름 모델 옆으로
         Dim modelDst As String = ""
+        Dim modelSrc As String = ""
         For Each me2 As String In New String() {".ipt", ".iam"}
             Dim mp As String = System.IO.Path.ChangeExtension(dp, me2)
             If primary.ContainsKey(mp) Then
                 modelDst = primary(mp)
+                modelSrc = mp
                 Exit For
             End If
         Next
-
         If modelDst <> "" Then
-            Dim ctx As String = GetCtx(S, System.IO.Path.ChangeExtension(dp, System.IO.Path.GetExtension(modelDst)))
             primary(dp) = AddPlan(S, "N", dp, _
                                   System.IO.Path.Combine(System.IO.Path.GetDirectoryName(modelDst), System.IO.Path.GetFileName(dp)), _
-                                  "도면", CtxDirs(S, ctx)(2), "")
-            Continue For
+                                  "도면", CtxDirs(S, GetCtx(S, modelSrc))(2), "")
+        Else
+            PlaceNormal(S, dp)
         End If
-
-        ' 모델이 없는 도면 - 도번으로, 그것도 없으면 미분류
-        If IsUnder(dp, srcRoot) Then
-            Dim segs() As String = RelSegs(dp, srcRoot)
-            If segs.Length > 1 AndAlso Not InList(CfgList(S, "ASIS"), segs(0)) Then
-                Dim code As String = ""
-                If GetDict(S, "unitCode").ContainsKey(segs(0)) Then code = GetDict(S, "unitCode")(segs(0))
-                Dim p() As String = ParseCode(dp)
-                If p IsNot Nothing AndAlso code <> "" AndAlso Not String.Equals(p(0), code, StringComparison.OrdinalIgnoreCase) Then
-                    excluded.Add(New String() {dp, "다른 유닛 도번(" & p(0) & ") 도면이고 모델이 없음"})
-                    Continue For
-                End If
-            End If
-        End If
-        PlaceNormal(S, dp)
     Next
 End Sub
 
@@ -1311,46 +1273,31 @@ Function PlanSummary(S As Dictionary(Of String, Object)) As String
     For Each k As String In order
         msg &= "   " & k & " : " & counts(k) & vbCrLf
     Next
-    msg &= "가져가지 않음 : " & CType(S("excluded"), List(Of String())).Count & "개" & vbCrLf
     msg &= "확인할 것(비고 있음) : " & nWarn & "개" & vbCrLf
     If nTop > 0 Then
         msg &= "  ※ 유닛 밖, 전체 조립도에 바로 들어간 부품 : " & nTop & "개 -> 00. 전체 조립도 안에 넣음" & vbCrLf
     End If
     msg &= "원본에서 이미 끊긴 참조 : " & GetList(S, "missing").Count & "개" & vbCrLf
 
+    Dim tg As List(Of String) = CType(S("targets"), List(Of String))
     Dim codes As String = ""
-    For Each u As String In CType(S("targets"), List(Of String))
-        Dim c As String = ""
-        If GetDict(S, "unitCode").ContainsKey(u) Then c = GetDict(S, "unitCode")(u)
-        If c = "" Then c = "(도번 못 찾음)"
-        Dim nSub As Integer = 0
-        If GetDL(S, "unitSubs").ContainsKey(u) Then nSub = GetDL(S, "unitSubs")(u).Count
-        Dim lv As String = UnitLevelOf(S, u)
-        Dim fromName As String = "유닛 조립도 못 찾음"
-        If GetDict(S, "unitLevelFrom").ContainsKey(u) Then fromName = GetDict(S, "unitLevelFrom")(u)
-        codes &= "   " & u & " : " & c & lv & " (" & fromName & ")"
-        If nSub = 0 Then
-            codes &= " -> 하부조립도 없이 유닛에 바로" & vbCrLf
+    For Each u As String In tg
+        Dim subs As New List(Of String)
+        If GetDL(S, "unitSubs").ContainsKey(u) Then subs = GetDL(S, "unitSubs")(u)
+        If subs.Count = 0 Then
+            codes &= "   " & u & " : 하부조립도 없음 (01. 조립도 / 02. 부품도 / 03. 구매품)" & vbCrLf
         Else
-            codes &= " -> 하부 유닛 " & nSub & "개" & vbCrLf
+            codes &= "   " & u & " : 하부 유닛 " & subs.Count & "개 - " & String.Join(", ", subs.ToArray()) & vbCrLf
         End If
     Next
-    msg &= vbCrLf & "유닛 기호" & vbCrLf & codes
+    msg &= vbCrLf & "유닛 구성" & vbCrLf & codes
 
-    Dim tg As List(Of String) = CType(S("targets"), List(Of String))
     Dim temps As String = ""
     For Each t As String In GetList(S, "tempSubNames")
         If StartsWithUnit(t, tg) Then temps &= "   " & t & vbCrLf
     Next
     If temps <> "" Then
         msg &= vbCrLf & "원본에 하부 유닛 폴더가 없어 임시 이름을 붙인 곳 (직접 이름을 바꾸세요)" & vbCrLf & temps
-    End If
-    Dim diffs As String = ""
-    For Each t As String In GetList(S, "subNameNotes")
-        If StartsWithUnit(t, tg) Then diffs &= "   " & t & vbCrLf
-    Next
-    If diffs <> "" Then
-        msg &= vbCrLf & "폴더 번호와 도번 번호가 다른 곳" & vbCrLf & diffs
     End If
     Return msg
 End Function
