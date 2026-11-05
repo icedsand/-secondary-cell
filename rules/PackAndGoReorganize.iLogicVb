@@ -530,6 +530,7 @@ Sub InitPlanState(S As Dictionary(Of String, Object))
     S("unitFiles") = New Dictionary(Of String, List(Of String))(StringComparer.OrdinalIgnoreCase)
     S("unitSubs") = New Dictionary(Of String, List(Of String))(StringComparer.OrdinalIgnoreCase)
     S("tempSubNames") = New List(Of String)    ' 원본에 폴더가 없어 임시 이름을 붙인 하부 유닛
+    S("usedBy") = NewDict()                     ' 구매품 복사본 -> 그것을 쓰는 조립도 이름
     S("moveSub") = NewDict()                    ' 유닛 조립도 폴더에 섞여 있던 하부 유닛 조립도 -> 하부 유닛 폴더 이름
 
     S("plan") = New List(Of String())           ' {종류 N/P, 원본, 새 위치, 분류, 구매품 폴더, 비고}
@@ -1079,10 +1080,13 @@ Function BuyNote(S As Dictionary(Of String, Object), buy As String) As String
     Return ""
 End Function
 
-Sub PlacePurchased(S As Dictionary(Of String, Object), src As String, buy As String)
+Sub PlacePurchased(S As Dictionary(Of String, Object), src As String, buy As String, Optional usedBy As String = "")
     Dim purchKey As Dictionary(Of String, String) = GetDict(S, "purchKey")
     Dim key As String = src & "|" & buy
-    If purchKey.ContainsKey(key) Then Return
+    If purchKey.ContainsKey(key) Then
+        MarkUsedBy(S, purchKey(key), usedBy)
+        Return
+    End If
 
     Dim pinfo() As String = PurchInfo(S, src)
     If pinfo Is Nothing Then Return
@@ -1106,15 +1110,27 @@ Sub PlacePurchased(S As Dictionary(Of String, Object), src As String, buy As Str
         End If
     End If
     GetSet(S, "purchPlaced").Add(src)
+    MarkUsedBy(S, purchKey(key), usedBy)
 
     ' 구매품 iam 이 다른 구매품을 참조하면 같은 구매품 폴더로
     For Each c As String In ChildrenOf(S, src)
         If PurchInfo(S, c) IsNot Nothing Then
-            PlacePurchased(S, c, buy)
+            PlacePurchased(S, c, buy, System.IO.Path.GetFileName(src))
         Else
             PlaceNormal(S, c)
         End If
     Next
+End Sub
+
+' 이 구매품 복사본을 쓰는 조립도 이름 (CSV 비고에 "사용 : ..." 으로 나온다)
+Sub MarkUsedBy(S As Dictionary(Of String, Object), dst As String, usedBy As String)
+    If usedBy = "" Then Return
+    Dim ub As Dictionary(Of String, String) = GetDict(S, "usedBy")
+    If Not ub.ContainsKey(dst) Then
+        ub(dst) = usedBy
+    ElseIf Not ub(dst).Contains(usedBy) Then
+        ub(dst) = ub(dst) & ", " & usedBy
+    End If
 End Sub
 
 ' 품번 폴더째 복사 (_V 제외)
@@ -1167,7 +1183,7 @@ Sub MakePlan(S As Dictionary(Of String, Object))
         If PurchInfo(S, f) IsNot Nothing Then Continue For
         Dim buy As String = CtxDirs(S, GetCtx(S, f))(2)
         For Each c As String In ChildrenOf(S, f)
-            If PurchInfo(S, c) IsNot Nothing Then PlacePurchased(S, c, buy)
+            If PurchInfo(S, c) IsNot Nothing Then PlacePurchased(S, c, buy, System.IO.Path.GetFileName(f))
         Next
     Next
 
@@ -1305,6 +1321,27 @@ Function PlanSummary(S As Dictionary(Of String, Object)) As String
     Next
     msg &= vbCrLf & "유닛 구성" & vbCrLf & codes
 
+    ' 하부 유닛이 있는 유닛인데 유닛 레벨 부품도 / 구매품에 들어간 파일 - 왜 들어갔는지 보여준다
+    Dim ubs As Dictionary(Of String, String) = GetDict(S, "usedBy")
+    Dim lvl As String = ""
+    Dim nLvl As Integer = 0
+    For Each u As String In tg
+        If Not UnitHasSub(S, u) Then Continue For
+        Dim ud() As String = CtxDirs(S, "UNIT|" & u)
+        For Each it As String() In Plan(S)
+            If Not (IsUnder(it(2), ud(1)) OrElse IsUnder(it(2), ud(2))) Then Continue For
+            nLvl += 1
+            If nLvl > 15 Then Continue For
+            Dim why As String = ""
+            If ubs.ContainsKey(it(2)) Then why = "  <- 사용 : " & ubs(it(2))
+            lvl &= "   " & it(2).Substring(CStr(S("DST")).Length + 1) & why & vbCrLf
+        Next
+    Next
+    If nLvl > 0 Then
+        msg &= vbCrLf & "하부 유닛이 있는데 유닛 레벨 부품도 / 구매품에 들어간 파일 : " & nLvl & "개" & vbCrLf & lvl
+        If nLvl > 15 Then msg &= "   ... 나머지는 CSV 에서 확인" & vbCrLf
+    End If
+
     Dim temps As String = ""
     For Each t As String In GetList(S, "tempSubNames")
         If StartsWithUnit(t, tg) Then temps &= "   " & t & vbCrLf
@@ -1328,8 +1365,11 @@ Sub WritePlanCsv(S As Dictionary(Of String, Object), csvPath As String)
 
     Dim rows As New List(Of String())(Plan(S))
     rows.Sort(Function(a As String(), b As String()) String.Compare(a(2), b(2), StringComparison.OrdinalIgnoreCase))
+    Dim ub As Dictionary(Of String, String) = GetDict(S, "usedBy")
     For Each it As String() In rows
-        sb.AppendLine(CsvField(it(3)) & "," & CsvField(it(2)) & "," & CsvField(it(1)) & "," & CsvField(it(5)))
+        Dim note As String = it(5)
+        If ub.ContainsKey(it(2)) Then note = AddNote(note, "사용 : " & ub(it(2)))
+        sb.AppendLine(CsvField(it(3)) & "," & CsvField(it(2)) & "," & CsvField(it(1)) & "," & CsvField(note))
     Next
     For Each ex As String() In CType(S("excluded"), List(Of String()))
         sb.AppendLine(CsvField("제외") & "," & CsvField("") & "," & CsvField(ex(0)) & "," & CsvField(ex(1)))
@@ -1359,7 +1399,12 @@ Function ExecuteCopy(S As Dictionary(Of String, Object)) As String
     If CBool(S("TOPMODE")) Then mk.Add(CtxDirs(S, "TOP")(0))
     For Each u As String In CType(S("targets"), List(Of String))
         Dim ud() As String = CtxDirs(S, "UNIT|" & u)
-        mk.Add(ud(0)) : mk.Add(ud(1)) : mk.Add(ud(2))
+        mk.Add(ud(0))
+        ' 하부 유닛이 있는 유닛은 01. 조립도 / 02. 하부조립도 만 미리 만든다.
+        ' 유닛 레벨 부품도 / 구매품은 실제로 들어갈 파일이 있을 때만 복사하면서 생긴다.
+        If Not UnitHasSub(S, u) Then
+            mk.Add(ud(1)) : mk.Add(ud(2))
+        End If
         ipjDirs.Add(System.IO.Path.Combine(dst, u))
         If GetDL(S, "unitSubs").ContainsKey(u) Then
             For Each nn As String In GetDL(S, "unitSubs")(u)
