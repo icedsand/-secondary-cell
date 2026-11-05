@@ -108,6 +108,8 @@ Sub Main()
     Dim COMMON_KEYWORDS As String = "와셔|WASHER"
     ' 원본 폴더 이름에 이 글자가 있으면 구매품 폴더로 본다
     Dim PURCH_DIR_KEYS  As String = "구매품|표준품"
+    ' 다른 프로젝트에서 가져온 조립도(조립도와 그 가공품이 둘 다 원본 폴더 밖)를 모을 유닛 안 폴더
+    Dim OTHER_PROJ_DIR  As String = "99. 타프로젝트"
     ' 가져가지 않을 폴더 이름
     Dim SKIP_DIRS       As String = "_V|OldVersions"
     ' ────────────────────────────────────────────────────────────────────────
@@ -125,6 +127,7 @@ Sub Main()
     S("COMKEYS") = SplitList(COMMON_KEYWORDS)
     S("SKIPDIRS") = SplitList(SKIP_DIRS)
     S("PURCHKEYS") = SplitList(PURCH_DIR_KEYS)
+    S("OTHERDIR") = OTHER_PROJ_DIR
     S("LOGDIR") = System.IO.Path.Combine(CStr(S("DST")), "_정리로그")
 
     Dim MODE_PREVIEW As String = "1. 미리보기  - 어디로 갈지 목록(CSV)만 만든다"
@@ -480,9 +483,79 @@ Function PurchInfo(S As Dictionary(Of String, Object), p As String) As String()
                 Return New String() {System.IO.Path.Combine(baseDir, first), String.Join("\", segs, k + 1, rest)}
             End If
         Next
+        Return Nothing
+    End If
+
+    ' 원본 폴더 밖, 라이브러리 밖 (다른 프로젝트 폴더 등)
+    '  도번 꼴(GMKS-ST2601-EML02-01B)이 아니고 도번 꼴 부품으로 된 조립도도 아니면 구매품
+    If Ext(p) = ".ipt" OrElse Ext(p) = ".iam" Then
+        If Not IsMachined(S, p) Then
+            If HasKeyword(S, fileName) Then Return New String() {"", "공용부품\" & fileName}
+            Return New String() {"", fileName}
+        End If
     End If
 
     Return Nothing
+End Function
+
+' ----------------------------------------------------------------------------
+'  도번 꼴이면 프로젝트 부분을 돌려준다. 아니면 ""
+'   GMKS-ST2601-EML02-01B          -> "GMKS-ST2601"
+'   JSKC-NS2402-NMG02-500_H사 ...  -> "JSKC-NS2402"
+'   MAGAZINE_H-PJT_양극, 6204ZZ    -> ""
+'  [영문 2~6][-][영문 1~4 + 숫자 2~6][-][영문 2~6 + 숫자 2 + 리비전 영문 0~2] 로 시작
+' ----------------------------------------------------------------------------
+Function ProjectOf(fileName As String) As String
+    Dim segs() As String = System.IO.Path.GetFileNameWithoutExtension(fileName).Split("-"c)
+    If segs.Length < 3 Then Return ""
+
+    Dim s0 As String = segs(0).Trim().ToUpperInvariant()
+    If s0.Length < 2 OrElse s0.Length > 6 Then Return ""
+    For Each c As Char In s0
+        If c < "A"c OrElse c > "Z"c Then Return ""
+    Next
+
+    Dim s1 As String = segs(1).Trim().ToUpperInvariant()
+    Dim k As Integer = 0
+    Do While k < s1.Length AndAlso s1(k) >= "A"c AndAlso s1(k) <= "Z"c
+        k += 1
+    Loop
+    Dim nd As Integer = s1.Length - k
+    If k < 1 OrElse k > 4 OrElse nd < 2 OrElse nd > 6 Then Return ""
+    For i As Integer = k To s1.Length - 1
+        If s1(i) < "0"c OrElse s1(i) > "9"c Then Return ""
+    Next
+
+    ' 세 번째 칸이 유닛 기호 + 번호 (EML02, NMG02, SST00(구조변경신규))
+    Dim p() As String = ParseCode("x-" & segs(2) & ".ipt")
+    If p Is Nothing Then Return ""
+    Return s0 & "-" & s1
+End Function
+
+' 가공품(또는 가공품 조립도)인가 - 구매품이 아닌가
+'   이름이 도번 꼴이면 가공품
+'   조립도 이름이 도번 꼴이 아니어도, 안의 부품이 도번 꼴이면 가공품 조립도
+Function IsMachined(S As Dictionary(Of String, Object), p As String) As Boolean
+    If ProjectOf(p) <> "" Then Return True
+    If Ext(p) <> ".iam" Then Return False
+    Dim memo As Dictionary(Of String, String) = GetDict(S, "machMemo")
+    If memo.ContainsKey(p) Then Return memo(p) = "1"
+    memo(p) = "0"                                ' 계산 중 (순환 방지)
+    Dim r As Boolean = False
+    For Each c As String In ChildrenOf(S, p)
+        If IsUnder(c, CStr(S("LIB"))) Then Continue For
+        If IsMachined(S, c) Then
+            r = True
+            Exit For
+        End If
+    Next
+    memo(p) = If(r, "1", "0")
+    Return r
+End Function
+
+' 원본 폴더 밖, 라이브러리 밖
+Function IsOutside(S As Dictionary(Of String, Object), p As String) As Boolean
+    Return Not IsUnder(p, CStr(S("SRC"))) AndAlso Not IsUnder(p, CStr(S("LIB")))
 End Function
 
 Function OpenWithShell(p As String) As Boolean
@@ -539,6 +612,8 @@ Sub InitPlanState(S As Dictionary(Of String, Object))
     S("moveSub") = NewDict()                    ' 유닛 조립도 폴더에 섞여 있던 하부 유닛 조립도 -> 하부 유닛 폴더 이름
     S("extParent") = NewDict()                  ' 원본 폴더 밖 파일 -> 그것을 조립한 조립도
     S("destMemo") = NewDict()                   ' 파일 -> 새 위치 (계산 중 순환 방지)
+    S("machMemo") = NewDict()                   ' 조립도 -> 가공품 조립도인가 ("1"/"0")
+    S("otherGroups") = New List(Of String)      ' 다른 프로젝트 조립도 묶음 폴더
 
     S("plan") = New List(Of String())           ' {종류 N/P, 원본, 새 위치, 분류, 구매품 폴더, 비고}
     S("dstOwner") = NewDict()                   ' 새 위치 -> 원본 (겹침 검사)
@@ -888,6 +963,9 @@ Function CtxDirs(S As Dictionary(Of String, Object), ctx As String) As String()
                                  System.IO.Path.Combine(sb, "02. 부품도"), _
                                  System.IO.Path.Combine(sb, "03. 구매품")}
 
+        Case "GRP"  ' 다른 프로젝트 조립도 묶음 - 조립도 / 가공품은 묶음 폴더에, 구매품은 그 안 구매품 폴더에
+            Return New String() {p(1), p(1), System.IO.Path.Combine(p(1), "구매품")}
+
         Case Else   ' ASIS
             Dim b As String = System.IO.Path.Combine(dst, p(1))
             Return New String() {b, b, System.IO.Path.Combine(b, "구매품")}
@@ -985,8 +1063,29 @@ Function ComputeCtx(S As Dictionary(Of String, Object), f As String) As String
         ' 원본 폴더 밖 (다른 프로젝트 폴더 등) - 그 파일을 쓰는 조립도를 따른다
         Dim sc As String = StructCtx(S, f)
         Dim ep As Dictionary(Of String, String) = GetDict(S, "extParent")
+        Dim prj As String = ProjectOf(f)
+        If prj = "" Then prj = "도번 없음"
+
+        ' 조립도와 그 가공품이 둘 다 원본 폴더 밖 (다른 프로젝트 조립도를 통째로 가져옴)
+        '  -> 그것을 쓰는 유닛 안 "99. 타프로젝트\조립도 이름" 에 모은다
+        '     안의 가공품 / 도면 / 구매품도 이 묶음 폴더로 따라온다
+        If Ext(f) = ".iam" AndAlso ep.ContainsKey(f) AndAlso Not IsOutside(S, ep(f)) Then
+            Dim gBase As String
+            Dim pp() As String = (sc & "|").Split("|"c)
+            If pp(0) = "UNIT" OrElse pp(0) = "SUB" Then
+                gBase = System.IO.Path.Combine(CStr(S("DST")), pp(1), CStr(S("OTHERDIR")))
+            Else
+                gBase = System.IO.Path.Combine(CtxDirs(S, "TOP")(0), CStr(S("OTHERDIR")))
+            End If
+            Dim g As String = System.IO.Path.Combine(gBase, System.IO.Path.GetFileNameWithoutExtension(f))
+            If Not GetList(S, "otherGroups").Contains(g) Then GetList(S, "otherGroups").Add(g)
+            Warn(S, f, "다른 프로젝트 조립도(" & prj & ") - " & CStr(S("OTHERDIR")) & " 에 묶음으로 (사용 : " & _
+                       System.IO.Path.GetFileName(ep(f)) & ")")
+            Return "GRP|" & g
+        End If
+
         If ep.ContainsKey(f) Then
-            Warn(S, f, "원본 폴더 밖 파일 - 이것을 조립한 " & System.IO.Path.GetFileName(ep(f)) & " 와 같은 폴더로")
+            Warn(S, f, "원본 폴더 밖 가공품(" & prj & ") - 이것을 조립한 " & System.IO.Path.GetFileName(ep(f)) & " 와 같은 폴더로")
         Else
             Warn(S, f, "원본 폴더 밖 파일 - 쓰는 조립도를 못 찾음")
         End If
@@ -1047,6 +1146,9 @@ Function NormalDest(S As Dictionary(Of String, Object), f As String, ctx As Stri
     '   ...\02. Magazine\02. 가공품\노칭용 매거진\MAGAZINE_H-PJT_양극.iam 이 쓰는 바깥 가공품
     '   -> ...\02. Magazine\02. 부품도\노칭용 매거진\
     Dim ep As Dictionary(Of String, String) = GetDict(S, "extParent")
+    If ctx.StartsWith("GRP|") AndAlso ep.ContainsKey(f) AndAlso Not IsOutside(S, ep(f)) Then
+        Return System.IO.Path.Combine(cd(0), nm)
+    End If
     If ep.ContainsKey(f) Then
         Dim pd As String = DestOf(S, ep(f))
         If pd <> "" Then Return System.IO.Path.Combine(System.IO.Path.GetDirectoryName(pd), nm)
@@ -1060,6 +1162,7 @@ End Function
 ' CSV 분류 칸 - 새 위치가 어느 폴더 아래인지로 정한다
 Function CategoryOf(S As Dictionary(Of String, Object), f As String, ctx As String, dst As String) As String
     If ctx.StartsWith("ASIS|") Then Return "원래구조"
+    If ctx.StartsWith("GRP|") Then Return "타프로젝트"
     If IsDrawingExt(f) Then Return "도면"
     Dim cd() As String = CtxDirs(S, ctx)
     If IsUnder(dst, cd(0)) Then Return "조립도"
@@ -1377,6 +1480,14 @@ Function PlanSummary(S As Dictionary(Of String, Object)) As String
         If nLvl > 15 Then msg &= "   ... 나머지는 CSV 에서 확인" & vbCrLf
     End If
 
+    Dim grps As List(Of String) = GetList(S, "otherGroups")
+    If grps.Count > 0 Then
+        msg &= vbCrLf & "다른 프로젝트에서 통째로 가져온 조립도 묶음 : " & grps.Count & "개" & vbCrLf
+        For Each g As String In grps
+            msg &= "   " & g.Substring(CStr(S("DST")).Length + 1) & vbCrLf
+        Next
+    End If
+
     Dim temps As String = ""
     For Each t As String In GetList(S, "tempSubNames")
         If StartsWithUnit(t, tg) Then temps &= "   " & t & vbCrLf
@@ -1594,6 +1705,7 @@ End Function
 Sub DoRelink(S As Dictionary(Of String, Object))
     Dim TTL As String = CStr(S("TTL")) & " - 재연결"
     Dim dst As String = CStr(S("DST"))
+    InitPlanState(S)       ' PurchInfo 가 쓰는 빈 상태 (조립 구조는 없음)
     Dim logDir As String = CStr(S("LOGDIR"))
     Dim mapPath As String = System.IO.Path.Combine(logDir, "copy_map.tsv")
     Dim jobPath As String = System.IO.Path.Combine(logDir, "relink_jobs.tsv")
@@ -1864,7 +1976,10 @@ Function MapRef(S As Dictionary(Of String, Object), oldRef As String, buy As Str
     End If
     If src = "" Then Return ""
 
-    ' 2) 구매품이면 이 파일의 구매품 폴더에 있는 복사본
+    ' 2) 가공품으로 복사한 것이면 그 위치
+    If primary.ContainsKey(src) Then Return primary(src)
+
+    ' 3) 구매품이면 이 파일의 구매품 폴더에 있는 복사본
     Dim pinfo() As String = PurchInfo(S, src)
     If pinfo IsNot Nothing Then
         If buy <> "" Then
