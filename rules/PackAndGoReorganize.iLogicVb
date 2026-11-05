@@ -1,0 +1,1740 @@
+' ============================================================================
+'  Inventor iLogic Rule : Pack and Go 폴더 정리(made by pjh)
+'
+'  Pack and Go 로 꺼낸 프로젝트를 유닛별 폴더 규칙에 맞춰 새 위치에 다시
+'  짜 넣는다. 라이브러리를 보고 있던 구매품은 쓰는 유닛 / 하부 유닛의
+'  구매품 폴더로 복사하고, 모든 참조를 새 위치로 다시 연결한다.
+'  파일 이름은 하나도 바꾸지 않는다. 원본은 건드리지 않는다.
+'
+'  [결과 구조]
+'   <결과>\01. GM SAMPLE STACKING 검토\
+'    ├─ 01. GM SAMPLE STACKING 검토.ipj
+'    ├─ 00. 전체 조립도\            전체 조립도 iam
+'    │   ├─ 부품도\                 유닛에 속하지 않는 부품 (있으면 로그에 표시)
+'    │   └─ 구매품\
+'    ├─ 99. 자재\                   원래 구조 그대로
+'    └─ 05. STACK STAGE\            유닛 (이름 그대로)
+'        ├─ 05. STACK STAGE.ipj
+'        ├─ 01. 조립도\             SST00 iam
+'        ├─ 02. 하부조립도\          (ipj 없음)
+'        │   └─ 03. Stack Stage\     하부 유닛 (기존 폴더 이름, 없으면 iam 이름)
+'        │       ├─ 03. Stack Stage.ipj
+'        │       ├─ 01. 조립도\      SST03A + 그 안의 하위 iam 전부 (iam 없으면 안 만듦)
+'        │       ├─ 02. 부품도\      SST03-xx 가공품 ipt / idw / 미러
+'        │       └─ 03. 구매품\      품번 폴더째 복사 (_V 제외)
+'        │           └─ 공용부품\    볼트 / 너트 / 와셔
+'        ├─ 03. 부품도\             SST00-xx 가공품
+'        ├─ 04. 구매품\             유닛 조립도에 바로 들어간 구매품
+'        └─ 99. 미분류\             도번도 없고 어디에도 안 쓰인 파일
+'   하부 유닛이 없는 유닛은 01. 조립도 / 02. 부품도 / 03. 구매품
+'
+'  [분류 규칙]
+'   - 도번 GMKS-ST2601-SST03-10A 에서 SST 가 유닛 기호, 03 이 하부 유닛 번호
+'       00            -> 유닛 레벨
+'       01, 02 ...    -> 그 번호의 하부 유닛
+'     유닛 기호는 유닛 폴더 안 파일 이름에서 가장 많이 나오는 것으로 정한다
+'     (SST00 처럼 00 번 iam 이 있으면 그것을 우선한다)
+'   - 도번이 없거나 다른 유닛 기호면 조립 구조로 정한다 (그 파일을 쓰는
+'     조립도와 같은 곳). 어디에도 안 쓰였으면
+'       도번 없음          -> 99. 미분류
+'       다른 유닛 기호     -> 가져가지 않음 (로그에 "제외")
+'   - 구매품 : 라이브러리(04. Library) 또는 원본의 "구매품" 폴더에 있는 파일
+'       Library\[제작사]\[종류]\[품번 폴더]\...  -> 품번 폴더째 복사
+'       Library\[제작사]\[종류]\파일             -> 파일만 복사
+'       Z. BOLT / Z. NUT / Z. WASHER, 이름에 와셔 / WASHER -> 공용부품\
+'     같은 구매품을 여러 하부 유닛이 쓰면 하부 유닛마다 복사한다.
+'   - 도면(idw / dwg) 은 같은 이름의 모델과 같은 폴더로 간다.
+'
+'  [사용법] - 세 단계
+'   1) 미리보기 : 원본 전체 조립도(또는 유닛 조립도)를 열고 실행
+'                 -> 어떤 파일이 어디로 가는지 CSV 로 만든다. 아무것도 복사 안 함
+'   2) 복사     : 같은 조립도에서 실행
+'                 -> 파일 복사 + 프로젝트 파일(ipj) 생성. 참조는 아직 원본을 봄
+'   3) 재연결   : 모든 파일 닫기 -> 새 ipj 활성화 -> 새 부품(빈 문서) 열고 실행
+'                 -> 복사본 안의 참조를 전부 새 위치로 바꾸고 저장
+'
+'  [안전 원칙]
+'   - 원본 폴더와 라이브러리는 읽기만 한다
+'   - 결과 위치에 같은 파일이 이미 있으면 덮어쓰지 않고 건너뛴다
+'     (중간에 멈췄을 때 다시 돌려도 이어서 된다)
+'   - 재연결은 결과 위치의 파일만 열고 저장한다
+'
+'  [Inventor 2026 주의]
+'   - 정규식(Regex), Using 문을 쓰지 않는다
+'   - 폼을 쓰지 않는다 (MessageBox / InputListBox 만)
+'
+'  [iLogic 문법 주의]
+'   Inventor 네임스페이스에도 Path / File 타입이 있으므로
+'   System.IO.Path 처럼 반드시 풀네임으로 씁니다.
+'   Sub / Function 바깥에는 Const, Dim 선언을 둘 수 없습니다.
+'   그래서 공유하는 값은 전부 사전 S 하나에 담아 넘깁니다.
+' ============================================================================
+
+
+Sub Main()
+
+    ' ── 설정 ────────────────────────────────────────────────────────────────
+    ' 원본 : 전체 조립도 iam 과 유닛 폴더들이 있는 폴더
+    Dim SRC_ROOT As String = "O:\새 폴더\Workspaces\작업공간\B5. 개발설계TF 폴더 (아산)\01. GM SAMPLE STACKING 검토"
+    ' Pack and Go 로 같이 복사된 라이브러리
+    Dim LIB_ROOT As String = "O:\새 폴더\Workspaces\작업공간\04. Library"
+    ' 결과를 만들 곳. 이 아래에 원본 폴더 이름(01. GM SAMPLE STACKING 검토)으로 만든다
+    Dim DST_BASE As String = "O:\스태킹 PAG"
+
+    ' 유닛 규칙을 적용하지 않고 원래 구조 그대로 옮길 폴더 ( | 로 구분)
+    Dim ASIS_FOLDERS    As String = "99. 자재"
+    ' 라이브러리 바로 아래에서 공용부품으로 볼 폴더
+    Dim COMMON_LIB_DIRS As String = "Z. BOLT|Z. NUT|Z. WASHER"
+    ' 파일 / 폴더 이름에 이 글자가 있으면 공용부품
+    Dim COMMON_KEYWORDS As String = "와셔|WASHER"
+    ' 가져가지 않을 폴더 이름
+    Dim SKIP_DIRS       As String = "_V|OldVersions"
+    ' ────────────────────────────────────────────────────────────────────────
+
+    Dim TTL As String = "Pack and Go 폴더 정리"
+
+    Dim S As New Dictionary(Of String, Object)
+    S("TTL") = TTL
+    S("SRC") = NormDir(SRC_ROOT)
+    S("LIB") = NormDir(LIB_ROOT)
+    S("ROOTNAME") = System.IO.Path.GetFileName(CStr(S("SRC")))
+    S("DST") = System.IO.Path.Combine(NormDir(DST_BASE), CStr(S("ROOTNAME")))
+    S("ASIS") = SplitList(ASIS_FOLDERS)
+    S("COMDIRS") = SplitList(COMMON_LIB_DIRS)
+    S("COMKEYS") = SplitList(COMMON_KEYWORDS)
+    S("SKIPDIRS") = SplitList(SKIP_DIRS)
+    S("LOGDIR") = System.IO.Path.Combine(CStr(S("DST")), "_정리로그")
+
+    Dim MODE_PREVIEW As String = "1. 미리보기  - 어디로 갈지 목록(CSV)만 만든다"
+    Dim MODE_COPY    As String = "2. 복사      - 파일 복사 + 프로젝트 파일 생성"
+    Dim MODE_RELINK  As String = "3. 재연결    - 새 프로젝트에서 참조를 새 위치로"
+
+    Dim modes As New List(Of String)
+    modes.Add(MODE_PREVIEW)
+    modes.Add(MODE_COPY)
+    modes.Add(MODE_RELINK)
+
+    Dim sel = InputListBox("실행할 단계를 고르세요." & vbCrLf & vbCrLf & _
+                           "원본 : " & CStr(S("SRC")) & vbCrLf & _
+                           "결과 : " & CStr(S("DST")), _
+                           modes.ToArray(), MODE_PREVIEW, Title:=TTL, ListName:="단계")
+    If sel Is Nothing Then Return
+    Dim mode As String = CStr(sel)
+
+    If mode = MODE_RELINK Then
+        DoRelink(S)
+        Return
+    End If
+
+    Dim isCopy As Boolean = (mode = MODE_COPY)
+
+    '--- 1) 실행 조건 확인 ---------------------------------------------------
+    If Not System.IO.Directory.Exists(CStr(S("SRC"))) Then
+        MessageBox.Show("원본 폴더가 없습니다." & vbCrLf & CStr(S("SRC")) & vbCrLf & vbCrLf & _
+                        "규칙 맨 위 설정의 SRC_ROOT 를 확인하세요.", TTL)
+        Return
+    End If
+
+    Dim host As Inventor.Document = Nothing
+    Try
+        host = ThisApplication.ActiveDocument
+    Catch
+        host = Nothing
+    End Try
+
+    If host Is Nothing OrElse host.DocumentType <> Inventor.DocumentTypeEnum.kAssemblyDocumentObject Then
+        MessageBox.Show("원본 전체 조립도(또는 유닛 조립도)를 열고 실행하세요.", TTL)
+        Return
+    End If
+
+    Dim hostPath As String = host.FullFileName
+    If Not IsUnder(hostPath, CStr(S("SRC"))) Then
+        MessageBox.Show("열려 있는 조립도가 원본 폴더 안에 있지 않습니다." & vbCrLf & vbCrLf & _
+                        "조립도 : " & hostPath & vbCrLf & _
+                        "원본   : " & CStr(S("SRC")), TTL)
+        Return
+    End If
+
+    Dim hostSegs() As String = RelSegs(hostPath, CStr(S("SRC")))
+    Dim topMode As Boolean = (hostSegs.Length = 1)
+    If Not topMode AndAlso InList(CfgList(S, "ASIS"), hostSegs(0)) Then
+        MessageBox.Show(hostSegs(0) & " 폴더는 원래 구조 그대로 옮기는 폴더입니다." & vbCrLf & _
+                        "전체 조립도나 유닛 조립도에서 실행하세요.", TTL)
+        Return
+    End If
+
+    S("HOST") = hostPath
+    S("TOPMODE") = topMode
+
+    If IsUnder(CStr(S("DST")), CStr(S("SRC"))) OrElse IsUnder(CStr(S("SRC")), CStr(S("DST"))) Then
+        MessageBox.Show("결과 위치와 원본 위치가 겹칩니다. 설정을 확인하세요.", TTL)
+        Return
+    End If
+
+    '--- 2) 계획 세우기 ------------------------------------------------------
+    InitPlanState(S)
+
+    Try
+        ThisApplication.StatusBarText = TTL & " : 조립 구조 읽는 중..."
+        BuildGraph(S, host)
+
+        ThisApplication.StatusBarText = TTL & " : 유닛 폴더 읽는 중..."
+        Dim targets As New List(Of String)
+        AnalyzeUnits(S)
+        If topMode Then
+            targets.AddRange(CType(S("units"), List(Of String)))
+        Else
+            targets.Add(hostSegs(0))
+        End If
+        S("targets") = targets
+
+        ThisApplication.StatusBarText = TTL & " : 배치 계획 세우는 중..."
+        MakePlan(S)
+    Catch ex As Exception
+        ThisApplication.StatusBarText = ""
+        MessageBox.Show("계획을 세우다가 오류가 났습니다." & vbCrLf & vbCrLf & ex.Message, TTL)
+        Return
+    End Try
+    ThisApplication.StatusBarText = ""
+
+    '--- 3) 미리보기 CSV ----------------------------------------------------
+    Dim summary As String = PlanSummary(S)
+    Dim csvPath As String = ""
+    Try
+        System.IO.Directory.CreateDirectory(CStr(S("LOGDIR")))
+        csvPath = System.IO.Path.Combine(CStr(S("LOGDIR")), _
+                  "미리보기_" & DateTime.Now.ToString("yyyyMMdd_HHmmss") & ".csv")
+        WritePlanCsv(S, csvPath)
+    Catch ex As Exception
+        MessageBox.Show("미리보기 CSV 를 쓰지 못했습니다." & vbCrLf & ex.Message, TTL)
+        csvPath = ""
+    End Try
+
+    If Not isCopy Then
+        Dim msg As String = summary & vbCrLf & vbCrLf & _
+                            "목록 : " & csvPath & vbCrLf & vbCrLf & _
+                            "아무 파일도 복사하지 않았습니다." & vbCrLf & _
+                            "CSV 를 지금 열까요?"
+        If csvPath <> "" AndAlso MessageBox.Show(msg, TTL & " - 미리보기", MessageBoxButtons.YesNo) = DialogResult.Yes Then
+            OpenWithShell(csvPath)
+        End If
+        Return
+    End If
+
+    '--- 4) 복사 ------------------------------------------------------------
+    Dim ask As String = summary & vbCrLf & vbCrLf & _
+                        "목록 : " & csvPath & vbCrLf & vbCrLf & _
+                        "결과 위치로 복사하고 프로젝트 파일을 만듭니다." & vbCrLf & _
+                        "원본은 건드리지 않습니다. 이미 있는 파일은 건너뜁니다." & vbCrLf & vbCrLf & _
+                        "진행할까요?"
+    If MessageBox.Show(ask, TTL & " - 복사 확인", MessageBoxButtons.OKCancel) <> DialogResult.OK Then Return
+
+    Dim report As String = ExecuteCopy(S)
+    MessageBox.Show(report, TTL & " - 복사 완료")
+
+End Sub
+
+
+' ============================================================================
+'  공통 도구
+' ============================================================================
+Function NormDir(p As String) As String
+    If String.IsNullOrWhiteSpace(p) Then Return ""
+    Dim r As String = p.Trim()
+    Try
+        r = System.IO.Path.GetFullPath(r)
+    Catch
+    End Try
+    Return r.TrimEnd("\"c)
+End Function
+
+Function IsUnder(p As String, root As String) As Boolean
+    If String.IsNullOrEmpty(p) OrElse String.IsNullOrEmpty(root) Then Return False
+    Return p.StartsWith(root & "\", StringComparison.OrdinalIgnoreCase)
+End Function
+
+' root 아래 경로를 폴더 단계별로 자른다. 마지막 칸이 파일 이름
+Function RelSegs(p As String, root As String) As String()
+    Return p.Substring(root.Length + 1).Split("\"c)
+End Function
+
+Function SplitList(s As String) As List(Of String)
+    Dim r As New List(Of String)
+    For Each t As String In s.Split("|"c)
+        If t.Trim() <> "" Then r.Add(t.Trim())
+    Next
+    Return r
+End Function
+
+Function CfgList(S As Dictionary(Of String, Object), key As String) As List(Of String)
+    Return CType(S(key), List(Of String))
+End Function
+
+Function InList(lst As List(Of String), v As String) As Boolean
+    For Each t As String In lst
+        If String.Equals(t, v, StringComparison.OrdinalIgnoreCase) Then Return True
+    Next
+    Return False
+End Function
+
+Function HasKeyword(S As Dictionary(Of String, Object), text As String) As Boolean
+    For Each k As String In CfgList(S, "COMKEYS")
+        If text.IndexOf(k, StringComparison.OrdinalIgnoreCase) >= 0 Then Return True
+    Next
+    Return False
+End Function
+
+Function Ext(p As String) As String
+    Return System.IO.Path.GetExtension(p).ToLowerInvariant()
+End Function
+
+Function IsDrawingExt(p As String) As Boolean
+    Dim e As String = Ext(p)
+    Return e = ".idw" OrElse e = ".dwg"
+End Function
+
+Function IsModelExt(p As String) As Boolean
+    Dim e As String = Ext(p)
+    Return e = ".ipt" OrElse e = ".iam"
+End Function
+
+Function NewDict() As Dictionary(Of String, String)
+    Return New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase)
+End Function
+
+Function NewSet() As HashSet(Of String)
+    Return New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+End Function
+
+Function AddNote(note As String, more As String) As String
+    If String.IsNullOrEmpty(note) Then Return more
+    If note.Contains(more) Then Return note
+    Return note & " / " & more
+End Function
+
+' 가져가지 않을 파일 : _V / OldVersions 폴더, 잠금 파일, 프로젝트 파일
+Function IsSkipped(S As Dictionary(Of String, Object), p As String) As Boolean
+    Dim skipDirs As List(Of String) = CfgList(S, "SKIPDIRS")
+    Dim segs() As String = p.Split("\"c)
+    For i As Integer = 0 To segs.Length - 2
+        If InList(skipDirs, segs(i)) Then Return True
+    Next
+    Dim nm As String = System.IO.Path.GetFileName(p)
+    If nm.StartsWith("~$") Then Return True
+    If String.Equals(nm, "Thumbs.db", StringComparison.OrdinalIgnoreCase) Then Return True
+    If String.Equals(nm, "desktop.ini", StringComparison.OrdinalIgnoreCase) Then Return True
+    Dim e As String = Ext(p)
+    If e = ".ipj" OrElse e = ".lck" OrElse e = ".dwl" OrElse e = ".dwl2" Then Return True
+    Return False
+End Function
+
+' 폴더 아래 파일 전부 (가져가지 않을 폴더는 들어가지 않는다)
+Function EnumFiles(S As Dictionary(Of String, Object), dir As String) As List(Of String)
+    Dim result As New List(Of String)
+    Dim stack As New List(Of String)
+    stack.Add(dir)
+    Dim skipDirs As List(Of String) = CfgList(S, "SKIPDIRS")
+
+    Do While stack.Count > 0
+        Dim cur As String = stack(stack.Count - 1)
+        stack.RemoveAt(stack.Count - 1)
+        Try
+            Dim files() As String = System.IO.Directory.GetFiles(cur)
+            Array.Sort(files, StringComparer.OrdinalIgnoreCase)
+            For Each f As String In files
+                If Not IsSkipped(S, f) Then result.Add(f)
+            Next
+            Dim subs() As String = System.IO.Directory.GetDirectories(cur)
+            Array.Sort(subs, StringComparer.OrdinalIgnoreCase)
+            For i As Integer = subs.Length - 1 To 0 Step -1
+                If Not InList(skipDirs, System.IO.Path.GetFileName(subs(i))) Then stack.Add(subs(i))
+            Next
+        Catch
+        End Try
+    Loop
+    Return result
+End Function
+
+' ----------------------------------------------------------------------------
+'  도번 해석. GMKS-ST2601-SST03-10A -> {"SST", "03", "10A"}
+'  하이픈으로 자른 칸 중 [영문 2~6자][숫자 2자리][리비전 영문 0~2자] 꼴인
+'  첫 칸을 찾는다. ST2601 은 숫자가 4자리라 걸리지 않는다.
+'  SST00(구조변경신규) 처럼 괄호 뒤는 무시한다. 못 찾으면 Nothing
+' ----------------------------------------------------------------------------
+Function ParseCode(fileName As String) As String()
+    Dim baseName As String = System.IO.Path.GetFileNameWithoutExtension(fileName)
+    Dim segs() As String = baseName.Split("-"c)
+
+    For i As Integer = 1 To segs.Length - 1
+        Dim core As String = segs(i)
+        Dim cut As Integer = core.IndexOf("("c)
+        If cut >= 0 Then core = core.Substring(0, cut)
+        core = core.Trim().ToUpperInvariant()
+
+        Dim k As Integer = 0
+        Do While k < core.Length AndAlso core(k) >= "A"c AndAlso core(k) <= "Z"c
+            k += 1
+        Loop
+        If k < 2 OrElse k > 6 Then Continue For
+        If core.Length < k + 2 Then Continue For
+        If core(k) < "0"c OrElse core(k) > "9"c Then Continue For
+        If core(k + 1) < "0"c OrElse core(k + 1) > "9"c Then Continue For
+
+        Dim tail As String = core.Substring(k + 2)
+        If tail.Length > 2 Then Continue For
+        Dim ok As Boolean = True
+        For Each c As Char In tail
+            If c < "A"c OrElse c > "Z"c Then
+                ok = False
+                Exit For
+            End If
+        Next
+        If Not ok Then Continue For
+
+        Dim part As String = ""
+        If i < segs.Length - 1 Then part = String.Join("-", segs, i + 1, segs.Length - i - 1)
+        Return New String() {core.Substring(0, k), core.Substring(k, 2), part}
+    Next
+
+    Return Nothing
+End Function
+
+' ----------------------------------------------------------------------------
+'  구매품이면 {품번 폴더(없으면 ""), 구매품 폴더 아래 상대 경로} 를 돌려준다.
+'  구매품이 아니면 Nothing
+'
+'   Library\SMC\실린더\CDQ2B12\CDQ2B12.iam -> {Library\SMC\실린더\CDQ2B12, CDQ2B12\CDQ2B12.iam}
+'   Library\NSK\베어링\6800.ipt            -> {"", 6800.ipt}
+'   Library\Z. BOLT\...\M4 X 16 BOLT.ipt   -> {"", 공용부품\M4 X 16 BOLT.ipt}
+'   원본\04. Unwinder\03. 구매품\AR10\...   -> {..\03. 구매품\AR10, AR10\...}
+' ----------------------------------------------------------------------------
+Function PurchInfo(S As Dictionary(Of String, Object), p As String) As String()
+    Dim libRoot As String = CStr(S("LIB"))
+    Dim srcRoot As String = CStr(S("SRC"))
+    Dim fileName As String = System.IO.Path.GetFileName(p)
+
+    If IsUnder(p, libRoot) Then
+        Dim segs() As String = RelSegs(p, libRoot)
+
+        Dim common As Boolean = False
+        If segs.Length >= 2 AndAlso InList(CfgList(S, "COMDIRS"), segs(0)) Then common = True
+        ' 제작사 / 종류 폴더 이름에 와셔가 들어 있으면 공용부품
+        For i As Integer = 0 To Math.Min(2, segs.Length - 1) - 1
+            If HasKeyword(S, segs(i)) Then common = True
+        Next
+        ' 품번 폴더 안이 아닌 낱개 파일은 파일 이름으로도 본다
+        If segs.Length < 4 AndAlso HasKeyword(S, fileName) Then common = True
+
+        If common Then Return New String() {"", "공용부품\" & fileName}
+        If segs.Length >= 4 Then
+            Dim pkg As String = System.IO.Path.Combine(libRoot, segs(0), segs(1), segs(2))
+            Return New String() {pkg, String.Join("\", segs, 2, segs.Length - 2)}
+        End If
+        Return New String() {"", fileName}
+    End If
+
+    If IsUnder(p, srcRoot) Then
+        Dim segs() As String = RelSegs(p, srcRoot)
+        ' segs(0) 은 유닛 폴더. 그 아래 어딘가의 "구매품" 폴더
+        For k As Integer = 1 To segs.Length - 2
+            If segs(k).Contains("구매품") Then
+                Dim baseDir As String = System.IO.Path.Combine(srcRoot, String.Join("\", segs, 0, k + 1))
+                Dim rest As Integer = segs.Length - (k + 1)
+                If rest = 1 Then
+                    If HasKeyword(S, fileName) Then Return New String() {"", "공용부품\" & fileName}
+                    Return New String() {"", fileName}
+                End If
+                Dim first As String = segs(k + 1)
+                If first = "공용부품" Then
+                    Return New String() {"", String.Join("\", segs, k + 1, rest)}
+                End If
+                Return New String() {System.IO.Path.Combine(baseDir, first), String.Join("\", segs, k + 1, rest)}
+            End If
+        Next
+    End If
+
+    Return Nothing
+End Function
+
+Function OpenWithShell(p As String) As Boolean
+    Try
+        Dim psi As New System.Diagnostics.ProcessStartInfo(p)
+        psi.UseShellExecute = True
+        System.Diagnostics.Process.Start(psi)
+        Return True
+    Catch
+        Return False
+    End Try
+End Function
+
+Function CsvField(s As String) As String
+    If s Is Nothing Then s = ""
+    Return """" & s.Replace("""", """""") & """"
+End Function
+
+Function CopyFileSafe(src As String, dst As String) As String
+    ' 돌려주는 값 : "copied" / "exists" / 오류 메시지
+    Try
+        If System.IO.File.Exists(dst) Then Return "exists"
+        System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(dst))
+        System.IO.File.Copy(src, dst, False)
+        ' 라이브러리 / Vault 파일은 읽기 전용인 경우가 많다. 복사본은 저장할 수 있어야 한다
+        Dim attr As System.IO.FileAttributes = System.IO.File.GetAttributes(dst)
+        If (attr And System.IO.FileAttributes.ReadOnly) = System.IO.FileAttributes.ReadOnly Then
+            System.IO.File.SetAttributes(dst, attr And Not System.IO.FileAttributes.ReadOnly)
+        End If
+        Return "copied"
+    Catch ex As Exception
+        Return ex.Message
+    End Try
+End Function
+
+
+' ============================================================================
+'  계획 상태
+' ============================================================================
+Sub InitPlanState(S As Dictionary(Of String, Object))
+    S("graph") = New List(Of String)            ' 조립에 쓰이는 파일 (열린 조립도 포함)
+    S("graphSet") = NewSet()
+    S("children") = New Dictionary(Of String, List(Of String))(StringComparer.OrdinalIgnoreCase)
+    S("parents") = New Dictionary(Of String, List(Of String))(StringComparer.OrdinalIgnoreCase)
+    S("hasRefs") = NewSet()                     ' 다른 파일을 참조하는 파일
+    S("missing") = New List(Of String)          ' 원본에서 이미 끊어진 참조
+
+    S("units") = New List(Of String)
+    S("unitCode") = NewDict()
+    S("unitFiles") = New Dictionary(Of String, List(Of String))(StringComparer.OrdinalIgnoreCase)
+    S("unitSubs") = New Dictionary(Of String, List(Of String))(StringComparer.OrdinalIgnoreCase)
+    S("subNames") = NewDict()                   ' "유닛|03" -> "03. Stack Stage"
+
+    S("plan") = New List(Of String())           ' {종류 N/P, 원본, 새 위치, 분류, 구매품 폴더, 비고}
+    S("dstOwner") = NewDict()                   ' 새 위치 -> 원본 (겹침 검사)
+    S("primary") = NewDict()                    ' 원본 -> 새 위치 (구매품 아닌 것)
+    S("purchKey") = NewDict()                   ' 원본|구매품 폴더 -> 새 위치
+    S("purchPlaced") = NewSet()                 ' 한 번이라도 복사 계획에 들어간 구매품 원본
+    S("pkgDone") = NewSet()
+    S("pkgDirOwner") = NewDict()
+    S("ctxMemo") = NewDict()
+    S("warn") = NewDict()                       ' 원본 -> 경고
+    S("excluded") = New List(Of String())       ' {원본, 이유}
+End Sub
+
+Function GetList(S As Dictionary(Of String, Object), key As String) As List(Of String)
+    Return CType(S(key), List(Of String))
+End Function
+
+Function GetDict(S As Dictionary(Of String, Object), key As String) As Dictionary(Of String, String)
+    Return CType(S(key), Dictionary(Of String, String))
+End Function
+
+Function GetSet(S As Dictionary(Of String, Object), key As String) As HashSet(Of String)
+    Return CType(S(key), HashSet(Of String))
+End Function
+
+Function GetDL(S As Dictionary(Of String, Object), key As String) As Dictionary(Of String, List(Of String))
+    Return CType(S(key), Dictionary(Of String, List(Of String)))
+End Function
+
+Function Plan(S As Dictionary(Of String, Object)) As List(Of String())
+    Return CType(S("plan"), List(Of String()))
+End Function
+
+Sub Warn(S As Dictionary(Of String, Object), f As String, msg As String)
+    Dim w As Dictionary(Of String, String) = GetDict(S, "warn")
+    If w.ContainsKey(f) Then
+        w(f) = AddNote(w(f), msg)
+    Else
+        w(f) = msg
+    End If
+End Sub
+
+Function WarnOf(S As Dictionary(Of String, Object), f As String) As String
+    Dim w As Dictionary(Of String, String) = GetDict(S, "warn")
+    If w.ContainsKey(f) Then Return w(f)
+    Return ""
+End Function
+
+Function ChildrenOf(S As Dictionary(Of String, Object), f As String) As List(Of String)
+    Dim c As Dictionary(Of String, List(Of String)) = GetDL(S, "children")
+    If c.ContainsKey(f) Then Return c(f)
+    Return New List(Of String)
+End Function
+
+Function ParentsOf(S As Dictionary(Of String, Object), f As String) As List(Of String)
+    Dim c As Dictionary(Of String, List(Of String)) = GetDL(S, "parents")
+    If c.ContainsKey(f) Then Return c(f)
+    Return New List(Of String)
+End Function
+
+
+' ============================================================================
+'  조립 구조 읽기 - 열린 조립도가 참조하는 파일 전부와 부모 / 자식 관계
+'  (억제된 구성요소도 파일 참조는 남아 있으므로 같이 잡힌다)
+' ============================================================================
+Sub BuildGraph(S As Dictionary(Of String, Object), host As Inventor.Document)
+    Dim graph As List(Of String) = GetList(S, "graph")
+    Dim graphSet As HashSet(Of String) = GetSet(S, "graphSet")
+    Dim children As Dictionary(Of String, List(Of String)) = GetDL(S, "children")
+    Dim parents As Dictionary(Of String, List(Of String)) = GetDL(S, "parents")
+    Dim hasRefs As HashSet(Of String) = GetSet(S, "hasRefs")
+    Dim missing As List(Of String) = GetList(S, "missing")
+
+    Dim files As New List(Of Inventor.File)
+    files.Add(host.File)
+    For Each f As Inventor.File In host.File.AllReferencedFiles
+        files.Add(f)
+    Next
+
+    For Each f As Inventor.File In files
+        Dim fp As String = ""
+        Try
+            fp = f.FullFileName
+        Catch
+            Continue For
+        End Try
+        If graphSet.Contains(fp) Then Continue For
+        graphSet.Add(fp)
+        graph.Add(fp)
+
+        Dim kids As New List(Of String)
+        children(fp) = kids
+
+        Dim fds As New List(Of Inventor.FileDescriptor)
+        Try
+            For Each fd As Inventor.FileDescriptor In f.ReferencedFileDescriptors
+                fds.Add(fd)
+            Next
+        Catch
+        End Try
+        If fds.Count > 0 Then hasRefs.Add(fp)
+
+        For Each fd As Inventor.FileDescriptor In fds
+            Try
+                If fd.ReferenceMissing Then
+                    missing.Add(fp & "|" & fd.FullFileName)
+                    Continue For
+                End If
+                Dim cp As String = fd.ReferencedFile.FullFileName
+                If Not kids.Contains(cp) Then kids.Add(cp)
+                If Not parents.ContainsKey(cp) Then parents(cp) = New List(Of String)
+                If Not parents(cp).Contains(fp) Then parents(cp).Add(fp)
+            Catch
+            End Try
+        Next
+    Next
+End Sub
+
+
+' ============================================================================
+'  유닛 분석 - 유닛 기호, 하부 유닛 번호, 하부 유닛 폴더 이름
+' ============================================================================
+Sub AnalyzeUnits(S As Dictionary(Of String, Object))
+    Dim srcRoot As String = CStr(S("SRC"))
+    Dim units As List(Of String) = GetList(S, "units")
+    Dim unitCode As Dictionary(Of String, String) = GetDict(S, "unitCode")
+    Dim unitFiles As Dictionary(Of String, List(Of String)) = GetDL(S, "unitFiles")
+    Dim unitSubs As Dictionary(Of String, List(Of String)) = GetDL(S, "unitSubs")
+    Dim subNames As Dictionary(Of String, String) = GetDict(S, "subNames")
+    Dim graphSet As HashSet(Of String) = GetSet(S, "graphSet")
+
+    Dim dirs() As String = System.IO.Directory.GetDirectories(srcRoot)
+    Array.Sort(dirs, StringComparer.OrdinalIgnoreCase)
+
+    For Each ud As String In dirs
+        Dim u As String = System.IO.Path.GetFileName(ud)
+        If InList(CfgList(S, "ASIS"), u) Then Continue For
+        If InList(CfgList(S, "SKIPDIRS"), u) Then Continue For
+        units.Add(u)
+
+        Dim files As List(Of String) = EnumFiles(S, ud)
+        unitFiles(u) = files
+
+        ' 유닛 기호 : 00 번 iam 우선, 없으면 가장 많이 나오는 기호
+        Dim counts As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
+        Dim preferred As String = ""
+        For Each f As String In files
+            If Not IsModelExt(f) Then Continue For
+            If PurchInfo(S, f) IsNot Nothing Then Continue For
+            Dim p() As String = ParseCode(f)
+            If p Is Nothing Then Continue For
+            If counts.ContainsKey(p(0)) Then
+                counts(p(0)) += 1
+            Else
+                counts(p(0)) = 1
+            End If
+            If preferred = "" AndAlso Ext(f) = ".iam" AndAlso p(1) = "00" AndAlso p(2) = "" Then preferred = p(0)
+        Next
+        Dim code As String = preferred
+        If code = "" Then
+            Dim best As Integer = 0
+            For Each kv As KeyValuePair(Of String, Integer) In counts
+                If kv.Value > best Then
+                    best = kv.Value
+                    code = kv.Key
+                End If
+            Next
+        End If
+        unitCode(u) = code
+
+        ' 하부 유닛 번호
+        Dim subs As New List(Of String)
+        If code <> "" Then
+            For Each f As String In files
+                If PurchInfo(S, f) IsNot Nothing Then Continue For
+                Dim p() As String = ParseCode(f)
+                If p Is Nothing Then Continue For
+                If Not String.Equals(p(0), code, StringComparison.OrdinalIgnoreCase) Then Continue For
+                If p(1) = "00" Then Continue For
+                If Not subs.Contains(p(1)) Then subs.Add(p(1))
+            Next
+        End If
+        subs.Sort()
+        unitSubs(u) = subs
+
+        ' 기존 하부 유닛 폴더 이름 : 유닛 바로 아래, 또는 "하부조립도" 폴더 바로 아래
+        Dim existing As Dictionary(Of String, String) = NewDict()
+        Dim candDirs As New List(Of String)
+        Try
+            For Each sd As String In System.IO.Directory.GetDirectories(ud)
+                candDirs.Add(sd)
+                If System.IO.Path.GetFileName(sd).Contains("하부조립도") Then
+                    For Each sd2 As String In System.IO.Directory.GetDirectories(sd)
+                        candDirs.Add(sd2)
+                    Next
+                End If
+            Next
+        Catch
+        End Try
+        candDirs.Sort(StringComparer.OrdinalIgnoreCase)
+        For Each sd As String In candDirs
+            Dim nm As String = System.IO.Path.GetFileName(sd)
+            Dim num As String = LeadingNumber(nm)
+            If num = "" OrElse num = "00" Then Continue For
+            If nm.Contains("조립도") OrElse nm.Contains("부품도") OrElse nm.Contains("구매품") OrElse _
+               nm.Contains("미분류") OrElse nm.Contains("자재") Then Continue For
+            If Not existing.ContainsKey(num) Then existing(num) = nm
+        Next
+
+        For Each nn As String In subs
+            Dim name As String = ""
+            If existing.ContainsKey(nn) Then
+                name = existing(nn)
+            Else
+                ' 하부 유닛 iam 이름 (조립에 쓰이는 것 우선)
+                Dim asmName As String = ""
+                For pass As Integer = 1 To 2
+                    For Each f As String In files
+                        If Ext(f) <> ".iam" Then Continue For
+                        If pass = 1 AndAlso Not graphSet.Contains(f) Then Continue For
+                        If PurchInfo(S, f) IsNot Nothing Then Continue For
+                        Dim p() As String = ParseCode(f)
+                        If p Is Nothing Then Continue For
+                        If String.Equals(p(0), code, StringComparison.OrdinalIgnoreCase) AndAlso p(1) = nn AndAlso p(2) = "" Then
+                            asmName = System.IO.Path.GetFileNameWithoutExtension(f)
+                            Exit For
+                        End If
+                    Next
+                    If asmName <> "" Then Exit For
+                Next
+                If asmName <> "" Then
+                    name = nn & ". " & asmName
+                Else
+                    name = nn & ". " & code & nn
+                End If
+            End If
+            subNames(u & "|" & nn) = name
+        Next
+    Next
+End Sub
+
+' "03. Stack Stage" -> "03", "3 Stage" -> "03", 숫자로 시작하지 않으면 ""
+Function LeadingNumber(nm As String) As String
+    Dim k As Integer = 0
+    Do While k < nm.Length AndAlso nm(k) >= "0"c AndAlso nm(k) <= "9"c
+        k += 1
+    Loop
+    If k = 0 OrElse k > 2 Then Return ""
+    If k < nm.Length Then
+        Dim c As Char = nm(k)
+        If c <> "."c AndAlso c <> " "c AndAlso c <> "_"c AndAlso c <> "-"c Then Return ""
+    End If
+    Return nm.Substring(0, k).PadLeft(2, "0"c)
+End Function
+
+' 계획 도중 처음 보는 하부 유닛 번호가 나오면 이름을 만들어 둔다
+Function SubName(S As Dictionary(Of String, Object), u As String, nn As String) As String
+    Dim subNames As Dictionary(Of String, String) = GetDict(S, "subNames")
+    Dim key As String = u & "|" & nn
+    If Not subNames.ContainsKey(key) Then
+        Dim code As String = ""
+        If GetDict(S, "unitCode").ContainsKey(u) Then code = GetDict(S, "unitCode")(u)
+        subNames(key) = nn & ". " & code & nn
+        Dim subs As Dictionary(Of String, List(Of String)) = GetDL(S, "unitSubs")
+        If Not subs.ContainsKey(u) Then subs(u) = New List(Of String)
+        If Not subs(u).Contains(nn) Then
+            subs(u).Add(nn)
+            subs(u).Sort()
+        End If
+    End If
+    Return subNames(key)
+End Function
+
+Function UnitHasSub(S As Dictionary(Of String, Object), u As String) As Boolean
+    Dim subs As Dictionary(Of String, List(Of String)) = GetDL(S, "unitSubs")
+    Return subs.ContainsKey(u) AndAlso subs(u).Count > 0
+End Function
+
+
+' ============================================================================
+'  위치(ctx) -> 폴더
+'   TOP            전체 조립도
+'   UNIT|유닛      유닛 레벨
+'   SUB|유닛|03    하부 유닛
+'   ASIS|폴더      원래 구조 그대로 (99. 자재)
+'   MISC|유닛      99. 미분류
+'  돌려주는 값 : {조립도 폴더, 부품도 폴더, 구매품 폴더}
+' ============================================================================
+Function CtxDirs(S As Dictionary(Of String, Object), ctx As String) As String()
+    Dim dst As String = CStr(S("DST"))
+    Dim p() As String = ctx.Split("|"c)
+
+    Select Case p(0)
+        Case "TOP"
+            Dim b As String = System.IO.Path.Combine(dst, "00. 전체 조립도")
+            Return New String() {b, System.IO.Path.Combine(b, "부품도"), System.IO.Path.Combine(b, "구매품")}
+
+        Case "UNIT", "MISC"
+            Dim b As String = System.IO.Path.Combine(dst, p(1))
+            If UnitHasSub(S, p(1)) Then
+                Return New String() {System.IO.Path.Combine(b, "01. 조립도"), _
+                                     System.IO.Path.Combine(b, "03. 부품도"), _
+                                     System.IO.Path.Combine(b, "04. 구매품")}
+            End If
+            Return New String() {System.IO.Path.Combine(b, "01. 조립도"), _
+                                 System.IO.Path.Combine(b, "02. 부품도"), _
+                                 System.IO.Path.Combine(b, "03. 구매품")}
+
+        Case "SUB"
+            Dim sb As String = SubDir(S, p(1), p(2))
+            Return New String() {System.IO.Path.Combine(sb, "01. 조립도"), _
+                                 System.IO.Path.Combine(sb, "02. 부품도"), _
+                                 System.IO.Path.Combine(sb, "03. 구매품")}
+
+        Case Else   ' ASIS
+            Dim b As String = System.IO.Path.Combine(dst, p(1))
+            Return New String() {b, b, System.IO.Path.Combine(b, "구매품")}
+    End Select
+End Function
+
+Function SubDir(S As Dictionary(Of String, Object), u As String, nn As String) As String
+    Return System.IO.Path.Combine(CStr(S("DST")), u, "02. 하부조립도", SubName(S, u, nn))
+End Function
+
+' ============================================================================
+'  구매품이 아닌 파일의 위치 정하기
+' ============================================================================
+Function GetCtx(S As Dictionary(Of String, Object), f As String) As String
+    Dim memo As Dictionary(Of String, String) = GetDict(S, "ctxMemo")
+    If memo.ContainsKey(f) Then Return memo(f)   ' 계산 중이면 "" (순환 참조 방지)
+    memo(f) = ""
+    Dim c As String = ComputeCtx(S, f)
+    memo(f) = c
+    Return c
+End Function
+
+Function ComputeCtx(S As Dictionary(Of String, Object), f As String) As String
+    Dim srcRoot As String = CStr(S("SRC"))
+
+    If CBool(S("TOPMODE")) AndAlso String.Equals(f, CStr(S("HOST")), StringComparison.OrdinalIgnoreCase) Then
+        Return "TOP"
+    End If
+
+    If Not IsUnder(f, srcRoot) Then
+        ' 원본 폴더 밖 (다른 프로젝트 폴더 등)
+        Warn(S, f, "원본 폴더 밖의 파일")
+        Dim sc As String = StructCtx(S, f, "")
+        If sc = "" Then Return "TOP"
+        Return sc
+    End If
+
+    Dim segs() As String = RelSegs(f, srcRoot)
+    If segs.Length = 1 Then Return "TOP"
+
+    Dim u As String = segs(0)
+    If InList(CfgList(S, "ASIS"), u) Then Return "ASIS|" & u
+
+    Dim code As String = ""
+    If GetDict(S, "unitCode").ContainsKey(u) Then code = GetDict(S, "unitCode")(u)
+
+    Dim p() As String = ParseCode(f)
+    If p IsNot Nothing AndAlso code <> "" Then
+        If String.Equals(p(0), code, StringComparison.OrdinalIgnoreCase) Then
+            If p(1) = "00" Then Return "UNIT|" & u
+            SubName(S, u, p(1))
+            Return "SUB|" & u & "|" & p(1)
+        End If
+        Warn(S, f, "다른 유닛 도번(" & p(0) & ") - 쓰는 곳 기준으로 배치")
+    End If
+
+    ' 유닛 조립도에서 실행했는데 그 조립도에 도번이 없으면 유닛 조립도로 본다
+    If String.Equals(f, CStr(S("HOST")), StringComparison.OrdinalIgnoreCase) Then Return "UNIT|" & u
+
+    Dim sc2 As String = StructCtx(S, f, u)
+    If sc2 <> "" Then
+        If p Is Nothing Then Warn(S, f, "도번 없음 - 쓰는 곳 기준으로 배치")
+        Return sc2
+    End If
+    Return "MISC|" & u
+End Function
+
+' 이 파일을 쓰는 조립도(부모)의 위치를 따른다
+Function StructCtx(S As Dictionary(Of String, Object), f As String, myUnit As String) As String
+    For Each par As String In ParentsOf(S, f)
+        If PurchInfo(S, par) IsNot Nothing Then Continue For
+        Dim c As String = GetCtx(S, par)
+        If c = "" Then Continue For
+        Dim p() As String = c.Split("|"c)
+        Select Case p(0)
+            Case "TOP", "ASIS"
+                If myUnit <> "" Then Return "UNIT|" & myUnit
+                Return "TOP"
+            Case "MISC"
+                Continue For
+            Case Else
+                If myUnit = "" OrElse String.Equals(p(1), myUnit, StringComparison.OrdinalIgnoreCase) Then Return c
+                Warn(S, f, "다른 유닛(" & p(1) & ") 조립도가 사용")
+                Return "UNIT|" & myUnit
+        End Select
+    Next
+    Return ""
+End Function
+
+Function NormalDest(S As Dictionary(Of String, Object), f As String, ctx As String) As String
+    Dim srcRoot As String = CStr(S("SRC"))
+    Dim dst As String = CStr(S("DST"))
+    Dim p() As String = ctx.Split("|"c)
+    Dim nm As String = System.IO.Path.GetFileName(f)
+
+    Select Case p(0)
+        Case "ASIS"
+            Return System.IO.Path.Combine(dst, f.Substring(srcRoot.Length + 1))
+        Case "MISC"
+            Dim segs() As String = RelSegs(f, srcRoot)
+            Return System.IO.Path.Combine(dst, p(1), "99. 미분류", String.Join("\", segs, 1, segs.Length - 1))
+        Case "TOP"
+            Dim dirs() As String = CtxDirs(S, ctx)
+            Dim inRoot As Boolean = String.Equals(System.IO.Path.GetDirectoryName(f), srcRoot, StringComparison.OrdinalIgnoreCase)
+            If Ext(f) = ".iam" OrElse inRoot Then Return System.IO.Path.Combine(dirs(0), nm)
+            Return System.IO.Path.Combine(dirs(1), nm)
+        Case Else
+            Dim dirs() As String = CtxDirs(S, ctx)
+            If Ext(f) = ".iam" Then Return System.IO.Path.Combine(dirs(0), nm)
+            Return System.IO.Path.Combine(dirs(1), nm)
+    End Select
+End Function
+
+Function CategoryOf(f As String, ctx As String) As String
+    Dim k As String = ctx.Split("|"c)(0)
+    If k = "MISC" Then Return "미분류"
+    If k = "ASIS" Then Return "원래구조"
+    If IsDrawingExt(f) Then Return "도면"
+    If Ext(f) = ".iam" Then Return "조립도"
+    Return "부품도"
+End Function
+
+
+' ============================================================================
+'  계획에 넣기. 다른 원본이 같은 새 위치를 차지하면 _중복2 폴더로 비켜 둔다
+' ============================================================================
+Function AddPlan(S As Dictionary(Of String, Object), kind As String, src As String, dst As String, _
+                 cat As String, buy As String, note As String) As String
+    Dim owner As Dictionary(Of String, String) = GetDict(S, "dstOwner")
+    Dim finalDst As String = dst
+    Dim n As Integer = 1
+    Do While owner.ContainsKey(finalDst) AndAlso Not String.Equals(owner(finalDst), src, StringComparison.OrdinalIgnoreCase)
+        n += 1
+        finalDst = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(dst), "_중복" & n, System.IO.Path.GetFileName(dst))
+    Loop
+    If n > 1 Then note = AddNote(note, "같은 이름의 다른 파일이 있어 _중복" & n & " 폴더로")
+    If owner.ContainsKey(finalDst) Then Return finalDst    ' 같은 원본이 같은 곳에 이미 들어 있음
+    owner(finalDst) = src
+    Plan(S).Add(New String() {kind, src, finalDst, cat, buy, note})
+    Return finalDst
+End Function
+
+Sub PlaceNormal(S As Dictionary(Of String, Object), f As String)
+    Dim primary As Dictionary(Of String, String) = GetDict(S, "primary")
+    If primary.ContainsKey(f) Then Return
+    Dim ctx As String = GetCtx(S, f)
+    Dim dst As String = NormalDest(S, f, ctx)
+    Dim buy As String = CtxDirs(S, ctx)(2)
+    primary(f) = AddPlan(S, "N", f, dst, CategoryOf(f, ctx), buy, WarnOf(S, f))
+End Sub
+
+Sub PlacePurchased(S As Dictionary(Of String, Object), src As String, buy As String)
+    Dim purchKey As Dictionary(Of String, String) = GetDict(S, "purchKey")
+    Dim key As String = src & "|" & buy
+    If purchKey.ContainsKey(key) Then Return
+
+    Dim pi() As String = PurchInfo(S, src)
+    If pi Is Nothing Then Return
+    Dim cat As String = "구매품"
+    If pi(1).StartsWith("공용부품\") Then cat = "공용부품"
+
+    If pi(0) <> "" Then PlacePackage(S, pi(0), buy)
+
+    If Not purchKey.ContainsKey(key) Then
+        purchKey(key) = AddPlan(S, "P", src, System.IO.Path.Combine(buy, pi(1)), cat, buy, "")
+    End If
+    GetSet(S, "purchPlaced").Add(src)
+
+    ' 구매품 iam 이 다른 구매품을 참조하면 같은 구매품 폴더로
+    For Each c As String In ChildrenOf(S, src)
+        If PurchInfo(S, c) IsNot Nothing Then
+            PlacePurchased(S, c, buy)
+        Else
+            PlaceNormal(S, c)
+        End If
+    Next
+End Sub
+
+' 품번 폴더째 복사 (_V 제외)
+Sub PlacePackage(S As Dictionary(Of String, Object), pkgRoot As String, buy As String)
+    Dim done As HashSet(Of String) = GetSet(S, "pkgDone")
+    Dim key As String = pkgRoot & "|" & buy
+    If done.Contains(key) Then Return
+    done.Add(key)
+
+    Dim dirOwner As Dictionary(Of String, String) = GetDict(S, "pkgDirOwner")
+    Dim pkgName As String = System.IO.Path.GetFileName(pkgRoot)
+    Dim dir As String = System.IO.Path.Combine(buy, pkgName)
+    Dim n As Integer = 1
+    Do While dirOwner.ContainsKey(dir) AndAlso Not String.Equals(dirOwner(dir), pkgRoot, StringComparison.OrdinalIgnoreCase)
+        n += 1
+        dir = System.IO.Path.Combine(buy, pkgName & "_중복" & n)
+    Loop
+    dirOwner(dir) = pkgRoot
+    Dim note As String = ""
+    If n > 1 Then note = "같은 이름의 다른 품번 폴더가 있어 " & System.IO.Path.GetFileName(dir) & " 로"
+
+    Dim cat As String = "구매품"
+    Dim purchKey As Dictionary(Of String, String) = GetDict(S, "purchKey")
+    For Each f As String In EnumFiles(S, pkgRoot)
+        Dim rel As String = f.Substring(pkgRoot.Length + 1)
+        purchKey(f & "|" & buy) = AddPlan(S, "P", f, System.IO.Path.Combine(dir, rel), cat, buy, note)
+        GetSet(S, "purchPlaced").Add(f)
+    Next
+End Sub
+
+
+' ============================================================================
+'  전체 계획
+' ============================================================================
+Sub MakePlan(S As Dictionary(Of String, Object))
+    Dim srcRoot As String = CStr(S("SRC"))
+    Dim topMode As Boolean = CBool(S("TOPMODE"))
+    Dim primary As Dictionary(Of String, String) = GetDict(S, "primary")
+    Dim graph As List(Of String) = GetList(S, "graph")
+    Dim graphSet As HashSet(Of String) = GetSet(S, "graphSet")
+    Dim excluded As List(Of String()) = CType(S("excluded"), List(Of String()))
+
+    ' 1) 조립에 쓰이는 파일 (구매품 제외)
+    For Each f As String In graph
+        If PurchInfo(S, f) IsNot Nothing Then Continue For
+        PlaceNormal(S, f)
+    Next
+
+    ' 2) 구매품 - 그것을 쓰는 조립도의 구매품 폴더로
+    For Each f As String In graph
+        If PurchInfo(S, f) IsNot Nothing Then Continue For
+        Dim buy As String = CtxDirs(S, GetCtx(S, f))(2)
+        For Each c As String In ChildrenOf(S, f)
+            If PurchInfo(S, c) IsNot Nothing Then PlacePurchased(S, c, buy)
+        Next
+    Next
+
+    ' 3) 조립에 안 쓰이는 파일 - 대상 유닛 폴더 안의 것 전부
+    Dim drawCands As New List(Of String)
+    Dim unitFiles As Dictionary(Of String, List(Of String)) = GetDL(S, "unitFiles")
+    For Each u As String In CType(S("targets"), List(Of String))
+        If Not unitFiles.ContainsKey(u) Then Continue For
+        Dim code As String = GetDict(S, "unitCode")(u)
+        For Each f As String In unitFiles(u)
+            If primary.ContainsKey(f) Then Continue For
+            If PurchInfo(S, f) IsNot Nothing Then
+                ' 원본의 구매품 폴더에 있었지만 아무도 안 쓰는 것 -> 유닛 구매품 폴더
+                ' (같은 품번 폴더가 이미 복사됐으면 그 안에 같이 들어가 있다)
+                If graphSet.Contains(f) OrElse GetSet(S, "purchPlaced").Contains(f) Then Continue For
+                PlacePurchased(S, f, CtxDirs(S, "UNIT|" & u)(2))
+                Continue For
+            End If
+            If IsDrawingExt(f) Then
+                drawCands.Add(f)
+                Continue For
+            End If
+            Dim p() As String = ParseCode(f)
+            If p IsNot Nothing AndAlso code <> "" AndAlso Not String.Equals(p(0), code, StringComparison.OrdinalIgnoreCase) Then
+                excluded.Add(New String() {f, "다른 유닛 도번(" & p(0) & ")이고 조립에 안 쓰임"})
+                Continue For
+            End If
+            PlaceNormal(S, f)
+        Next
+    Next
+
+    If topMode Then
+        ' 4) 원본 맨 위 폴더의 파일 (전체 조립도 iam 등)
+        For Each f As String In System.IO.Directory.GetFiles(srcRoot)
+            If IsSkipped(S, f) OrElse primary.ContainsKey(f) Then Continue For
+            If IsDrawingExt(f) Then
+                drawCands.Add(f)
+                Continue For
+            End If
+            PlaceNormal(S, f)
+        Next
+
+        ' 5) 99. 자재 같은 폴더는 원래 구조 그대로
+        For Each a As String In CfgList(S, "ASIS")
+            Dim ad As String = System.IO.Path.Combine(srcRoot, a)
+            If Not System.IO.Directory.Exists(ad) Then Continue For
+            For Each f As String In EnumFiles(S, ad)
+                PlaceNormal(S, f)
+            Next
+        Next
+    End If
+
+    ' 6) 도면 - 같은 이름 모델 옆으로
+    Dim models As New List(Of String)(primary.Keys)
+    For Each m As String In models
+        If Not IsModelExt(m) Then Continue For
+        For Each de As String In New String() {".idw", ".dwg"}
+            Dim dp As String = System.IO.Path.ChangeExtension(m, de)
+            If System.IO.File.Exists(dp) AndAlso Not IsSkipped(S, dp) Then drawCands.Add(dp)
+        Next
+    Next
+
+    For Each dp As String In drawCands
+        If primary.ContainsKey(dp) Then Continue For
+        If PurchInfo(S, dp) IsNot Nothing Then Continue For      ' 구매품 도면은 품번 폴더와 같이 간다
+
+        Dim modelDst As String = ""
+        For Each me2 As String In New String() {".ipt", ".iam"}
+            Dim mp As String = System.IO.Path.ChangeExtension(dp, me2)
+            If primary.ContainsKey(mp) Then
+                modelDst = primary(mp)
+                Exit For
+            End If
+        Next
+
+        If modelDst <> "" Then
+            Dim ctx As String = GetCtx(S, System.IO.Path.ChangeExtension(dp, System.IO.Path.GetExtension(modelDst)))
+            primary(dp) = AddPlan(S, "N", dp, _
+                                  System.IO.Path.Combine(System.IO.Path.GetDirectoryName(modelDst), System.IO.Path.GetFileName(dp)), _
+                                  "도면", CtxDirs(S, ctx)(2), "")
+            Continue For
+        End If
+
+        ' 모델이 없는 도면 - 도번으로, 그것도 없으면 미분류
+        If IsUnder(dp, srcRoot) Then
+            Dim segs() As String = RelSegs(dp, srcRoot)
+            If segs.Length > 1 AndAlso Not InList(CfgList(S, "ASIS"), segs(0)) Then
+                Dim code As String = ""
+                If GetDict(S, "unitCode").ContainsKey(segs(0)) Then code = GetDict(S, "unitCode")(segs(0))
+                Dim p() As String = ParseCode(dp)
+                If p IsNot Nothing AndAlso code <> "" AndAlso Not String.Equals(p(0), code, StringComparison.OrdinalIgnoreCase) Then
+                    excluded.Add(New String() {dp, "다른 유닛 도번(" & p(0) & ") 도면이고 모델이 없음"})
+                    Continue For
+                End If
+            End If
+        End If
+        PlaceNormal(S, dp)
+    Next
+End Sub
+
+
+' ============================================================================
+'  미리보기 요약 / CSV
+' ============================================================================
+Function PlanSummary(S As Dictionary(Of String, Object)) As String
+    Dim counts As New Dictionary(Of String, Integer)
+    Dim order As New List(Of String)
+    For Each it As String() In Plan(S)
+        If Not counts.ContainsKey(it(3)) Then
+            counts(it(3)) = 0
+            order.Add(it(3))
+        End If
+        counts(it(3)) += 1
+    Next
+
+    Dim nWarn As Integer = 0
+    For Each it As String() In Plan(S)
+        If it(5) <> "" Then nWarn += 1
+    Next
+
+    Dim msg As String = ""
+    If CBool(S("TOPMODE")) Then
+        msg &= "범위 : 전체 조립도 (유닛 " & GetList(S, "units").Count & "개)" & vbCrLf
+    Else
+        msg &= "범위 : " & CType(S("targets"), List(Of String))(0) & " 유닛만 (시험용)" & vbCrLf
+    End If
+    msg &= "옮길 파일 : " & Plan(S).Count & "개" & vbCrLf
+    For Each k As String In order
+        msg &= "   " & k & " : " & counts(k) & vbCrLf
+    Next
+    msg &= "가져가지 않음 : " & CType(S("excluded"), List(Of String())).Count & "개" & vbCrLf
+    msg &= "확인할 것(비고 있음) : " & nWarn & "개" & vbCrLf
+    msg &= "원본에서 이미 끊긴 참조 : " & GetList(S, "missing").Count & "개" & vbCrLf
+
+    Dim codes As String = ""
+    For Each u As String In CType(S("targets"), List(Of String))
+        Dim c As String = ""
+        If GetDict(S, "unitCode").ContainsKey(u) Then c = GetDict(S, "unitCode")(u)
+        If c = "" Then c = "(도번 못 찾음)"
+        Dim nSub As Integer = 0
+        If GetDL(S, "unitSubs").ContainsKey(u) Then nSub = GetDL(S, "unitSubs")(u).Count
+        codes &= "   " & u & " : " & c & ", 하부 유닛 " & nSub & "개" & vbCrLf
+    Next
+    msg &= vbCrLf & "유닛 기호" & vbCrLf & codes
+    Return msg
+End Function
+
+Sub WritePlanCsv(S As Dictionary(Of String, Object), csvPath As String)
+    Dim sb As New System.Text.StringBuilder()
+    sb.AppendLine("분류,새 위치,원본,비고")
+
+    Dim rows As New List(Of String())(Plan(S))
+    rows.Sort(Function(a As String(), b As String()) String.Compare(a(2), b(2), StringComparison.OrdinalIgnoreCase))
+    For Each it As String() In rows
+        sb.AppendLine(CsvField(it(3)) & "," & CsvField(it(2)) & "," & CsvField(it(1)) & "," & CsvField(it(5)))
+    Next
+    For Each ex As String() In CType(S("excluded"), List(Of String()))
+        sb.AppendLine(CsvField("제외") & "," & CsvField("") & "," & CsvField(ex(0)) & "," & CsvField(ex(1)))
+    Next
+    For Each m As String In GetList(S, "missing")
+        Dim pp() As String = m.Split("|"c)
+        sb.AppendLine(CsvField("참조 끊김") & "," & CsvField("") & "," & CsvField(pp(0)) & "," & _
+                      CsvField("원본에서 이미 못 찾는 참조 : " & pp(1)))
+    Next
+    System.IO.File.WriteAllText(csvPath, sb.ToString(), New System.Text.UTF8Encoding(True))
+End Sub
+
+
+' ============================================================================
+'  복사 실행
+' ============================================================================
+Function ExecuteCopy(S As Dictionary(Of String, Object)) As String
+    Dim TTL As String = CStr(S("TTL"))
+    Dim dst As String = CStr(S("DST"))
+    Dim logDir As String = CStr(S("LOGDIR"))
+    Dim graphSet As HashSet(Of String) = GetSet(S, "graphSet")
+    Dim hasRefs As HashSet(Of String) = GetSet(S, "hasRefs")
+
+    ' 1) 빈 폴더까지 미리 만들어 둘 것
+    Dim mk As New List(Of String)
+    Dim ipjDirs As New List(Of String)
+    If CBool(S("TOPMODE")) Then mk.Add(CtxDirs(S, "TOP")(0))
+    For Each u As String In CType(S("targets"), List(Of String))
+        Dim ud() As String = CtxDirs(S, "UNIT|" & u)
+        mk.Add(ud(0)) : mk.Add(ud(1)) : mk.Add(ud(2))
+        ipjDirs.Add(System.IO.Path.Combine(dst, u))
+        If GetDL(S, "unitSubs").ContainsKey(u) Then
+            For Each nn As String In GetDL(S, "unitSubs")(u)
+                Dim sd() As String = CtxDirs(S, "SUB|" & u & "|" & nn)
+                mk.Add(sd(1)) : mk.Add(sd(2))      ' 조립도 폴더는 iam 이 있을 때만 (복사하면서 생김)
+                ipjDirs.Add(SubDir(S, u, nn))
+            Next
+        End If
+    Next
+
+    Dim failed As New List(Of String)
+    For Each m As String In mk
+        Try
+            System.IO.Directory.CreateDirectory(m)
+        Catch ex As Exception
+            failed.Add("폴더 " & m & " : " & ex.Message)
+        End Try
+    Next
+
+    ' 2) 파일 복사
+    Dim nCopied As Integer = 0
+    Dim nExists As Integer = 0
+    Dim items As List(Of String()) = Plan(S)
+    For i As Integer = 0 To items.Count - 1
+        If i Mod 50 = 0 Then ThisApplication.StatusBarText = TTL & " : 복사 " & i & " / " & items.Count
+        Dim r As String = CopyFileSafe(items(i)(1), items(i)(2))
+        If r = "copied" Then
+            nCopied += 1
+        ElseIf r = "exists" Then
+            nExists += 1
+        Else
+            failed.Add(items(i)(1) & " : " & r)
+        End If
+    Next
+    ThisApplication.StatusBarText = ""
+
+    ' 3) 프로젝트 파일 - 맨 위 하나를 인벤터로 만들고, 유닛 / 하부 유닛에는 그것을 복사
+    '    작업공간이 "." (ipj 가 있는 폴더) 이므로 복사해도 각자 자기 폴더가 작업공간이 된다
+    Dim ipjMsg As String = ""
+    Dim rootIpj As String = System.IO.Path.Combine(dst, CStr(S("ROOTNAME")) & ".ipj")
+    If Not System.IO.File.Exists(rootIpj) Then
+        Try
+            Dim proj As Inventor.DesignProject = ThisApplication.DesignProjectManager.DesignProjects.Add( _
+                Inventor.MultiUserModeEnum.kSingleUserMode, CStr(S("ROOTNAME")), dst)
+            ipjMsg &= "프로젝트 생성 : " & proj.FullFileName & vbCrLf & _
+                      "   작업공간 : " & proj.WorkspacePath & vbCrLf
+            ' 인벤터가 다른 이름으로 만들었으면 그 파일을 쓴다
+            If Not System.IO.File.Exists(rootIpj) AndAlso System.IO.File.Exists(proj.FullFileName) Then
+                rootIpj = proj.FullFileName
+            End If
+        Catch ex As Exception
+            ipjMsg &= "프로젝트 파일을 만들지 못했습니다 : " & ex.Message & vbCrLf & _
+                      "   직접 만드세요 : " & rootIpj & " (작업공간 = 그 폴더)" & vbCrLf
+        End Try
+    Else
+        ipjMsg &= "프로젝트 파일이 이미 있어 그대로 둠 : " & rootIpj & vbCrLf
+    End If
+
+    Dim nIpj As Integer = 0
+    If System.IO.File.Exists(rootIpj) Then
+        For Each pd As String In ipjDirs
+            Dim ip As String = System.IO.Path.Combine(pd, System.IO.Path.GetFileName(pd) & ".ipj")
+            Dim r As String = CopyFileSafe(rootIpj, ip)
+            If r = "copied" Then
+                nIpj += 1
+            ElseIf r <> "exists" Then
+                failed.Add(ip & " : " & r)
+            End If
+        Next
+        ipjMsg &= "유닛 / 하부 유닛 프로젝트 파일 : " & nIpj & "개" & vbCrLf
+    End If
+
+    ' 4) 재연결 작업 목록과 복사 목록
+    '    order : 부품 0 -> 조립도(아래에서 위로) -> 도면 1000
+    Dim depthMemo As Dictionary(Of String, Integer) = New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
+    Dim jobs As New System.Text.StringBuilder()
+    Dim map As New System.Text.StringBuilder()
+    Dim nJobs As Integer = 0
+    For Each it As String() In items
+        map.AppendLine(it(0) & vbTab & it(1) & vbTab & it(2) & vbTab & it(4))
+
+        Dim e As String = Ext(it(2))
+        If e <> ".ipt" AndAlso e <> ".iam" AndAlso e <> ".idw" AndAlso e <> ".dwg" Then Continue For
+        ' 조립에 쓰이는데 아무것도 참조하지 않는 부품은 열 필요가 없다
+        If e = ".ipt" AndAlso graphSet.Contains(it(1)) AndAlso Not hasRefs.Contains(it(1)) Then Continue For
+
+        Dim ord As Integer = 0
+        If e = ".iam" Then
+            ord = 1
+            If graphSet.Contains(it(1)) Then ord = 1 + Depth(S, it(1), depthMemo, NewSet())
+        ElseIf e = ".idw" OrElse e = ".dwg" Then
+            ord = 1000
+        End If
+        jobs.AppendLine(ord & vbTab & it(2) & vbTab & it(4))
+        nJobs += 1
+    Next
+
+    Try
+        System.IO.Directory.CreateDirectory(logDir)
+        System.IO.File.WriteAllText(System.IO.Path.Combine(logDir, "copy_map.tsv"), map.ToString(), New System.Text.UTF8Encoding(True))
+        System.IO.File.WriteAllText(System.IO.Path.Combine(logDir, "relink_jobs.tsv"), jobs.ToString(), New System.Text.UTF8Encoding(True))
+    Catch ex As Exception
+        failed.Add("작업 목록 저장 실패 : " & ex.Message)
+    End Try
+
+    If failed.Count > 0 Then
+        Try
+            System.IO.File.WriteAllLines(System.IO.Path.Combine(logDir, "복사실패_" & DateTime.Now.ToString("yyyyMMdd_HHmmss") & ".txt"), _
+                                         failed.ToArray(), New System.Text.UTF8Encoding(True))
+        Catch
+        End Try
+    End If
+
+    Dim msg As String = "복사 : " & nCopied & "개,  이미 있어 건너뜀 : " & nExists & "개,  실패 : " & failed.Count & "개" & vbCrLf
+    msg &= ipjMsg
+    msg &= "재연결할 파일 : " & nJobs & "개" & vbCrLf & vbCrLf
+    If failed.Count > 0 Then
+        msg &= "실패 목록은 " & logDir & " 의 복사실패_*.txt 에 있습니다." & vbCrLf & vbCrLf
+    End If
+    msg &= "아직 복사본의 참조는 원본을 보고 있습니다. 이어서 재연결하세요." & vbCrLf & _
+           "  1) 인벤터에서 모든 파일 닫기" & vbCrLf & _
+           "  2) 프로젝트 창에서 " & System.IO.Path.GetFileName(rootIpj) & " 활성화" & vbCrLf & _
+           "     (작업공간이 " & dst & " 인지 확인)" & vbCrLf & _
+           "  3) 새 부품(빈 ipt) 하나 열기 - 저장하지 않아도 됨" & vbCrLf & _
+           "  4) 이 규칙 실행 -> 3. 재연결"
+    Return msg
+End Function
+
+Function Depth(S As Dictionary(Of String, Object), f As String, memo As Dictionary(Of String, Integer), guard As HashSet(Of String)) As Integer
+    If memo.ContainsKey(f) Then Return memo(f)
+    If guard.Contains(f) Then Return 0
+    guard.Add(f)
+    Dim dep As Integer = 0
+    For Each c As String In ChildrenOf(S, f)
+        If Ext(c) <> ".iam" Then Continue For
+        Dim cd As Integer = Depth(S, c, memo, guard) + 1
+        If cd > dep Then dep = cd
+    Next
+    memo(f) = dep
+    Return dep
+End Function
+
+
+' ============================================================================
+'  재연결 - 새 프로젝트를 활성화한 상태에서, 빈 부품 하나만 열고 실행
+'
+'  새 프로젝트에서는 복사본이 보던 원본 경로를 찾지 못한다 (작업공간 밖).
+'  그래서 열 때 끊긴 참조를 건너뛰고(SkipAllUnresolvedFiles), 끊긴 참조마다
+'  새 위치의 복사본으로 ReplaceReference 한다. 복사본은 원본과 같은 파일이므로
+'  대체가 된다. 원본을 다시 읽지 않으므로 메모리도 적게 든다.
+' ============================================================================
+Sub DoRelink(S As Dictionary(Of String, Object))
+    Dim TTL As String = CStr(S("TTL")) & " - 재연결"
+    Dim dst As String = CStr(S("DST"))
+    Dim logDir As String = CStr(S("LOGDIR"))
+    Dim mapPath As String = System.IO.Path.Combine(logDir, "copy_map.tsv")
+    Dim jobPath As String = System.IO.Path.Combine(logDir, "relink_jobs.tsv")
+
+    If Not System.IO.File.Exists(mapPath) OrElse Not System.IO.File.Exists(jobPath) Then
+        MessageBox.Show("복사 기록이 없습니다. 먼저 2. 복사 를 실행하세요." & vbCrLf & vbCrLf & mapPath, TTL)
+        Return
+    End If
+
+    ' 1) 새 프로젝트가 활성인지
+    Dim rootIpj As String = System.IO.Path.Combine(dst, CStr(S("ROOTNAME")) & ".ipj")
+    Dim actIpj As String = ""
+    Dim actWs As String = ""
+    Try
+        actIpj = ThisApplication.DesignProjectManager.ActiveDesignProject.FullFileName
+        actWs = NormDir(ThisApplication.DesignProjectManager.ActiveDesignProject.WorkspacePath)
+    Catch
+    End Try
+    Dim projOk As Boolean = String.Equals(actWs, dst, StringComparison.OrdinalIgnoreCase)
+    If Not projOk AndAlso actIpj <> "" Then
+        projOk = String.Equals(NormDir(System.IO.Path.GetDirectoryName(actIpj)), dst, StringComparison.OrdinalIgnoreCase)
+    End If
+    If Not projOk Then
+        MessageBox.Show("새 프로젝트가 활성화되어 있지 않습니다." & vbCrLf & vbCrLf & _
+                        "지금   : " & actIpj & vbCrLf & _
+                        "필요   : " & rootIpj & vbCrLf & vbCrLf & _
+                        "모든 파일을 닫고 프로젝트 창에서 위 ipj 를 활성화한 뒤," & vbCrLf & _
+                        "새 부품(빈 ipt) 하나를 열고 다시 실행하세요.", TTL)
+        Return
+    End If
+
+    ' 2) 다른 파일이 열려 있지 않은지 (재연결 대상이 열려 있으면 저장이 꼬인다)
+    Dim host As Inventor.Document = Nothing
+    Try
+        host = ThisApplication.ActiveDocument
+    Catch
+    End Try
+    Dim hostPath As String = ""
+    Dim hostName As String = ""
+    Try
+        If host IsNot Nothing Then
+            hostPath = host.FullFileName
+            hostName = host.DisplayName
+        End If
+    Catch
+    End Try
+    Dim openOthers As New List(Of String)
+    For Each d As Inventor.Document In ThisApplication.Documents
+        Try
+            If d.Views.Count = 0 Then Continue For
+            If d.DisplayName = hostName AndAlso d.FullFileName = hostPath Then Continue For
+            openOthers.Add(d.DisplayName)
+        Catch
+        End Try
+    Next
+    If openOthers.Count > 0 OrElse IsUnder(hostPath, dst) Then
+        MessageBox.Show("다른 파일이 열려 있습니다. 모두 닫고 새 부품(빈 ipt) 하나만 연 상태에서 실행하세요." & vbCrLf & vbCrLf & _
+                        String.Join(vbCrLf, openOthers.ToArray()) & If(IsUnder(hostPath, dst), vbCrLf & hostPath, ""), TTL)
+        Return
+    End If
+
+    ' 3) 복사 기록 읽기
+    Dim primary As Dictionary(Of String, String) = NewDict()        ' 원본 -> 새 위치
+    Dim purchKey As Dictionary(Of String, String) = NewDict()       ' 원본|구매품폴더 -> 새 위치
+    Dim purchAny As Dictionary(Of String, String) = NewDict()       ' 원본 -> 아무 새 위치
+    Dim reverse As Dictionary(Of String, String) = NewDict()        ' 새 위치 -> 원본
+    Dim nameIndex As New Dictionary(Of String, List(Of String))(StringComparer.OrdinalIgnoreCase)
+
+    For Each ln As String In System.IO.File.ReadAllLines(mapPath, System.Text.Encoding.UTF8)
+        Dim t() As String = ln.Split(ControlChars.Tab)
+        If t.Length < 4 Then Continue For
+        If t(0) = "P" Then
+            purchKey(t(1) & "|" & t(3)) = t(2)
+            If Not purchAny.ContainsKey(t(1)) Then purchAny(t(1)) = t(2)
+        ElseIf Not primary.ContainsKey(t(1)) Then
+            primary(t(1)) = t(2)
+        End If
+        reverse(t(2)) = t(1)
+        Dim nm As String = System.IO.Path.GetFileName(t(1))
+        If Not nameIndex.ContainsKey(nm) Then nameIndex(nm) = New List(Of String)
+        If Not nameIndex(nm).Contains(t(1)) Then nameIndex(nm).Add(t(1))
+    Next
+    S("r_primary") = primary
+    S("r_purchKey") = purchKey
+    S("r_purchAny") = purchAny
+    S("r_reverse") = reverse
+    S("r_nameIndex") = nameIndex
+    S("r_extra") = New List(Of String)       ' 재연결 중 새로 복사한 구매품
+
+    Dim jobs As New List(Of String())
+    For Each ln As String In System.IO.File.ReadAllLines(jobPath, System.Text.Encoding.UTF8)
+        Dim t() As String = ln.Split(ControlChars.Tab)
+        If t.Length < 3 Then Continue For
+        jobs.Add(t)
+    Next
+    jobs.Sort(Function(a As String(), b As String()) CInt(a(0)).CompareTo(CInt(b(0))))
+
+    Dim ask As String = "재연결할 파일 : " & jobs.Count & "개" & vbCrLf & vbCrLf & _
+                        "결과 위치(" & dst & ") 의 파일만 열고 저장합니다." & vbCrLf & _
+                        "파일 수에 따라 시간이 걸립니다. 진행할까요?"
+    If MessageBox.Show(ask, TTL, MessageBoxButtons.OKCancel) <> DialogResult.OK Then Return
+
+    ' 4) 하나씩 열어 끊긴 참조를 새 위치로
+    Dim log As New System.Text.StringBuilder()
+    log.AppendLine("결과,파일,옛 참조,새 참조,메시지")
+    Dim nDone As Integer = 0
+    Dim nSaved As Integer = 0
+    Dim nRepl As Integer = 0
+    Dim nFail As Integer = 0
+    Dim nLeft As Integer = 0
+
+    Dim prevSilent As Boolean = ThisApplication.SilentOperation
+    Try
+        ThisApplication.SilentOperation = True
+
+        For ji As Integer = 0 To jobs.Count - 1
+            Dim jf As String = jobs(ji)(1)
+            Dim buy As String = jobs(ji)(2)
+            ThisApplication.StatusBarText = TTL & " : " & (ji + 1) & " / " & jobs.Count & "  " & System.IO.Path.GetFileName(jf)
+
+            If Not System.IO.File.Exists(jf) Then
+                log.AppendLine(CsvField("없음") & "," & CsvField(jf) & ",,," & CsvField("복사본이 없음"))
+                nFail += 1
+                Continue For
+            End If
+            If Ext(jf) = ".dwg" Then
+                Dim isInv As Boolean = False
+                Try
+                    isInv = ThisApplication.FileManager.IsInventorDWG(jf)
+                Catch
+                End Try
+                If Not isInv Then Continue For
+            End If
+
+            Dim doc As Inventor.Document = Nothing
+            Try
+                Dim opts As Inventor.NameValueMap = ThisApplication.TransientObjects.CreateNameValueMap()
+                opts.Add("SkipAllUnresolvedFiles", True)
+                doc = ThisApplication.Documents.OpenWithOptions(jf, opts, False)
+            Catch ex As Exception
+                log.AppendLine(CsvField("열기 실패") & "," & CsvField(jf) & ",,," & CsvField(ex.Message))
+                nFail += 1
+                Continue For
+            End Try
+
+            Dim fds As New List(Of Inventor.FileDescriptor)
+            Try
+                For Each fd As Inventor.FileDescriptor In doc.File.ReferencedFileDescriptors
+                    fds.Add(fd)
+                Next
+            Catch
+            End Try
+
+            Dim changed As Boolean = False
+            For Each fd As Inventor.FileDescriptor In fds
+                Dim oldRef As String = ""
+                Try
+                    oldRef = fd.FullFileName
+                Catch
+                    Continue For
+                End Try
+
+                Dim target As String = MapRef(S, oldRef, buy)
+                If target = "" Then
+                    Dim resolved As Boolean = False
+                    Try
+                        resolved = Not fd.ReferenceMissing
+                    Catch
+                    End Try
+                    If Not (resolved AndAlso IsUnder(oldRef, dst)) Then
+                        log.AppendLine(CsvField("못 찾음") & "," & CsvField(jf) & "," & CsvField(oldRef) & ",," & _
+                                       CsvField("복사 목록에 없는 참조"))
+                        nLeft += 1
+                    End If
+                    Continue For
+                End If
+                If String.Equals(target, oldRef, StringComparison.OrdinalIgnoreCase) Then
+                    Dim missingNow As Boolean = False
+                    Try
+                        missingNow = fd.ReferenceMissing
+                    Catch
+                    End Try
+                    If Not missingNow Then Continue For
+                End If
+
+                Try
+                    fd.ReplaceReference(target)
+                    changed = True
+                    nRepl += 1
+                Catch ex As Exception
+                    log.AppendLine(CsvField("대체 실패") & "," & CsvField(jf) & "," & CsvField(oldRef) & "," & _
+                                   CsvField(target) & "," & CsvField(ex.Message))
+                    nFail += 1
+                End Try
+            Next
+
+            If changed Then
+                Try
+                    doc.Save2(False)
+                    nSaved += 1
+                    log.AppendLine(CsvField("저장") & "," & CsvField(jf) & ",,,")
+                Catch ex As Exception
+                    log.AppendLine(CsvField("저장 실패") & "," & CsvField(jf) & ",,," & CsvField(ex.Message))
+                    nFail += 1
+                End Try
+            End If
+
+            Try
+                doc.Close(True)
+            Catch
+            End Try
+            nDone += 1
+            If nDone Mod 20 = 0 Then CloseHiddenDocs()
+        Next
+
+    Catch ex As Exception
+        log.AppendLine(CsvField("중단") & ",,,," & CsvField(ex.Message))
+        nFail += 1
+    Finally
+        ThisApplication.SilentOperation = prevSilent
+        ThisApplication.StatusBarText = ""
+    End Try
+    CloseHiddenDocs()
+
+    For Each x As String In GetList(S, "r_extra")
+        log.AppendLine(CsvField("추가 복사") & "," & CsvField(x) & ",,," & CsvField("복사 목록에 없던 구매품을 재연결 중에 복사"))
+    Next
+
+    Dim logPath As String = System.IO.Path.Combine(logDir, "재연결_" & DateTime.Now.ToString("yyyyMMdd_HHmmss") & ".csv")
+    Try
+        System.IO.File.WriteAllText(logPath, log.ToString(), New System.Text.UTF8Encoding(True))
+    Catch
+        logPath = "(로그 저장 실패)"
+    End Try
+
+    Dim msg As String = "처리 : " & nDone & " / " & jobs.Count & "개" & vbCrLf & _
+                        "참조 대체 : " & nRepl & "건,  저장한 파일 : " & nSaved & "개" & vbCrLf & _
+                        "실패 : " & nFail & "건,  못 찾은 참조 : " & nLeft & "건" & vbCrLf & _
+                        "추가 복사한 구매품 : " & GetList(S, "r_extra").Count & "개" & vbCrLf & vbCrLf & _
+                        "로그 : " & logPath & vbCrLf & vbCrLf & _
+                        "새 위치의 전체 조립도를 열어 링크가 모두 잡히는지 확인하세요." & vbCrLf & _
+                        "로그를 지금 열까요?"
+    If MessageBox.Show(msg, TTL & " - 완료", MessageBoxButtons.YesNo) = DialogResult.Yes Then OpenWithShell(logPath)
+End Sub
+
+' 참조 경로(원본 경로이거나, 이미 새 위치 경로) -> 이 파일이 봐야 할 새 위치
+Function MapRef(S As Dictionary(Of String, Object), oldRef As String, buy As String) As String
+    Dim dst As String = CStr(S("DST"))
+    Dim primary As Dictionary(Of String, String) = CType(S("r_primary"), Dictionary(Of String, String))
+    Dim purchKey As Dictionary(Of String, String) = CType(S("r_purchKey"), Dictionary(Of String, String))
+    Dim purchAny As Dictionary(Of String, String) = CType(S("r_purchAny"), Dictionary(Of String, String))
+    Dim reverse As Dictionary(Of String, String) = CType(S("r_reverse"), Dictionary(Of String, String))
+
+    ' 1) 원본 경로 알아내기
+    Dim src As String = ""
+    If reverse.ContainsKey(oldRef) Then
+        src = reverse(oldRef)
+    ElseIf primary.ContainsKey(oldRef) OrElse purchAny.ContainsKey(oldRef) Then
+        src = oldRef
+    Else
+        src = BestMatch(S, oldRef)
+        If src = "" AndAlso Not IsUnder(oldRef, dst) AndAlso System.IO.File.Exists(oldRef) Then src = oldRef
+    End If
+    If src = "" Then Return ""
+
+    ' 2) 구매품이면 이 파일의 구매품 폴더에 있는 복사본
+    Dim pi() As String = PurchInfo(S, src)
+    If pi IsNot Nothing Then
+        If buy <> "" Then
+            Dim key As String = src & "|" & buy
+            If purchKey.ContainsKey(key) Then Return purchKey(key)
+            Dim made As String = CopyPurchasedNow(S, src, buy, pi)
+            If made <> "" Then
+                purchKey(key) = made
+                reverse(made) = src
+                Return made
+            End If
+        End If
+        If purchAny.ContainsKey(src) Then Return purchAny(src)
+        Return ""
+    End If
+
+    If primary.ContainsKey(src) Then Return primary(src)
+    Return ""
+End Function
+
+' 경로 표기가 달라 바로 못 찾을 때 - 파일 이름이 같은 원본 중 뒤쪽 폴더가 가장 많이 겹치는 것
+Function BestMatch(S As Dictionary(Of String, Object), p As String) As String
+    Dim nameIndex As Dictionary(Of String, List(Of String)) = CType(S("r_nameIndex"), Dictionary(Of String, List(Of String)))
+    Dim nm As String = System.IO.Path.GetFileName(p)
+    If Not nameIndex.ContainsKey(nm) Then Return ""
+    Dim cands As List(Of String) = nameIndex(nm)
+    If cands.Count = 1 Then Return cands(0)
+
+    Dim ps() As String = p.Split("\"c)
+    Dim best As String = ""
+    Dim bestN As Integer = -1
+    For Each c As String In cands
+        Dim cs() As String = c.Split("\"c)
+        Dim n As Integer = 0
+        Do While n < ps.Length AndAlso n < cs.Length AndAlso _
+                 String.Equals(ps(ps.Length - 1 - n), cs(cs.Length - 1 - n), StringComparison.OrdinalIgnoreCase)
+            n += 1
+        Loop
+        If n > bestN Then
+            bestN = n
+            best = c
+        End If
+    Next
+    Return best
+End Function
+
+' 복사 목록에 없던 구매품 / 구매품 폴더 조합 - 지금 복사한다
+Function CopyPurchasedNow(S As Dictionary(Of String, Object), src As String, buy As String, pi() As String) As String
+    If Not System.IO.File.Exists(src) Then Return ""
+    Dim extra As List(Of String) = GetList(S, "r_extra")
+    If pi(0) <> "" Then
+        For Each f As String In EnumFiles(S, pi(0))
+            Dim d2 As String = System.IO.Path.Combine(buy, System.IO.Path.GetFileName(pi(0)), f.Substring(pi(0).Length + 1))
+            If CopyFileSafe(f, d2) = "copied" Then extra.Add(d2)
+        Next
+    End If
+    Dim target As String = System.IO.Path.Combine(buy, pi(1))
+    Dim r As String = CopyFileSafe(src, target)
+    If r = "copied" Then extra.Add(target)
+    If System.IO.File.Exists(target) Then Return target
+    Return ""
+End Function
+
+' 화면에 없고 아무도 참조하지 않는 문서를 메모리에서 내린다
+Sub CloseHiddenDocs()
+    For pass As Integer = 1 To 5
+        Dim lst As New List(Of Inventor.Document)
+        For Each d As Inventor.Document In ThisApplication.Documents
+            lst.Add(d)
+        Next
+        Dim closed As Integer = 0
+        For Each d As Inventor.Document In lst
+            Try
+                If d.Views.Count > 0 Then Continue For
+                If d.ReferencingDocuments.Count > 0 Then Continue For
+                d.Close(True)
+                closed += 1
+            Catch
+            End Try
+        Next
+        If closed = 0 Then Exit For
+    Next
+End Sub
