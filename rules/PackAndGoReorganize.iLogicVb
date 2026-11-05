@@ -27,11 +27,14 @@
 '        ├─ 04. 구매품\             유닛 조립도에 바로 들어간 구매품
 '        └─ 99. 미분류\             도번도 없고 어디에도 안 쓰인 파일
 '   하부 유닛이 없는 유닛은 01. 조립도 / 02. 부품도 / 03. 구매품
+'   (PUT01 처럼 번호가 하나뿐이면 하부 유닛이 없는 것으로 본다)
 '
 '  [분류 규칙]
 '   - 도번 GMKS-ST2601-SST03-10A 에서 SST 가 유닛 기호, 03 이 하부 유닛 번호
 '       00            -> 유닛 레벨
 '       01, 02 ...    -> 그 번호의 하부 유닛
+'     단, 00 이 아닌 번호가 하나뿐이면(Pulling Transfer 의 PUT01 만 있음)
+'     하부조립도를 만들지 않고 전부 유닛 레벨로 넣는다
 '     유닛 기호는 유닛 폴더 안 파일 이름에서 가장 많이 나오는 것으로 정한다
 '     (SST00 처럼 00 번 iam 이 있으면 그것을 우선한다)
 '   - 도번이 없거나 다른 유닛 기호면 조립 구조로 정한다 (그 파일을 쓰는
@@ -505,6 +508,7 @@ Sub InitPlanState(S As Dictionary(Of String, Object))
     S("unitCode") = NewDict()
     S("unitFiles") = New Dictionary(Of String, List(Of String))(StringComparer.OrdinalIgnoreCase)
     S("unitSubs") = New Dictionary(Of String, List(Of String))(StringComparer.OrdinalIgnoreCase)
+    S("flatUnits") = NewDict()                  ' 번호가 하나뿐인 유닛 -> 그 번호 (하부조립도 없음)
     S("subNames") = NewDict()                   ' "유닛|03" -> "03. Stack Stage"
 
     S("plan") = New List(Of String())           ' {종류 N/P, 원본, 새 위치, 분류, 구매품 폴더, 비고}
@@ -689,6 +693,13 @@ Sub AnalyzeUnits(S As Dictionary(Of String, Object))
             Next
         End If
         subs.Sort()
+
+        ' 00 이 아닌 번호가 하나뿐이면(PUT01 만 있음) 하부조립도를 따로 만들지 않는다.
+        ' 하부조립도는 SST01, SST02 ... 처럼 번호가 둘 이상일 때만 나눈다.
+        If subs.Count = 1 Then
+            GetDict(S, "flatUnits")(u) = subs(0)
+            subs = New List(Of String)
+        End If
         unitSubs(u) = subs
 
         ' 기존 하부 유닛 폴더 이름 : 유닛 바로 아래, 또는 "하부조립도" 폴더 바로 아래
@@ -869,7 +880,7 @@ Function ComputeCtx(S As Dictionary(Of String, Object), f As String) As String
     Dim p() As String = ParseCode(f)
     If p IsNot Nothing AndAlso code <> "" Then
         If String.Equals(p(0), code, StringComparison.OrdinalIgnoreCase) Then
-            If p(1) = "00" Then Return "UNIT|" & u
+            If p(1) = "00" OrElse GetDict(S, "flatUnits").ContainsKey(u) Then Return "UNIT|" & u
             SubName(S, u, p(1))
             Return "SUB|" & u & "|" & p(1)
         End If
@@ -1221,7 +1232,11 @@ Function PlanSummary(S As Dictionary(Of String, Object)) As String
         If c = "" Then c = "(도번 못 찾음)"
         Dim nSub As Integer = 0
         If GetDL(S, "unitSubs").ContainsKey(u) Then nSub = GetDL(S, "unitSubs")(u).Count
-        codes &= "   " & u & " : " & c & ", 하부 유닛 " & nSub & "개" & vbCrLf
+        If GetDict(S, "flatUnits").ContainsKey(u) Then
+            codes &= "   " & u & " : " & c & ", 번호가 " & c & GetDict(S, "flatUnits")(u) & " 하나뿐 -> 하부조립도 없이 유닛에 바로" & vbCrLf
+        Else
+            codes &= "   " & u & " : " & c & ", 하부 유닛 " & nSub & "개" & vbCrLf
+        End If
     Next
     msg &= vbCrLf & "유닛 기호" & vbCrLf & codes
     Return msg
