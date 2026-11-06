@@ -141,7 +141,8 @@ Sub Main()
 
     Dim sel = InputListBox("실행할 단계를 고르세요." & vbCrLf & vbCrLf & _
                            "원본 : " & CStr(S("SRC")) & vbCrLf & _
-                           "결과 : " & CStr(S("DST")), _
+                           "결과 : 미리보기 / 복사는 다음 창에서 고릅니다." & vbCrLf & _
+                           "       재연결은 활성화된 새 프로젝트 위치를 씁니다.", _
                            modes.ToArray(), MODE_PREVIEW, Title:=TTL, ListName:="단계")
     If sel Is Nothing OrElse CStr(sel) = "" Then Return
     Dim mode As String = CStr(sel)
@@ -152,6 +153,24 @@ Sub Main()
     End If
 
     Dim isCopy As Boolean = (mode = MODE_COPY)
+
+    '--- 0) 결과를 만들 위치 고르기 (지난번 위치를 기억한다) -------------------
+    Dim baseDir As String = ReadLastDst()
+    If baseDir = "" OrElse Not System.IO.Directory.Exists(baseDir) Then baseDir = NormDir(DST_BASE)
+    Dim picked As String = PickFolder(baseDir, _
+        "결과를 만들 폴더를 고르세요." & vbCrLf & _
+        "이 안에 """ & CStr(S("ROOTNAME")) & """ 폴더가 만들어집니다.")
+    If picked = "" Then Return
+    picked = NormDir(picked)
+    If String.Equals(System.IO.Path.GetFileName(picked), CStr(S("ROOTNAME")), StringComparison.OrdinalIgnoreCase) Then
+        ' 결과 폴더 자체를 골랐으면 그대로 쓴다 (한 단계 더 만들지 않음)
+        S("DST") = picked
+        SaveLastDst(System.IO.Path.GetDirectoryName(picked))
+    Else
+        S("DST") = System.IO.Path.Combine(picked, CStr(S("ROOTNAME")))
+        SaveLastDst(picked)
+    End If
+    S("LOGDIR") = System.IO.Path.Combine(CStr(S("DST")), "_정리로그")
 
     '--- 1) 실행 조건 확인 ---------------------------------------------------
     If Not System.IO.Directory.Exists(CStr(S("SRC"))) Then
@@ -1574,8 +1593,20 @@ Function ExecuteCopy(S As Dictionary(Of String, Object)) As String
     Dim nCopied As Integer = 0
     Dim nExists As Integer = 0
     Dim items As List(Of String()) = Plan(S)
+    Dim prog As System.Windows.Forms.Form = ProgOpen(TTL & " - 복사")
+    Dim sw As New System.Diagnostics.Stopwatch()
+    sw.Start()
+    Dim copyStopped As Boolean = False
     For i As Integer = 0 To items.Count - 1
-        If i Mod 50 = 0 Then ThisApplication.StatusBarText = TTL & " : 복사 " & i & " / " & items.Count
+        If i Mod 10 = 0 Then
+            If ProgStopped(prog) Then
+                copyStopped = True
+                Exit For
+            End If
+            ThisApplication.StatusBarText = TTL & " : 복사 " & i & " / " & items.Count
+            ProgSet(prog, i, items.Count, System.IO.Path.GetFileName(items(i)(2)), _
+                    "복사 " & nCopied & "   이미 있어 건너뜀 " & nExists & "   실패 " & failed.Count, sw)
+        End If
         Dim r As String = CopyFileSafe(items(i)(1), items(i)(2))
         If r = "copied" Then
             nCopied += 1
@@ -1583,9 +1614,18 @@ Function ExecuteCopy(S As Dictionary(Of String, Object)) As String
             nExists += 1
         Else
             failed.Add(items(i)(1) & " : " & r)
+            ProgLine(prog, "복사 실패   " & System.IO.Path.GetFileName(items(i)(1)) & "   " & r)
         End If
     Next
     ThisApplication.StatusBarText = ""
+    If copyStopped Then
+        ProgClose(prog)
+        Return "복사를 중지했습니다. 복사 : " & nCopied & "개, 이미 있어 건너뜀 : " & nExists & "개" & vbCrLf & vbCrLf & _
+               "다시 2. 복사 를 실행하면 남은 것부터 이어서 복사합니다." & vbCrLf & _
+               "(재연결 목록은 복사를 끝까지 마쳐야 만들어집니다)"
+    End If
+    ProgSet(prog, items.Count, items.Count, "프로젝트 파일 / 재연결 목록 만드는 중...", _
+            "복사 " & nCopied & "   이미 있어 건너뜀 " & nExists & "   실패 " & failed.Count, sw)
 
     ' 3) 프로젝트 파일 - 맨 위 하나를 인벤터로 만들고, 유닛 / 하부 유닛에는 그것을 복사
     '    작업공간이 "." (ipj 가 있는 폴더) 이므로 복사해도 각자 자기 폴더가 작업공간이 된다
@@ -1670,6 +1710,7 @@ Function ExecuteCopy(S As Dictionary(Of String, Object)) As String
     If failed.Count > 0 Then
         msg &= "실패 목록은 " & logDir & " 의 복사실패_*.txt 에 있습니다." & vbCrLf & vbCrLf
     End If
+    ProgClose(prog)
     msg &= "아직 복사본의 참조는 원본을 보고 있습니다. 이어서 재연결하세요." & vbCrLf & _
            "  1) 인벤터에서 모든 파일 닫기" & vbCrLf & _
            "  2) 프로젝트 창에서 " & System.IO.Path.GetFileName(rootIpj) & " 활성화" & vbCrLf & _
@@ -1705,6 +1746,23 @@ End Function
 Sub DoRelink(S As Dictionary(Of String, Object))
     Dim TTL As String = CStr(S("TTL")) & " - 재연결"
     Dim dst As String = CStr(S("DST"))
+    ' 결과 폴더 찾기 : 활성 프로젝트(ipj) 가 있는 폴더 -> 지난번 복사 위치 -> 설정 값
+    Try
+        Dim aDir As String = NormDir(System.IO.Path.GetDirectoryName( _
+                             ThisApplication.DesignProjectManager.ActiveDesignProject.FullFileName))
+        If System.IO.File.Exists(System.IO.Path.Combine(aDir, "_정리로그", "copy_map.tsv")) Then
+            dst = aDir
+        Else
+            Dim lastDst As String = ReadLastDst()
+            If lastDst <> "" Then
+                Dim cand As String = System.IO.Path.Combine(lastDst, CStr(S("ROOTNAME")))
+                If System.IO.File.Exists(System.IO.Path.Combine(cand, "_정리로그", "copy_map.tsv")) Then dst = cand
+            End If
+        End If
+    Catch
+    End Try
+    S("DST") = dst
+    S("LOGDIR") = System.IO.Path.Combine(dst, "_정리로그")
     InitPlanState(S)       ' PurchInfo 가 쓰는 빈 상태 (조립 구조는 없음)
     Dim logDir As String = CStr(S("LOGDIR"))
     Dim mapPath As String = System.IO.Path.Combine(logDir, "copy_map.tsv")
@@ -1820,6 +1878,10 @@ Sub DoRelink(S As Dictionary(Of String, Object))
     Dim nLeftUsed As Integer = 0
 
     Dim prevSilent As Boolean = ThisApplication.SilentOperation
+    Dim prog As System.Windows.Forms.Form = ProgOpen(TTL)
+    Dim sw As New System.Diagnostics.Stopwatch()
+    sw.Start()
+    Dim stopped As Boolean = False
     Try
         ThisApplication.SilentOperation = True
 
@@ -1831,6 +1893,14 @@ Sub DoRelink(S As Dictionary(Of String, Object))
             Dim used As String = "?"
             If jobs(ji).Length > 3 Then used = jobs(ji)(3)
             ThisApplication.StatusBarText = TTL & " : " & (ji + 1) & " / " & jobs.Count & "  " & System.IO.Path.GetFileName(jf)
+            If ProgStopped(prog) Then
+                stopped = True
+                logSb.AppendLine(CsvField("중지") & ",,,," & CsvField("사용자가 중지함 - 다시 실행하면 남은 것부터 이어서 됨"))
+                Exit Do
+            End If
+            ProgSet(prog, ji, jobs.Count, System.IO.Path.GetFileName(jf), _
+                    "대체 " & nRepl & "   저장 " & nSaved & "   못 찾음 " & nLeft & " (조립에 쓰이는 " & nLeftUsed & ")   실패 " & nFail, sw)
+            Dim replBefore As Integer = nRepl
 
             ' 안전장치 - 결과 폴더 밖 파일(원본 / Vault / 라이브러리)은 열지도 저장하지도 않는다
             If Not IsUnder(jf, dst) Then
@@ -1859,6 +1929,7 @@ Sub DoRelink(S As Dictionary(Of String, Object))
             Catch ex As Exception
                 logSb.AppendLine(CsvField("열기 실패") & "," & CsvField(jf) & ",,," & CsvField(ex.Message))
                 nFail += 1
+                ProgLine(prog, "열기 실패   " & System.IO.Path.GetFileName(jf) & "   " & ex.Message)
                 Continue Do
             End Try
 
@@ -1901,6 +1972,9 @@ Sub DoRelink(S As Dictionary(Of String, Object))
                         End If
                         logSb.AppendLine(CsvField(kind) & "," & CsvField(jf) & "," & CsvField(oldRef) & ",," & CsvField(why))
                         nLeft += 1
+                        If used <> "0" Then
+                            ProgLine(prog, "못 찾음     " & System.IO.Path.GetFileName(jf) & "  ->  " & System.IO.Path.GetFileName(oldRef))
+                        End If
                     End If
                     Continue For
                 End If
@@ -1921,6 +1995,7 @@ Sub DoRelink(S As Dictionary(Of String, Object))
                     logSb.AppendLine(CsvField("대체 실패") & "," & CsvField(jf) & "," & CsvField(oldRef) & "," & _
                                    CsvField(target) & "," & CsvField(ex.Message))
                     nFail += 1
+                    ProgLine(prog, "대체 실패   " & System.IO.Path.GetFileName(jf) & "  ->  " & System.IO.Path.GetFileName(oldRef))
                 End Try
             Next
 
@@ -1929,9 +2004,11 @@ Sub DoRelink(S As Dictionary(Of String, Object))
                     doc.Save2(False)
                     nSaved += 1
                     logSb.AppendLine(CsvField("저장") & "," & CsvField(jf) & ",,,")
+                    ProgLine(prog, "연결 완료   " & System.IO.Path.GetFileName(jf) & "   (참조 " & (nRepl - replBefore) & "개 바꿈)")
                 Catch ex As Exception
                     logSb.AppendLine(CsvField("저장 실패") & "," & CsvField(jf) & ",,," & CsvField(ex.Message))
                     nFail += 1
+                    ProgLine(prog, "저장 실패   " & System.IO.Path.GetFileName(jf) & "   " & ex.Message)
                 End Try
             End If
 
@@ -1944,9 +2021,16 @@ Sub DoRelink(S As Dictionary(Of String, Object))
 
             ' 재연결 중에 새로 복사한 조립도 / 부품도 재연결한다
             Dim nj As List(Of String()) = CType(S("r_newJobs"), List(Of String()))
+            For Each x As String() In nj
+                ProgLine(prog, "추가 복사   " & System.IO.Path.GetFileName(x(1)) & "   (재연결 목록에 추가)")
+            Next
             jobs.AddRange(nj)
             nj.Clear()
         Loop
+        If Not stopped Then
+            ProgSet(prog, jobs.Count, jobs.Count, "끝", _
+                    "대체 " & nRepl & "   저장 " & nSaved & "   못 찾음 " & nLeft & " (조립에 쓰이는 " & nLeftUsed & ")   실패 " & nFail, sw)
+        End If
 
     Catch ex As Exception
         logSb.AppendLine(CsvField("중단") & ",,,," & CsvField(ex.Message))
@@ -1968,7 +2052,8 @@ Sub DoRelink(S As Dictionary(Of String, Object))
         logPath = "(로그 저장 실패)"
     End Try
 
-    Dim msg As String = "처리 : " & nDone & " / " & jobs.Count & "개" & vbCrLf & _
+    ProgFinish(prog)
+    Dim msg As String = "처리 : " & nDone & " / " & jobs.Count & "개" & If(stopped, "  (중지함 - 다시 실행하면 이어서 됨)", "") & vbCrLf & _
                         "참조 대체 : " & nRepl & "건,  저장한 파일 : " & nSaved & "개" & vbCrLf & _
                         "실패 : " & nFail & "건" & vbCrLf & _
                         "못 찾은 참조 : " & nLeft & "건  (그중 조립에 쓰이는 파일의 것 " & nLeftUsed & "건)" & vbCrLf & _
@@ -1978,6 +2063,7 @@ Sub DoRelink(S As Dictionary(Of String, Object))
                         "새 위치의 전체 조립도를 열어 링크가 모두 잡히는지 확인하세요." & vbCrLf & _
                         "로그를 지금 열까요?"
     If MessageBox.Show(msg, TTL & " - 완료", MessageBoxButtons.YesNo) = DialogResult.Yes Then OpenWithShell(logPath)
+    ProgClose(prog)
 End Sub
 
 ' 참조 경로(원본 경로이거나, 이미 새 위치 경로) -> 이 파일이 봐야 할 새 위치
@@ -2125,6 +2211,222 @@ Function CopyPurchasedNow(S As Dictionary(Of String, Object), src As String, buy
     If r = "copied" AndAlso Ext(target) = ".iam" Then QueueRelink(S, target, buy, "?")
     If System.IO.File.Exists(target) Then Return target
     Return ""
+End Function
+
+' ============================================================================
+'  결과 위치 고르기 / 기억하기
+'  기억 파일 : %APPDATA%\PackAndGoReorganize\last_dst.txt  (레지스트리는 쓰지 않는다)
+' ============================================================================
+Function LastDstFile() As String
+    Return System.IO.Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData), _
+                                  "PackAndGoReorganize", "last_dst.txt")
+End Function
+
+Function ReadLastDst() As String
+    Try
+        Dim f As String = LastDstFile()
+        If System.IO.File.Exists(f) Then Return System.IO.File.ReadAllText(f, System.Text.Encoding.UTF8).Trim()
+    Catch
+    End Try
+    Return ""
+End Function
+
+Sub SaveLastDst(d As String)
+    Try
+        Dim f As String = LastDstFile()
+        System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(f))
+        System.IO.File.WriteAllText(f, d, New System.Text.UTF8Encoding(True))
+    Catch
+    End Try
+End Sub
+
+' 폴더 고르기 창. 취소하면 "".  창을 못 띄우면 경로를 직접 입력받는다.
+' Using 문을 쓰지 않는다 (Inventor 2026 컴파일 주의) - 부품편입 규칙과 같은 방식
+Function PickFolder(startDir As String, desc As String) As String
+    Dim fbd As System.Windows.Forms.FolderBrowserDialog = Nothing
+    Try
+        fbd = New System.Windows.Forms.FolderBrowserDialog()
+        fbd.Description = desc
+        fbd.ShowNewFolderButton = True
+        If System.IO.Directory.Exists(startDir) Then fbd.SelectedPath = startDir
+        If fbd.ShowDialog() = System.Windows.Forms.DialogResult.OK Then Return fbd.SelectedPath
+        Return ""
+    Catch
+        ' 아래에서 직접 입력받는다
+    Finally
+        If fbd IsNot Nothing Then
+            Try
+                fbd.Dispose()
+            Catch
+            End Try
+        End If
+    End Try
+
+    Dim typed As String = InputBox(desc, "결과 위치", startDir)
+    If String.IsNullOrWhiteSpace(typed) Then Return ""
+    typed = typed.Trim()
+    Try
+        System.IO.Directory.CreateDirectory(typed)
+    Catch
+        MessageBox.Show("폴더를 만들 수 없습니다." & vbCrLf & typed, "결과 위치")
+        Return ""
+    End Try
+    Return typed
+End Function
+
+
+' ============================================================================
+'  진행 상태 창 (재연결 / 복사)
+'   - 몇 번째 파일인지, 진행 막대, 걸린 시간 / 남은 시간, 개수, 최근 처리 내역
+'   - [중지] : 지금 파일까지 하고 멈춘다. 다시 실행하면 남은 것부터 이어서 된다.
+'   이벤트 처리기를 쓰지 않는다. 중지 버튼은 DialogResult 만 지정해 두고 그 값을 본다.
+'   (창 닫기 X 를 눌러도 중지로 본다)
+' ============================================================================
+Function ProgOpen(title As String) As System.Windows.Forms.Form
+    Dim frm As System.Windows.Forms.Form = Nothing
+    Try
+        frm = New System.Windows.Forms.Form()
+        frm.Text = title
+        frm.Width = 760
+        frm.Height = 480
+        frm.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen
+        frm.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog
+        frm.MaximizeBox = False
+        frm.MinimizeBox = True
+        frm.TopMost = True
+
+        Dim lblCount As New System.Windows.Forms.Label
+        lblCount.Name = "lblCount"
+        lblCount.SetBounds(12, 12, 720, 20)
+        lblCount.Text = "준비 중..."
+
+        Dim lblFile As New System.Windows.Forms.Label
+        lblFile.Name = "lblFile"
+        lblFile.SetBounds(12, 36, 720, 20)
+        lblFile.Text = ""
+
+        Dim pb As New System.Windows.Forms.ProgressBar
+        pb.Name = "pb"
+        pb.SetBounds(12, 62, 720, 22)
+        pb.Minimum = 0
+        pb.Maximum = 1000
+
+        Dim lblStat As New System.Windows.Forms.Label
+        lblStat.Name = "lblStat"
+        lblStat.SetBounds(12, 92, 720, 20)
+        lblStat.Text = ""
+
+        Dim lst As New System.Windows.Forms.ListBox
+        lst.Name = "lst"
+        lst.SetBounds(12, 118, 720, 270)
+        lst.HorizontalScrollbar = True
+
+        Dim btn As New System.Windows.Forms.Button
+        btn.Name = "btn"
+        btn.Text = "중지"
+        btn.SetBounds(612, 398, 120, 30)
+        btn.DialogResult = System.Windows.Forms.DialogResult.Cancel
+
+        frm.Controls.Add(lblCount)
+        frm.Controls.Add(lblFile)
+        frm.Controls.Add(pb)
+        frm.Controls.Add(lblStat)
+        frm.Controls.Add(lst)
+        frm.Controls.Add(btn)
+        frm.Show()
+        System.Windows.Forms.Application.DoEvents()
+    Catch
+        ' 창을 못 띄워도 작업은 계속한다 (상태 표시줄만 쓴다)
+        frm = Nothing
+    End Try
+    Return frm
+End Function
+
+Function ProgStopped(frm As System.Windows.Forms.Form) As Boolean
+    If frm Is Nothing Then Return False
+    Try
+        System.Windows.Forms.Application.DoEvents()
+        If frm.IsDisposed OrElse Not frm.Visible Then Return True
+        Return frm.DialogResult = System.Windows.Forms.DialogResult.Cancel
+    Catch
+        Return False
+    End Try
+End Function
+
+Sub ProgSet(frm As System.Windows.Forms.Form, done As Integer, total As Integer, current As String, _
+            stats As String, sw As System.Diagnostics.Stopwatch)
+    If frm Is Nothing Then Return
+    Try
+        If frm.IsDisposed Then Return
+        Dim pct As Integer = 0
+        If total > 0 Then pct = CInt(Math.Floor(done * 1000.0 / total))
+        If pct > 1000 Then pct = 1000
+
+        Dim el As Double = sw.Elapsed.TotalSeconds
+        Dim remain As String = "계산 중"
+        If done > 0 AndAlso total > done Then
+            remain = FmtSec(el / done * (total - done))
+        ElseIf total > 0 AndAlso done >= total Then
+            remain = "0:00"
+        End If
+
+        CType(frm.Controls("lblCount"), System.Windows.Forms.Label).Text = _
+            done & " / " & total & "   (" & (pct / 10.0).ToString("0.0") & "%)      걸린 시간 " & FmtSec(el) & "   남은 시간 " & remain
+        CType(frm.Controls("lblFile"), System.Windows.Forms.Label).Text = "지금 : " & current
+        CType(frm.Controls("pb"), System.Windows.Forms.ProgressBar).Value = pct
+        CType(frm.Controls("lblStat"), System.Windows.Forms.Label).Text = stats
+        System.Windows.Forms.Application.DoEvents()
+    Catch
+    End Try
+End Sub
+
+Sub ProgLine(frm As System.Windows.Forms.Form, txt As String)
+    If frm Is Nothing Then Return
+    Try
+        If frm.IsDisposed Then Return
+        Dim lst As System.Windows.Forms.ListBox = CType(frm.Controls("lst"), System.Windows.Forms.ListBox)
+        lst.Items.Add(DateTime.Now.ToString("HH:mm:ss") & "   " & txt)
+        Do While lst.Items.Count > 500
+            lst.Items.RemoveAt(0)
+        Loop
+        lst.TopIndex = lst.Items.Count - 1
+        System.Windows.Forms.Application.DoEvents()
+    Catch
+    End Try
+End Sub
+
+' 끝났을 때 - 맨 위 고정을 풀어 결과 메시지 창이 가려지지 않게 한다
+Sub ProgFinish(frm As System.Windows.Forms.Form)
+    If frm Is Nothing Then Return
+    Try
+        If frm.IsDisposed Then Return
+        frm.TopMost = False
+        CType(frm.Controls("btn"), System.Windows.Forms.Button).Enabled = False
+        CType(frm.Controls("btn"), System.Windows.Forms.Button).Text = "끝"
+        System.Windows.Forms.Application.DoEvents()
+    Catch
+    End Try
+End Sub
+
+Sub ProgClose(frm As System.Windows.Forms.Form)
+    If frm Is Nothing Then Return
+    Try
+        If Not frm.IsDisposed Then
+            frm.Close()
+            frm.Dispose()
+        End If
+    Catch
+    End Try
+End Sub
+
+Function FmtSec(sec As Double) As String
+    If sec < 0 OrElse Double.IsNaN(sec) OrElse Double.IsInfinity(sec) Then Return "-"
+    Dim t As Integer = CInt(Math.Round(sec))
+    Dim h As Integer = t \ 3600
+    Dim m As Integer = (t Mod 3600) \ 60
+    Dim ss As Integer = t Mod 60
+    If h > 0 Then Return h & ":" & m.ToString("00") & ":" & ss.ToString("00")
+    Return m & ":" & ss.ToString("00")
 End Function
 
 ' 화면에 없고 아무도 참조하지 않는 문서를 메모리에서 내린다
