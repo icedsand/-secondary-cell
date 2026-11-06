@@ -1644,7 +1644,7 @@ Function ExecuteCopy(S As Dictionary(Of String, Object)) As String
         ElseIf fe = ".idw" OrElse fe = ".dwg" Then
             ord = 1000
         End If
-        jobs.AppendLine(ord & vbTab & it(2) & vbTab & it(4))
+        jobs.AppendLine(ord & vbTab & it(2) & vbTab & it(4) & vbTab & If(graphSet.Contains(it(1)), "1", "0"))
         nJobs += 1
     Next
 
@@ -1793,7 +1793,8 @@ Sub DoRelink(S As Dictionary(Of String, Object))
     S("r_purchAny") = purchAny
     S("r_reverse") = reverse
     S("r_nameIndex") = nameIndex
-    S("r_extra") = New List(Of String)       ' 재연결 중 새로 복사한 구매품
+    S("r_extra") = New List(Of String)       ' 재연결 중 새로 복사한 파일
+    S("r_newJobs") = New List(Of String())   ' 재연결 중 새로 복사해서 재연결할 파일
 
     Dim jobs As New List(Of String())
     For Each ln As String In System.IO.File.ReadAllLines(jobPath, System.Text.Encoding.UTF8)
@@ -1816,25 +1817,30 @@ Sub DoRelink(S As Dictionary(Of String, Object))
     Dim nRepl As Integer = 0
     Dim nFail As Integer = 0
     Dim nLeft As Integer = 0
+    Dim nLeftUsed As Integer = 0
 
     Dim prevSilent As Boolean = ThisApplication.SilentOperation
     Try
         ThisApplication.SilentOperation = True
 
-        For ji As Integer = 0 To jobs.Count - 1
+        Dim ji As Integer = -1
+        Do While ji + 1 < jobs.Count
+            ji += 1
             Dim jf As String = jobs(ji)(1)
             Dim buy As String = jobs(ji)(2)
+            Dim used As String = "?"
+            If jobs(ji).Length > 3 Then used = jobs(ji)(3)
             ThisApplication.StatusBarText = TTL & " : " & (ji + 1) & " / " & jobs.Count & "  " & System.IO.Path.GetFileName(jf)
 
             ' 안전장치 - 결과 폴더 밖 파일(원본 / Vault / 라이브러리)은 열지도 저장하지도 않는다
             If Not IsUnder(jf, dst) Then
                 logSb.AppendLine(CsvField("건너뜀") & "," & CsvField(jf) & ",,," & CsvField("결과 폴더 밖 파일"))
-                Continue For
+                Continue Do
             End If
             If Not System.IO.File.Exists(jf) Then
                 logSb.AppendLine(CsvField("없음") & "," & CsvField(jf) & ",,," & CsvField("복사본이 없음"))
                 nFail += 1
-                Continue For
+                Continue Do
             End If
             If Ext(jf) = ".dwg" Then
                 Dim isInv As Boolean = False
@@ -1842,7 +1848,7 @@ Sub DoRelink(S As Dictionary(Of String, Object))
                     isInv = ThisApplication.FileManager.IsInventorDWG(jf)
                 Catch
                 End Try
-                If Not isInv Then Continue For
+                If Not isInv Then Continue Do
             End If
 
             Dim doc As Inventor.Document = Nothing
@@ -1853,7 +1859,7 @@ Sub DoRelink(S As Dictionary(Of String, Object))
             Catch ex As Exception
                 logSb.AppendLine(CsvField("열기 실패") & "," & CsvField(jf) & ",,," & CsvField(ex.Message))
                 nFail += 1
-                Continue For
+                Continue Do
             End Try
 
             Dim fds As New List(Of Inventor.FileDescriptor)
@@ -1873,7 +1879,7 @@ Sub DoRelink(S As Dictionary(Of String, Object))
                     Continue For
                 End Try
 
-                Dim target As String = MapRef(S, oldRef, buy)
+                Dim target As String = MapRef(S, oldRef, buy, jf, used)
                 If target = "" Then
                     Dim resolved As Boolean = False
                     Try
@@ -1881,8 +1887,19 @@ Sub DoRelink(S As Dictionary(Of String, Object))
                     Catch
                     End Try
                     If Not (resolved AndAlso IsUnder(oldRef, dst)) Then
-                        logSb.AppendLine(CsvField("못 찾음") & "," & CsvField(jf) & "," & CsvField(oldRef) & ",," & _
-                                       CsvField("복사 목록에 없는 참조"))
+                        ' 어떤 경우인지 바로 알 수 있게 나눠 적는다
+                        Dim why As String
+                        If System.IO.File.Exists(oldRef) OrElse System.IO.File.Exists(OtherDrive(S, oldRef)) Then
+                            why = "원본은 있지만 가져오지 못함"
+                        Else
+                            why = "원본 파일이 없음 (옛 경로 / 내려받기 안 됨 / 지워짐) - 원본에서도 끊겨 있던 참조"
+                        End If
+                        Dim kind As String = "못 찾음(안 쓰는 파일)"
+                        If used <> "0" Then
+                            kind = "못 찾음(조립에 쓰이는 파일)"
+                            nLeftUsed += 1
+                        End If
+                        logSb.AppendLine(CsvField(kind) & "," & CsvField(jf) & "," & CsvField(oldRef) & ",," & CsvField(why))
                         nLeft += 1
                     End If
                     Continue For
@@ -1924,7 +1941,12 @@ Sub DoRelink(S As Dictionary(Of String, Object))
             End Try
             nDone += 1
             If nDone Mod 20 = 0 Then CloseHiddenDocs()
-        Next
+
+            ' 재연결 중에 새로 복사한 조립도 / 부품도 재연결한다
+            Dim nj As List(Of String()) = CType(S("r_newJobs"), List(Of String()))
+            jobs.AddRange(nj)
+            nj.Clear()
+        Loop
 
     Catch ex As Exception
         logSb.AppendLine(CsvField("중단") & ",,,," & CsvField(ex.Message))
@@ -1936,7 +1958,7 @@ Sub DoRelink(S As Dictionary(Of String, Object))
     CloseHiddenDocs()
 
     For Each x As String In GetList(S, "r_extra")
-        logSb.AppendLine(CsvField("추가 복사") & "," & CsvField(x) & ",,," & CsvField("복사 목록에 없던 구매품을 재연결 중에 복사"))
+        logSb.AppendLine(CsvField("추가 복사") & "," & CsvField(x) & ",,," & CsvField("복사 목록에 없던 파일을 재연결 중에 복사"))
     Next
 
     Dim logPath As String = System.IO.Path.Combine(logDir, "재연결_" & DateTime.Now.ToString("yyyyMMdd_HHmmss") & ".csv")
@@ -1948,8 +1970,10 @@ Sub DoRelink(S As Dictionary(Of String, Object))
 
     Dim msg As String = "처리 : " & nDone & " / " & jobs.Count & "개" & vbCrLf & _
                         "참조 대체 : " & nRepl & "건,  저장한 파일 : " & nSaved & "개" & vbCrLf & _
-                        "실패 : " & nFail & "건,  못 찾은 참조 : " & nLeft & "건" & vbCrLf & _
-                        "추가 복사한 구매품 : " & GetList(S, "r_extra").Count & "개" & vbCrLf & vbCrLf & _
+                        "실패 : " & nFail & "건" & vbCrLf & _
+                        "못 찾은 참조 : " & nLeft & "건  (그중 조립에 쓰이는 파일의 것 " & nLeftUsed & "건)" & vbCrLf & _
+                        "   나머지는 조립에 안 쓰이는 옛 파일이 가리키던 것이라 전체 조립도와 무관" & vbCrLf & _
+                        "추가로 복사한 파일 : " & GetList(S, "r_extra").Count & "개" & vbCrLf & vbCrLf & _
                         "로그 : " & logPath & vbCrLf & vbCrLf & _
                         "새 위치의 전체 조립도를 열어 링크가 모두 잡히는지 확인하세요." & vbCrLf & _
                         "로그를 지금 열까요?"
@@ -1957,7 +1981,8 @@ Sub DoRelink(S As Dictionary(Of String, Object))
 End Sub
 
 ' 참조 경로(원본 경로이거나, 이미 새 위치 경로) -> 이 파일이 봐야 할 새 위치
-Function MapRef(S As Dictionary(Of String, Object), oldRef As String, buy As String) As String
+Function MapRef(S As Dictionary(Of String, Object), oldRef As String, buy As String, _
+                Optional jf As String = "", Optional used As String = "?") As String
     Dim dst As String = CStr(S("DST"))
     Dim primary As Dictionary(Of String, String) = CType(S("r_primary"), Dictionary(Of String, String))
     Dim purchKey As Dictionary(Of String, String) = CType(S("r_purchKey"), Dictionary(Of String, String))
@@ -1971,8 +1996,20 @@ Function MapRef(S As Dictionary(Of String, Object), oldRef As String, buy As Str
     ElseIf primary.ContainsKey(oldRef) OrElse purchAny.ContainsKey(oldRef) Then
         src = oldRef
     Else
-        src = BestMatch(S, oldRef)
-        If src = "" AndAlso Not IsUnder(oldRef, dst) AndAlso System.IO.File.Exists(oldRef) Then src = oldRef
+        ' 옛 드라이브로 저장된 참조 (S:\JASTECH1\... -> O:\JASTECH1\...)
+        Dim alt As String = OtherDrive(S, oldRef)
+        If alt <> oldRef AndAlso (primary.ContainsKey(alt) OrElse purchAny.ContainsKey(alt)) Then
+            src = alt
+        Else
+            src = BestMatch(S, oldRef)
+            If src = "" AndAlso Not IsUnder(oldRef, dst) Then
+                If System.IO.File.Exists(oldRef) Then
+                    src = oldRef
+                ElseIf System.IO.File.Exists(alt) Then
+                    src = alt
+                End If
+            End If
+        End If
     End If
     If src = "" Then Return ""
 
@@ -1996,9 +2033,55 @@ Function MapRef(S As Dictionary(Of String, Object), oldRef As String, buy As Str
         Return ""
     End If
 
-    If primary.ContainsKey(src) Then Return primary(src)
+    ' 4) 원본은 있는데 복사 계획에 없던 가공품 (조립에 안 쓰이는 옛 파일만 쓰던 바깥 가공품 등)
+    '    -> 그것을 조립한 파일과 같은 폴더로 지금 복사하고, 그 파일도 재연결 목록에 올린다
+    If jf <> "" AndAlso System.IO.File.Exists(src) AndAlso Not IsUnder(src, dst) Then
+        Dim t As String = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(jf), System.IO.Path.GetFileName(src))
+        Dim r As String = CopyFileSafe(src, t)
+        If r = "copied" OrElse r = "exists" Then
+            If r = "copied" Then
+                GetList(S, "r_extra").Add(t)
+                QueueRelink(S, t, buy, used)
+                ' 같은 이름 도면도 같이
+                For Each de As String In New String() {".idw", ".dwg"}
+                    Dim dp As String = System.IO.Path.ChangeExtension(src, de)
+                    If System.IO.File.Exists(dp) Then
+                        Dim dt As String = System.IO.Path.ChangeExtension(t, de)
+                        If CopyFileSafe(dp, dt) = "copied" Then
+                            GetList(S, "r_extra").Add(dt)
+                            primary(dp) = dt
+                            reverse(dt) = dp
+                            QueueRelink(S, dt, buy, used)
+                        End If
+                    End If
+                Next
+            End If
+            primary(src) = t
+            reverse(t) = src
+            Return t
+        End If
+    End If
     Return ""
 End Function
+
+' 드라이브 글자만 원본 폴더의 드라이브로 바꾼 경로 (S:\JASTECH1\... -> O:\JASTECH1\...)
+Function OtherDrive(S As Dictionary(Of String, Object), p As String) As String
+    Try
+        Dim r1 As String = System.IO.Path.GetPathRoot(p)
+        Dim r2 As String = System.IO.Path.GetPathRoot(CStr(S("SRC")))
+        If r1 = "" OrElse String.Equals(r1, r2, StringComparison.OrdinalIgnoreCase) Then Return p
+        Return r2 & p.Substring(r1.Length)
+    Catch
+        Return p
+    End Try
+End Function
+
+' 재연결 중에 새로 복사한 모델 / 도면을 재연결 목록 뒤에 붙인다
+Sub QueueRelink(S As Dictionary(Of String, Object), fp As String, buy As String, used As String)
+    Dim fe As String = Ext(fp)
+    If fe <> ".ipt" AndAlso fe <> ".iam" AndAlso fe <> ".idw" AndAlso fe <> ".dwg" Then Return
+    CType(S("r_newJobs"), List(Of String())).Add(New String() {"0", fp, buy, used})
+End Sub
 
 ' 경로 표기가 달라 바로 못 찾을 때 - 파일 이름이 같은 원본 중 뒤쪽 폴더가 가장 많이 겹치는 것
 Function BestMatch(S As Dictionary(Of String, Object), p As String) As String
@@ -2039,6 +2122,7 @@ Function CopyPurchasedNow(S As Dictionary(Of String, Object), src As String, buy
     Dim target As String = System.IO.Path.Combine(buy, pinfo(1))
     Dim r As String = CopyFileSafe(src, target)
     If r = "copied" Then extra.Add(target)
+    If r = "copied" AndAlso Ext(target) = ".iam" Then QueueRelink(S, target, buy, "?")
     If System.IO.File.Exists(target) Then Return target
     Return ""
 End Function
