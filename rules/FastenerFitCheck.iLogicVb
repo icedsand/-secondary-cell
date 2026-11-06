@@ -9,16 +9,19 @@
 '   2) 끝나면 결과 로그(txt)가 메모장으로 열리고, 오류 구멍은 화면에서 선택되어 있다
 '   3) 로그는  <조립도 폴더>\체결검사\  에 남는다 (csv 는 엑셀용 전체 목록)
 '
-'  [무엇을 검사하나]
+'  [무엇을 검사하나]  - 지금은 탭과 구멍 사이 세 가지만 본다
 '   맞닿은 두 부품에서 구멍 축이 일치하고 구멍 끝이 서로 붙어 있으면
 '   "체결부" 로 묶는다. 판 여러 장이 겹쳐 있으면 한 줄로 이어서 본다.
-'     · 탭 ↔ 통과구멍     : 통과구멍이 볼트보다 작거나, 다른 규격용이거나
-'                           (M6 탭인데 Ø9 = M8 용), 너무 빡빡한지
-'     · 카운터보어         : 볼트 머리 지름 / 높이가 들어가는지
-'     · 탭 ↔ 탭            : 볼트가 지나갈 수 없음
-'     · 축 어긋남          : 구멍이 겹치는데 중심이 맞지 않음 (피치 오류)
-'     · 막힌 구멍          : 카운터보어 / 통과구멍 아래가 상대 부품 면으로 막혀
-'                           탭이 없음, 탭 구멍이 상대 부품 면에 덮임
+'     1) 탭 ↔ 구멍 규격    : 볼트가 안 들어감 (탭 M4 ↔ Ø3.4 = M3용)      -> 오류
+'                           다른 규격용 구멍 (탭 M4 ↔ Ø5.5 = M5용)     -> 경고
+'     2) 탭 ↔ 카운터보어   : 볼트 머리가 안 들어감                        -> 오류
+'                           다른 규격용 카운터보어 (탭 M4 ↔ Ø9.5 = M5용) -> 경고
+'                           깊이가 볼트 머리 높이보다 얕음                -> 경고
+'     3) 동심 (축 어긋남)  : 구멍이 겹치는데 중심이 맞지 않음
+'                           구멍 여유 밖이면 오류, 안이면 경고
+'   규격표 사이 지름(예: M6 탭에 Ø7.5 조정용 구멍)은 판정하지 않는다.
+'   탭 없는 체결부(볼트+너트, 핀)와 막힌 구멍은 지금은 판정하지 않는다
+'   (막힌 구멍 검사는 CHECK_BLOCKED = True 로 켤 수 있다).
 '
 '  [구멍 정보를 읽는 방법]
 '   1) 구멍(Hole) 피처 / 나사(Thread) 피처가 있으면 그 정보를 쓴다 (확실)
@@ -29,16 +32,16 @@
 '      맞닿은 상대 구멍과 짝이 맞는 해석을 고른다.
 '      (Ø5.0 + Ø5.0 처럼 지름이 같으면 핀 구멍으로 보고 넘어간다)
 '
-'  [판정 기준] - 아래 SpecTable 표 (JIS / KS 표준, 렌치볼트 기준)
-'   통과구멍 : 1급 ~ 3급 범위면 정상 (M6 : Ø6.4 ~ Ø7.0)
+'  [판정 기준] - 아래 SpecTable 표 (JIS B 1001 = ISO 273, 렌치볼트 기준)
+'   구멍 규격 : 호칭 + 0.1 ~ 3급 + 0.3 범위면 그 호칭용 (M6 : Ø6.1 ~ Ø7.3)
 '   카운터보어 : 볼트 머리 지름 + 0.2 이상, 깊이는 머리 높이 이상
+'               표준 카운터보어 지름 ± 0.3 이면 그 호칭용
 '   회사 표준이 다르면 표 숫자만 고치면 된다.
 '
 '  [판정 단계]
-'   오류 : 체결이 안 됨 (볼트가 안 들어감, 탭이 없음, 머리가 안 들어감 ...)
-'   경고 : 확인 필요 (구멍이 큼, 빡빡함, 머리 돌출, 형상으로 추정한 오류 ...)
-'   참고 : 판정을 못 했거나 의도일 수 있는 것
-'   OK   : 이상 없음 (로그에만 남김)
+'   오류 : 체결이 안 됨 (볼트·머리가 안 들어감, 구멍 여유 밖으로 어긋남)
+'   경고 : 확인 필요 (다른 규격용 구멍, 머리 돌출, 형상으로 추정한 오류)
+'   OK   : 이상 없음 (csv 에만 남김)
 '
 '  [못 잡는 것]
 '   - 부품 사이에 틈이 있는 체결 (와셔를 모델링하지 않았는데 틈이 있는 경우 등)
@@ -74,9 +77,9 @@ Sub Main()
     Dim LINK_GAP       As Double  = 2.0     ' mm  끝 사이 틈이 이 안쪽이고 사이가 비어 있어도 짝으로 봄
                                             '     (탭 입구 모따기, 모델링 안 한 와셔, 부품 사이 틈)
     Dim MAX_HOLE_D     As Double  = 45      ' mm  이보다 큰 원통면은 구멍으로 보지 않음
-    Dim CHECK_BLOCKED  As Boolean = True    ' 짝 없는 구멍이 상대 부품 면에 막혔는지 검사
+    Dim CHECK_BLOCKED  As Boolean = False   ' 짝 없는 구멍이 상대 부품 면에 막혔는지 검사 (지금은 끔)
     Dim LOG_OK         As Boolean = True    ' 로그에 이상 없는 체결부도 남김
-    Dim LOG_INFO       As Boolean = True    ' 로그에 "참고" 항목도 남김
+    Dim LOG_INFO       As Boolean = False   ' 로그에 "참고" 항목도 남김
     Dim SELECT_ERRORS  As Boolean = True    ' 끝나면 오류 구멍을 화면에서 선택해 둠
     Dim LOG_DIR_NAME   As String  = "체결검사"
     Dim DEBUG_HOLES    As Boolean = False   ' True = 찾은 구멍 전체 목록을 로그 폴더에 따로 남김
@@ -674,6 +677,15 @@ Function ClearOf(d As Double, spec As List(Of Double())) As Double
         End If
     Next
     Return best
+End Function
+
+
+'' 카운터보어 지름 d 가 표준 카운터보어(± 0.3) 인 호칭, 없으면 0
+Function CboreOf(d As Double, spec As List(Of Double())) As Double
+    For Each row As Double() In spec
+        If Math.Abs(d - row(6)) <= 0.3 Then Return row(0)
+    Next
+    Return 0
 End Function
 
 
@@ -1616,8 +1628,9 @@ Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
             If Math.Abs(hs(p).Info.TapN - n1) > 0.01 Then same = False
         Next
         If same Then
-            rs.Lv = 1
-            rs.Msg = "탭끼리 맞닿음 (" & TapLabel(hs(taps(0))) & ") - 볼트가 지나갈 수 없음 (스터드·무두볼트면 무시)"
+            rs.Lv = 3
+            rs.Msg = "탭끼리 맞닿음 (" & TapLabel(hs(taps(0))) & ") - 스터드 등, 판정 안 함"
+            Return rs
         Else
             rs.Lv = 0
             rs.Msg = "탭끼리 맞닿음, 규격도 다름 (" & TapLabel(hs(taps(0))) & " ↔ " & TapLabel(hs(taps(1))) & ")"
@@ -1635,8 +1648,8 @@ Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
         tapPos = taps(0)
         tapN = hs(tapPos).Info.TapN
         If tapN <= 0 Then
-            rs.Lv = 2
-            rs.Msg = "규격을 읽지 못한 탭 (" & TapLabel(hs(tapPos)) & ") - 인치·관용나사 등은 판정 생략"
+            rs.Lv = 3
+            rs.Msg = "규격을 읽지 못한 탭 (" & TapLabel(hs(tapPos)) & ") - 인치·관용나사 등은 판정 안 함"
             Return rs
         End If
     Else
@@ -1683,94 +1696,33 @@ Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
         Next
     End If
 
-    '--- 탭이 없는 체결부 (볼트+너트, 핀, 또는 탭이 빠짐) ---
+    '--- 탭이 없는 체결부 (볼트+너트, 핀) ---
+    '     지금은 탭과 구멍 사이만 본다. 끝 구멍이 탭(형상 추정)으로 보이는데
+    '     상대 구멍이 작아 볼트가 안 들어가는 경우만 알린다.
     If tapPos < 0 Then
 
-        ' 양 끝 구멍의 바깥 끝이 상대 부품 면에 막혀 있으면 탭이 빠진 것
-        Dim blkName As String = ""
-        Dim firstIt As Inst = insts(mem(0))
-        Dim lastIt As Inst = insts(mem(n - 1))
-        Dim fe As Integer = OuterEnd(firstIt, ad, True)
-        Dim le As Integer = OuterEnd(lastIt, ad, False)
-        If firstIt.St(fe) = ST_BLOCKED() Then blkName = occs(firstIt.Blk(fe)).Name
-        If blkName = "" AndAlso lastIt.St(le) = ST_BLOCKED() Then blkName = occs(lastIt.Blk(le)).Name
-
-        Dim anyCb As Boolean = False
-        For Each hp As HoleRec In hs
-            If HeadEnd(hp) >= 0 Then anyCb = True
-        Next
-
-        Dim dmin As Double = Double.MaxValue, dmax As Double = 0
-        For Each hp As HoleRec In hs
-            dmin = Math.Min(dmin, hp.PassD)
-            dmax = Math.Max(dmax, hp.PassD)
-        Next
-
-        If blkName <> "" Then
-            If anyCb Then
-                rs.Lv = 0
-                rs.Msg = "카운터보어 볼트가 들어갈 탭이 없음 - 끝이 " & blkName & " 면에 막힘 (피치·위치 확인)"
-            Else
-                rs.Lv = 1
-                rs.Msg = "통과구멍 끝이 " & blkName & " 면에 막힘 - 상대 탭 없음 (피치·위치 확인)"
-            End If
-            AddAllSel(rs, mem)
-            Return rs
-        End If
-
-        If dmax - dmin <= 0.05 Then
-            rs.Lv = 3
-            rs.Msg = "같은 지름 Ø" & F(dmin) & " 관통 (볼트+너트 / 핀)"
-            Return rs
-        End If
-
-        ' 끝 구멍이 탭(추정)인데 상대 구멍이 작아 볼트가 안 들어감
         For Each p As Integer In New Integer() {0, n - 1}
             Dim hp As HoleRec = hs(p)
             If hp.Info IsNot Nothing Then Continue For
+            If HeadEnd(hp) >= 0 Then Continue For
             Dim gts As List(Of Double) = GeoTapSizes(hp.PassD, spec)
             If gts.Count = 0 Then Continue For
             Dim gn As Double = gts(gts.Count - 1)
             For q As Integer = 0 To n - 1
                 If q = p Then Continue For
                 If hs(q).PassD < gn + 0.05 AndAlso Math.Abs(hs(q).PassD - hp.PassD) > 0.05 Then
-                    rs.Lv = If(hs(q).Info IsNot Nothing, 0, 1)
+                    Dim k As Double = ClearOfH(hs(q), spec)
+                    rs.Lv = 1
                     rs.Msg = "M" & F(gn) & " 탭(형상 추정 Ø" & F(hp.PassD) & ") 인데 상대 구멍 Ø" & F(hs(q).PassD) & _
-                             " 에 볼트가 안 들어감"
+                             If(k > 0, " (M" & F(k) & "용)", "") & " 에 볼트가 안 들어감"
                     AddAllSel(rs, mem)
                     Return rs
                 End If
             Next
         Next
 
-        ' 통과구멍 규격이 서로 다름
-        Dim sizes As New List(Of Double)
-        Dim allKnown As Boolean = True
-        For Each hp As HoleRec In hs
-            Dim cs As Double = ClearOfH(hp, spec)
-            If cs <= 0 Then
-                allKnown = False
-            ElseIf Not sizes.Contains(cs) Then
-                sizes.Add(cs)
-            End If
-        Next
-
-        Dim ds As New List(Of String)
-        For Each hp As HoleRec In hs
-            ds.Add("Ø" & F(hp.PassD))
-        Next
-
-        If allKnown AndAlso sizes.Count > 1 Then
-            Dim sl As New List(Of String)
-            For Each sz As Double In sizes
-                sl.Add("M" & F(sz) & "용")
-            Next
-            rs.Lv = 1
-            rs.Msg = "통과구멍 규격이 서로 다름 (" & String.Join(" ↔ ", sl.ToArray()) & ") : " & String.Join(" / ", ds.ToArray())
-        Else
-            rs.Lv = 2
-            rs.Msg = "탭 없이 맞닿은 구멍, 지름이 서로 다름 : " & String.Join(" / ", ds.ToArray())
-        End If
+        rs.Lv = 3
+        rs.Msg = "탭 없음 (볼트+너트 / 핀) - 판정 안 함"
         Return rs
     End If
 
@@ -1823,25 +1775,22 @@ Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
 
         passTxt.Add("Ø" & F(d))
 
+        ' 구멍이 어느 규격용인지 : 통과구멍 피처면 그 규격, 아니면 지름으로
+        Dim hk As Double = ClearOfH(hp, spec)
+        Dim hkTxt As String = If(hk > 0, " (M" & F(hk) & "용)", "")
+
         If d < tapN + 0.05 Then
-            issues.Add(nm & " : 구멍 Ø" & F(d) & " 에 M" & F(tapN) & " 볼트가 안 들어감")
+            ' 볼트가 안 들어감  예) 탭 M4 ↔ 구멍 Ø3.4 (M3용)
+            issues.Add(nm & " : 구멍 Ø" & F(d) & hkTxt & " 에 M" & F(tapN) & " 볼트가 안 들어감")
             lv = Math.Min(lv, lvBad)
             bad = True
-        ElseIf hp.Info IsNot Nothing AndAlso hp.Info.ClearN > 0 AndAlso Math.Abs(hp.Info.ClearN - tapN) > 0.01 Then
-            issues.Add(nm & " : 통과구멍이 M" & F(hp.Info.ClearN) & "용 (탭은 M" & F(tapN) & ")")
-            lv = Math.Min(lv, lvBad)
-            bad = True
-        ElseIf sp IsNot Nothing AndAlso d > sp(5) + 0.3 Then
-            Dim k As Double = ClearOf(d, spec)
-            issues.Add(nm & " : 통과구멍이 큼 Ø" & F(d) & " (M" & F(tapN) & " 표준 Ø" & F(sp(4)) & ")" & _
-                       If(k > 0 AndAlso k <> tapN, " - M" & F(k) & "용 크기", ""))
-            lv = Math.Min(lv, 1)
-            bad = True
-        ElseIf sp IsNot Nothing AndAlso d < sp(3) - 0.05 Then
-            issues.Add(nm & " : 통과구멍이 빡빡함 Ø" & F(d) & " (M" & F(tapN) & " 표준 Ø" & F(sp(4)) & ")")
+        ElseIf hk > 0 AndAlso Math.Abs(hk - tapN) > 0.01 Then
+            ' 들어가긴 하지만 다른 규격용 구멍  예) 탭 M4 ↔ 구멍 Ø5.5 (M5용)
+            issues.Add(nm & " : 구멍 Ø" & F(d) & " 이 M" & F(hk) & "용 (탭은 M" & F(tapN) & ")")
             lv = Math.Min(lv, 1)
             bad = True
         End If
+        ' 규격표 사이 지름(예: M6 탭에 Ø7.5 조정용 구멍)은 판정하지 않는다
 
         ' 카운터보어 : 탭에서 먼 쪽 끝에 있을 때만 볼트 머리 자리로 본다
         If hp.CbEnd >= 0 AndAlso sp IsNot Nothing Then
@@ -1850,9 +1799,15 @@ Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
             Dim otPos As Double = PtPos(EndPt(it, 1 - hp.CbEnd), ad)
             If Math.Abs(cbPos - tapC) > Math.Abs(otPos - tapC) Then
                 passTxt(passTxt.Count - 1) &= " CB Ø" & F(hp.CbD) & "x" & F(hp.CbDepth)
+                Dim cbk As Double = CboreOf(hp.CbD, spec)
                 If hp.CbD < sp(8) + 0.2 Then
-                    issues.Add(nm & " : 카운터보어 Ø" & F(hp.CbD) & " 에 M" & F(tapN) & " 볼트 머리(Ø" & F(sp(8)) & ")가 안 들어감")
+                    issues.Add(nm & " : 카운터보어 Ø" & F(hp.CbD) & If(cbk > 0, " (M" & F(cbk) & "용)", "") & _
+                               " 에 M" & F(tapN) & " 볼트 머리(Ø" & F(sp(8)) & ")가 안 들어감")
                     lv = Math.Min(lv, lvBad)
+                    bad = True
+                ElseIf cbk > 0 AndAlso Math.Abs(cbk - tapN) > 0.01 Then
+                    issues.Add(nm & " : 카운터보어 Ø" & F(hp.CbD) & " 이 M" & F(cbk) & "용 (탭은 M" & F(tapN) & ")")
+                    lv = Math.Min(lv, 1)
                     bad = True
                 ElseIf hp.CbDepth < sp(9) - 0.05 Then
                     issues.Add(nm & " : 볼트 머리가 튀어나옴 - 카운터보어 깊이 " & F(hp.CbDepth) & _
@@ -1875,17 +1830,6 @@ Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
     End If
     Return rs
 
-End Function
-
-
-' 체결부 첫 구멍(low=True)의 아래쪽 끝 / 마지막 구멍의 위쪽 끝 번호
-Function OuterEnd(it As Inst, ad() As Double, low As Boolean) As Integer
-    Dim p0 As Double = PtPos(it.E0, ad)
-    Dim p1 As Double = PtPos(it.E1, ad)
-    If low Then
-        Return If(p0 <= p1, 0, 1)
-    End If
-    Return If(p0 >= p1, 0, 1)
 End Function
 
 
