@@ -1992,14 +1992,31 @@ End Function
 
 Function HoleDesc(h As HoleRec) As String
 
+    ' 구멍 지름과, 그 지름을 M 몇으로 읽었는지를 같이 적는다
+    '   M6x1 탭 Ø4.92 (피처)          : 구멍 피처의 탭 정보
+    '   Ø6.6 → M6용 (피처)            : 구멍 피처 (통과구멍 / 드릴)
+    '   Ø4.92 → M6 탭? (형상)         : 피처 정보 없이 지름으로 추정
+    Dim spec As List(Of Double()) = SpecTable()
     Dim s As String
     If h.Info IsNot Nothing AndAlso h.Info.IsTap Then
-        s = TapLabel(h) & " 탭"
+        s = TapLabel(h) & " 탭 Ø" & F(h.PassD) & " (피처)"
     ElseIf h.Info IsNot Nothing AndAlso h.Info.ClearN > 0 Then
-        s = "M" & F(h.Info.ClearN) & " 통과 Ø" & F(h.PassD)
+        s = "Ø" & F(h.PassD) & " → M" & F(h.Info.ClearN) & "용 (피처)"
     Else
         s = "Ø" & F(h.PassD)
-        If h.Info Is Nothing Then s &= "(형상)"
+        Dim gts As List(Of Double) = GeoTapSizes(h.PassD, spec)
+        Dim ck As Double = ClearOf(h.PassD, spec)
+        Dim nk As Double = NominalOf(h.PassD, spec)
+        If h.Info Is Nothing AndAlso HeadEnd(h) < 0 AndAlso gts.Count > 0 Then
+            s &= " → M" & F(gts(gts.Count - 1)) & " 탭?"
+        ElseIf ck > 0 Then
+            s &= " → M" & F(ck) & "용"
+        ElseIf nk > 0 Then
+            s &= " → 핀/축 구멍"
+        Else
+            s &= " → 규격 밖"
+        End If
+        s &= If(h.Info Is Nothing, " (형상)", " (피처)")
     End If
 
     If h.CbEnd >= 0 Then s &= " + 카운터보어 Ø" & F(h.CbD) & " 깊이 " & F(h.CbDepth)
