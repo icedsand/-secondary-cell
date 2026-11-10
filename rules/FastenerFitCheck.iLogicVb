@@ -1599,21 +1599,24 @@ Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
     Dim ad() As Double = insts(mem(0)).D
     mem.Sort(Function(x As Integer, y As Integer) AxPos(insts(x), ad).CompareTo(AxPos(insts(y), ad)))
 
+    ' 로그에 줄마다 찍을 내용 : 역할 / 부품 / 구멍 / 문제 표시
     Dim n As Integer = mem.Count
     Dim hs As New List(Of HoleRec)
-    Dim who As New List(Of String)
+    Dim names As New List(Of String)
+    Dim roles As New List(Of String)
+    Dim descs As New List(Of String)
+    Dim marks As New List(Of Boolean)
     For Each m As Integer In mem
         hs.Add(insts(m).H)
-        who.Add(occs(insts(m).O).Name & " [" & HoleDesc(insts(m).H) & "]")
+        names.Add(occs(insts(m).O).Name)
+        roles.Add("구멍")
+        descs.Add(HoleDesc(insts(m).H))
+        marks.Add(False)
     Next
-    rs.Who = String.Join("  →  ", who.ToArray())
     SetPos(rs, insts(mem(0)))
     For p As Integer = 1 To n - 1
         rs.Insts.Add(insts(mem(p)))
     Next
-
-    Dim issues As New List(Of String)
-    Dim lv As Integer = 3
 
     '--- 피처로 확실한 탭 ---
     Dim taps As New List(Of Integer)
@@ -1625,35 +1628,41 @@ Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
         Dim n1 As Double = hs(taps(0)).Info.TapN
         Dim same As Boolean = True
         For Each p As Integer In taps
+            roles(p) = "탭"
             If Math.Abs(hs(p).Info.TapN - n1) > 0.01 Then same = False
         Next
         If same Then
             rs.Lv = 3
             rs.Msg = "탭끼리 맞닿음 (" & TapLabel(hs(taps(0))) & ") - 스터드 등, 판정 안 함"
-            Return rs
         Else
             rs.Lv = 0
             rs.Msg = "탭끼리 맞닿음, 규격도 다름 (" & TapLabel(hs(taps(0))) & " ↔ " & TapLabel(hs(taps(1))) & ")"
+            rs.Advice.Add("볼트가 지나갈 수 없습니다. 한쪽을 통과구멍으로 바꾸거나 탭 규격을 맞추세요.")
+            For Each p As Integer In taps
+                marks(p) = True
+            Next
+            AddAllSel(rs, mem)
         End If
-        AddAllSel(rs, mem)
+        FinishRows(rs, roles, names, descs, marks)
         Return rs
     End If
 
     Dim tapPos As Integer = -1
     Dim tapN As Double = 0
     Dim est As Boolean = False
-    Dim estNominal As Boolean = False
 
     If taps.Count = 1 Then
         tapPos = taps(0)
         tapN = hs(tapPos).Info.TapN
+        roles(tapPos) = "탭"
         If tapN <= 0 Then
             rs.Lv = 3
             rs.Msg = "규격을 읽지 못한 탭 (" & TapLabel(hs(tapPos)) & ") - 인치·관용나사 등은 판정 안 함"
+            FinishRows(rs, roles, names, descs, marks)
             Return rs
         End If
     Else
-        '--- 피처 정보가 없으면 끝 구멍을 탭으로 볼 수 있는지 (형상 추정) ---
+        '--- 피처 정보가 없으면 끝 구멍을 탭으로 볼 수 있는지 (지름으로 추정) ---
         Dim bestScore As Double = -1
         Dim endsArr() As Integer = {0, n - 1}
         For Each p As Integer In endsArr
@@ -1690,15 +1699,14 @@ Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
                     tapPos = p
                     tapN = cn
                     est = True
-                    estNominal = Not strong(ci)
                 End If
             Next
         Next
     End If
 
     '--- 탭이 없는 체결부 (볼트+너트, 핀) ---
-    '     지금은 탭과 구멍 사이만 본다. 끝 구멍이 탭(형상 추정)으로 보이는데
-    '     상대 구멍이 작아 볼트가 안 들어가는 경우만 알린다.
+    '     끝 구멍이 탭(지름으로 추정)으로 보이는데 상대 구멍이 작아
+    '     볼트가 안 들어가는 경우만 알린다.
     If tapPos < 0 Then
 
         For Each p As Integer In New Integer() {0, n - 1}
@@ -1711,11 +1719,16 @@ Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
             For q As Integer = 0 To n - 1
                 If q = p Then Continue For
                 If hs(q).PassD < gn + 0.05 AndAlso Math.Abs(hs(q).PassD - hp.PassD) > 0.05 Then
-                    Dim k As Double = ClearOfH(hs(q), spec)
+                    roles(p) = "탭"
+                    descs(p) = "M" & F(gn) & " 탭 (Ø" & F(hp.PassD) & " 지름으로 추정)"
+                    marks(q) = True
                     rs.Lv = 1
-                    rs.Msg = "M" & F(gn) & " 탭(형상 추정 Ø" & F(hp.PassD) & ") 인데 상대 구멍 Ø" & F(hs(q).PassD) & _
-                             If(k > 0, " (M" & F(k) & "용)", "") & " 에 볼트가 안 들어감"
+                    rs.Msg = "M" & F(gn) & " 볼트가 구멍에 안 들어감"
+                    rs.Advice.Add(names(q) & " 의 Ø" & F(hs(q).PassD) & " 구멍에는 M" & F(gn) & _
+                                  " 볼트가 들어가지 않습니다." & StdHoleTxt(gn, spec))
+                    rs.Advice.Add("※ 탭은 구멍 피처 정보가 없어 지름으로 추정했습니다.")
                     AddAllSel(rs, mem)
+                    FinishRows(rs, roles, names, descs, marks)
                     Return rs
                 End If
             Next
@@ -1723,18 +1736,15 @@ Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
 
         rs.Lv = 3
         rs.Msg = "탭 없음 (볼트+너트 / 핀) - 판정 안 함"
+        FinishRows(rs, roles, names, descs, marks)
         Return rs
     End If
 
     '--- 탭이 있는 체결부 ---
     Dim sp() As Double = SpecOf(tapN, spec)
-    Dim lvBad As Integer = If(est, 1, 0)       ' 형상 추정이면 한 단계 낮춤
-    Dim tapLbl As String
-    If est Then
-        tapLbl = "M" & F(tapN) & " 탭(형상 추정" & If(estNominal, ", 호칭경 모델", "") & ")"
-    Else
-        tapLbl = TapLabel(hs(tapPos))
-    End If
+    Dim lvBad As Integer = If(est, 1, 0)       ' 지름으로 추정한 탭이면 한 단계 낮춤
+    roles(tapPos) = "탭"
+    If est Then descs(tapPos) = "M" & F(tapN) & " 탭 (Ø" & F(hs(tapPos).PassD) & " 지름으로 추정)"
 
     ' 볼트 머리 쪽 : 탭이 끝에 있으면 반대쪽 전부.
     ' 가운데 있으면 카운터보어 / 접시가 있는 쪽, 없으면 양쪽 다
@@ -1762,31 +1772,57 @@ Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
             headSide.Add(p)
         Next
     End If
+    For p As Integer = 0 To n - 1
+        If p <> tapPos AndAlso Not headSide.Contains(p) Then roles(p) = "탭 너머"
+    Next
 
+    ' 볼트 머리 자리 : 머리 쪽 구멍 중 탭에서 먼 쪽 끝에 카운터보어 / 접시가 있는 가장 가까운 구멍.
+    ' 그보다 바깥 구멍(공구 구멍, 덮개의 큰 구멍 등)은 볼트가 지나가지 않으므로 판정하지 않는다.
+    '   예) M5 탭 - 슬라이드 몸체 Ø5.5 + 카운터보어 Ø9.5 - 테이블 Ø10.5 (공구 구멍)
     Dim tapC As Double = AxPos(insts(mem(tapPos)), ad)
-    Dim passTxt As New List(Of String)
+    Dim seatDist As Double = Double.MaxValue
+    For Each p As Integer In headSide
+        Dim he As Integer = HeadEnd(hs(p))
+        If he < 0 Then Continue For
+        Dim it As Inst = insts(mem(p))
+        Dim hePos As Double = PtPos(EndPt(it, he), ad)
+        Dim otPos As Double = PtPos(EndPt(it, 1 - he), ad)
+        If Math.Abs(hePos - tapC) <= Math.Abs(otPos - tapC) Then Continue For   ' 탭 쪽을 보는 자리는 머리 자리 아님
+        Dim dist As Double = Math.Abs(AxPos(it, ad) - tapC)
+        If dist < seatDist Then seatDist = dist
+    Next
+
+    Dim lv As Integer = 3
+    Dim titles As New List(Of String)
 
     For Each p As Integer In headSide
 
         Dim hp As HoleRec = hs(p)
-        Dim nm As String = occs(insts(mem(p)).O).Name
+        Dim it As Inst = insts(mem(p))
+
+        If Math.Abs(AxPos(it, ad) - tapC) > seatDist + 0.001 Then
+            roles(p) = "머리 위"
+            Continue For
+        End If
+
         Dim d As Double = hp.PassD
         Dim bad As Boolean = False
 
-        passTxt.Add("Ø" & F(d))
-
         ' 구멍이 어느 규격용인지 : 통과구멍 피처면 그 규격, 아니면 지름으로
         Dim hk As Double = ClearOfH(hp, spec)
-        Dim hkTxt As String = If(hk > 0, " (M" & F(hk) & "용)", "")
 
         If d < tapN + 0.05 Then
             ' 볼트가 안 들어감  예) 탭 M4 ↔ 구멍 Ø3.4 (M3용)
-            issues.Add(nm & " : 구멍 Ø" & F(d) & hkTxt & " 에 M" & F(tapN) & " 볼트가 안 들어감")
+            AddTitle(titles, "M" & F(tapN) & " 볼트가 구멍에 안 들어감")
+            rs.Advice.Add(names(p) & " 의 Ø" & F(d) & " 구멍" & If(hk > 0, "(M" & F(hk) & "용)", "") & _
+                          "에는 M" & F(tapN) & " 볼트가 들어가지 않습니다." & StdHoleTxt(tapN, spec))
             lv = Math.Min(lv, lvBad)
             bad = True
         ElseIf hk > 0 AndAlso Math.Abs(hk - tapN) > 0.01 Then
             ' 들어가긴 하지만 다른 규격용 구멍  예) 탭 M4 ↔ 구멍 Ø5.5 (M5용)
-            issues.Add(nm & " : 구멍 Ø" & F(d) & " 이 M" & F(hk) & "용 (탭은 M" & F(tapN) & ")")
+            AddTitle(titles, "탭은 M" & F(tapN) & ", 구멍은 M" & F(hk) & "용")
+            rs.Advice.Add(names(p) & " 의 Ø" & F(d) & " 구멍은 M" & F(hk) & " 볼트용 크기입니다." & _
+                          StdHoleTxt(tapN, spec) & " 구멍이 맞다면 탭을 M" & F(hk) & " 로 바꾸세요.")
             lv = Math.Min(lv, 1)
             bad = True
         End If
@@ -1794,43 +1830,76 @@ Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
 
         ' 카운터보어 : 탭에서 먼 쪽 끝에 있을 때만 볼트 머리 자리로 본다
         If hp.CbEnd >= 0 AndAlso sp IsNot Nothing Then
-            Dim it As Inst = insts(mem(p))
             Dim cbPos As Double = PtPos(EndPt(it, hp.CbEnd), ad)
             Dim otPos As Double = PtPos(EndPt(it, 1 - hp.CbEnd), ad)
             If Math.Abs(cbPos - tapC) > Math.Abs(otPos - tapC) Then
-                passTxt(passTxt.Count - 1) &= " CB Ø" & F(hp.CbD) & "x" & F(hp.CbDepth)
                 Dim cbk As Double = CboreOf(hp.CbD, spec)
+                Dim cbStd As String = " M" & F(tapN) & " 표준 카운터보어는 Ø" & F(sp(6)) & " 깊이 " & F(sp(7)) & " 입니다."
                 If hp.CbD < sp(8) + 0.2 Then
-                    issues.Add(nm & " : 카운터보어 Ø" & F(hp.CbD) & If(cbk > 0, " (M" & F(cbk) & "용)", "") & _
-                               " 에 M" & F(tapN) & " 볼트 머리(Ø" & F(sp(8)) & ")가 안 들어감")
+                    AddTitle(titles, "볼트 머리가 카운터보어에 안 들어감")
+                    rs.Advice.Add(names(p) & " 의 카운터보어 Ø" & F(hp.CbD) & " 에 M" & F(tapN) & _
+                                  " 볼트 머리(Ø" & F(sp(8)) & ")가 들어가지 않습니다." & cbStd)
                     lv = Math.Min(lv, lvBad)
                     bad = True
                 ElseIf cbk > 0 AndAlso Math.Abs(cbk - tapN) > 0.01 Then
-                    issues.Add(nm & " : 카운터보어 Ø" & F(hp.CbD) & " 이 M" & F(cbk) & "용 (탭은 M" & F(tapN) & ")")
+                    AddTitle(titles, "탭은 M" & F(tapN) & ", 카운터보어는 M" & F(cbk) & "용")
+                    rs.Advice.Add(names(p) & " 의 카운터보어 Ø" & F(hp.CbD) & " 는 M" & F(cbk) & " 볼트용 크기입니다." & cbStd)
                     lv = Math.Min(lv, 1)
                     bad = True
                 ElseIf hp.CbDepth < sp(9) - 0.05 Then
-                    issues.Add(nm & " : 볼트 머리가 튀어나옴 - 카운터보어 깊이 " & F(hp.CbDepth) & _
-                               " < 머리 높이 " & F(sp(9)))
+                    AddTitle(titles, "볼트 머리가 튀어나옴")
+                    rs.Advice.Add(names(p) & " 의 카운터보어 깊이 " & F(hp.CbDepth) & " 가 M" & F(tapN) & _
+                                  " 볼트 머리 높이 " & F(sp(9)) & " 보다 얕습니다." & cbStd)
                     lv = Math.Min(lv, 1)
                     bad = True
                 End If
             End If
         End If
 
-        If bad Then rs.Sel.Add(mem(p))
+        If bad Then
+            marks(p) = True
+            rs.Sel.Add(mem(p))
+        End If
     Next
 
     rs.Lv = lv
-    If issues.Count = 0 Then
-        rs.Msg = tapLbl & " ↔ " & String.Join(" / ", passTxt.ToArray()) & "  이상 없음"
+    If titles.Count = 0 Then
+        rs.Msg = "M" & F(tapN) & " 탭 체결 이상 없음"
     Else
-        rs.Msg = tapLbl & " : " & String.Join(" / ", issues.ToArray())
+        rs.Msg = String.Join(" / ", titles.ToArray())
+        If est Then rs.Advice.Add("※ 탭은 구멍 피처 정보가 없어 지름 Ø" & F(hs(tapPos).PassD) & " 으로 M" & F(tapN) & " 이라고 추정했습니다.")
         If lv = 0 Then rs.Sel.Add(mem(tapPos))
     End If
+    FinishRows(rs, roles, names, descs, marks)
     Return rs
 
 End Function
+
+
+' 같은 제목은 한 번만
+Sub AddTitle(titles As List(Of String), t As String)
+    If Not titles.Contains(t) Then titles.Add(t)
+End Sub
+
+
+' " M6 통과구멍은 Ø6.6 입니다."  (표에 없는 호칭이면 "")
+Function StdHoleTxt(n As Double, spec As List(Of Double())) As String
+    Dim sp() As Double = SpecOf(n, spec)
+    If sp Is Nothing Then Return ""
+    Return " M" & F(n) & " 통과구멍은 Ø" & F(sp(4)) & " 입니다."
+End Function
+
+
+' 줄 목록을 결과에 옮긴다 (csv 한 칸용 요약도 함께)
+Sub FinishRows(rs As Res, roles As List(Of String), names As List(Of String), _
+               descs As List(Of String), marks As List(Of Boolean))
+    Dim parts As New List(Of String)
+    For i As Integer = 0 To names.Count - 1
+        rs.Rows.Add(New String() {roles(i), names(i), descs(i), If(marks(i), "◀", "")})
+        parts.Add(roles(i) & " " & names(i) & " (" & descs(i) & ")")
+    Next
+    rs.Who = String.Join("  →  ", parts.ToArray())
+End Sub
 
 
 ' ============================================================================
@@ -1840,10 +1909,9 @@ Function EvalMisalign(ia As Inst, ib As Inst, rho As Double, _
                       occs As List(Of OccRec), spec As List(Of Double())) As Res
 
     Dim rs As New Res
-    rs.Kind = "축 어긋남"
-    rs.Who = occs(ia.O).Name & " [" & HoleDesc(ia.H) & "]  ↔  " & _
-             occs(ib.O).Name & " [" & HoleDesc(ib.H) & "]"
+    rs.Kind = "동심"
     SetPos(rs, ia)
+    rs.Insts.Add(ib)
 
     ' 볼트가 들어갈 여유 : 탭이 있으면 (통과구멍 - 호칭) / 2
     Dim na As Double = TapSizeOf(ia.H, spec)
@@ -1856,23 +1924,35 @@ Function EvalMisalign(ia As Inst, ib As Inst, rho As Double, _
     Else
         allow = Math.Abs(ia.H.PassD - ib.H.PassD) / 2
     End If
+    allow = Math.Max(0, allow)
 
+    rs.Msg = "구멍 중심이 " & F(rho) & "mm 어긋남"
     If rho > allow Then
         rs.Lv = 0
-        rs.Msg = "구멍 위치가 " & F(rho) & "mm 어긋남 - 볼트·핀이 안 들어감 (피치 확인)"
+        rs.Advice.Add("볼트·핀이 들어갈 여유(" & F(allow) & "mm)보다 많이 어긋나 조립되지 않습니다. 두 부품의 구멍 위치(피치)를 확인하세요.")
     Else
         rs.Lv = 1
-        rs.Msg = "구멍 위치가 " & F(rho) & "mm 어긋남 - 구멍 여유 안이라 조립은 될 수 있음 (피치 확인)"
+        rs.Advice.Add("구멍 여유(" & F(allow) & "mm) 안이라 조립은 되지만, 의도한 것이 아니면 구멍 위치(피치)를 확인하세요.")
     End If
 
-    rs.Insts.Add(ib)
+    Dim roles As New List(Of String)
+    Dim names As New List(Of String)
+    Dim descs As New List(Of String)
+    Dim marks As New List(Of Boolean)
+    For Each it As Inst In New Inst() {ia, ib}
+        roles.Add(If(TapSizeOf(it.H, spec) > 0, "탭", "구멍"))
+        names.Add(occs(it.O).Name)
+        descs.Add(HoleDesc(it.H))
+        marks.Add(True)
+    Next
+    FinishRows(rs, roles, names, descs, marks)
     Return rs
 
 End Function
 
 
 ' ============================================================================
-'  판정 3 : 짝 없는 구멍이 상대 부품 면에 막힘
+'  판정 3 : 짝 없는 구멍이 상대 부품 면에 막힘  (CHECK_BLOCKED = True 일 때만)
 ' ============================================================================
 Function EvalBlocked(it As Inst, occs As List(Of OccRec), spec As List(Of Double())) As Res
 
@@ -1883,7 +1963,6 @@ Function EvalBlocked(it As Inst, occs As List(Of OccRec), spec As List(Of Double
 
     Dim be As Integer = If(it.St(0) = ST_BLOCKED(), 0, 1)
     Dim blk As String = occs(it.Blk(be)).Name
-    rs.Who = occs(it.O).Name & " [" & HoleDesc(h) & "]  /  막은 부품 : " & blk
 
     Dim anyOpen As Boolean = False
     For e As Integer = 0 To 1
@@ -1896,31 +1975,32 @@ Function EvalBlocked(it As Inst, occs As List(Of OccRec), spec As List(Of Double
 
     If hEnd >= 0 AndAlso ClearOfH(h, spec) > 0 Then
         If it.St(1 - hEnd) = ST_BLOCKED() Then
+            blk = occs(it.Blk(1 - hEnd)).Name
             rs.Lv = 0
-            rs.Msg = "카운터보어(접시) 구멍 밑에 탭이 없음 - " & occs(it.Blk(1 - hEnd)).Name & " 면에 막힘 (피치·위치 확인)"
+            rs.Msg = "카운터보어 구멍 밑에 탭이 없음"
         Else
             rs.Lv = 2
-            rs.Msg = "카운터보어(접시) 쪽이 " & blk & " 에 덮여 있음 (볼트를 넣을 수 있는지 확인)"
+            rs.Msg = "카운터보어 쪽이 덮여 있음"
         End If
 
     ElseIf h.Info IsNot Nothing AndAlso h.Info.IsTap Then
         If anyOpen Then Return Nothing          ' 반대쪽에서 볼트를 넣을 수 있음
         rs.Lv = 1
-        rs.Msg = TapLabel(h) & " 탭 구멍이 " & blk & " 면에 막힘 - 상대 구멍 없음 (피치·위치 확인)"
+        rs.Msg = TapLabel(h) & " 탭 구멍이 막힘"
 
     ElseIf h.Info IsNot Nothing AndAlso (h.Info.ClearN > 0 OrElse ClearOf(h.PassD, spec) > 0) Then
         rs.Lv = 1
-        rs.Msg = "통과구멍이 " & blk & " 면에 막힘 - 상대 탭 없음 (피치·위치 확인)"
+        rs.Msg = "통과구멍 밑에 탭이 없음"
 
     ElseIf h.Info Is Nothing Then
         Dim gts As List(Of Double) = GeoTapSizes(h.PassD, spec)
         If gts.Count > 0 Then
             If anyOpen Then Return Nothing
             rs.Lv = 2
-            rs.Msg = "탭(형상 추정 M" & F(gts(gts.Count - 1)) & ") 구멍이 " & blk & " 면에 막힘"
+            rs.Msg = "탭 구멍(지름으로 추정 M" & F(gts(gts.Count - 1)) & ")이 막힘"
         ElseIf ClearOf(h.PassD, spec) > 0 Then
             rs.Lv = 2
-            rs.Msg = "통과구멍(형상 추정 M" & F(ClearOf(h.PassD, spec)) & "용) 이 " & blk & " 면에 막힘 - 상대 탭 없음?"
+            rs.Msg = "통과구멍(지름으로 추정) 밑에 탭이 없음"
         Else
             Return Nothing
         End If
@@ -1928,6 +2008,13 @@ Function EvalBlocked(it As Inst, occs As List(Of OccRec), spec As List(Of Double
         Return Nothing
     End If
 
+    rs.Advice.Add(blk & " 의 이 위치에 맞는 구멍이 없습니다. 구멍 위치(피치)를 확인하세요.")
+
+    Dim roles As New List(Of String) From {"구멍", "막은 부품"}
+    Dim names As New List(Of String) From {occs(it.O).Name, blk}
+    Dim descs As New List(Of String) From {HoleDesc(h), "구멍 없음"}
+    Dim marks As New List(Of Boolean) From {True, False}
+    FinishRows(rs, roles, names, descs, marks)
     Return rs
 
 End Function
@@ -1992,41 +2079,29 @@ End Function
 
 Function HoleDesc(h As HoleRec) As String
 
-    ' 구멍 지름과, 그 지름을 M 몇으로 읽었는지를 같이 적는다
-    '   M6x1 탭 Ø4.92 (피처)          : 구멍 피처의 탭 정보
-    '   Ø6.6 → M6용 (피처)            : 구멍 피처 (통과구멍 / 드릴)
-    '   Ø4.92 → M6 탭? (형상)         : 피처 정보 없이 지름으로 추정
+    ' 사람이 읽기 쉬운 구멍 설명
+    '   M6x1 탭
+    '   Ø6.6 구멍 (M6용)
+    '   Ø5.1 구멍 (M5용) + 카운터보어 Ø9.5 깊이 8.5
+    '   Ø6 구멍 (핀·축)
     Dim spec As List(Of Double()) = SpecTable()
     Dim s As String
     If h.Info IsNot Nothing AndAlso h.Info.IsTap Then
-        s = TapLabel(h) & " 탭 Ø" & F(h.PassD) & " (피처)"
-    ElseIf h.Info IsNot Nothing AndAlso h.Info.ClearN > 0 Then
-        s = "Ø" & F(h.PassD) & " → M" & F(h.Info.ClearN) & "용 (피처)"
+        s = TapLabel(h) & " 탭"
     Else
-        s = "Ø" & F(h.PassD)
-        Dim gts As List(Of Double) = GeoTapSizes(h.PassD, spec)
-        Dim ck As Double = ClearOf(h.PassD, spec)
-        Dim nk As Double = NominalOf(h.PassD, spec)
-        If h.Info Is Nothing AndAlso HeadEnd(h) < 0 AndAlso gts.Count > 0 Then
-            s &= " → M" & F(gts(gts.Count - 1)) & " 탭?"
-        ElseIf ck > 0 Then
-            s &= " → M" & F(ck) & "용"
-        ElseIf nk > 0 Then
-            s &= " → 핀/축 구멍"
-        Else
-            s &= " → 규격 밖"
+        s = "Ø" & F(h.PassD) & " 구멍"
+        Dim ck As Double = ClearOfH(h, spec)
+        If ck > 0 Then
+            s &= " (M" & F(ck) & "용)"
+        ElseIf h.Info Is Nothing AndAlso HeadEnd(h) < 0 AndAlso GeoTapSizes(h.PassD, spec).Count > 0 Then
+            s &= " (M" & F(GeoTapSizes(h.PassD, spec)(GeoTapSizes(h.PassD, spec).Count - 1)) & " 탭 크기)"
+        ElseIf NominalOf(h.PassD, spec) > 0 Then
+            s &= " (핀·축)"
         End If
-        s &= If(h.Info Is Nothing, " (형상)", " (피처)")
     End If
 
     If h.CbEnd >= 0 Then s &= " + 카운터보어 Ø" & F(h.CbD) & " 깊이 " & F(h.CbDepth)
-    If h.CsEnd >= 0 Then
-        If HeadEnd(h) = h.CsEnd Then
-            s &= " + 접시 Ø" & F(h.CsD)
-        Else
-            s &= " + 모따기 Ø" & F(h.CsD)
-        End If
-    End If
+    If h.CsEnd >= 0 AndAlso HeadEnd(h) = h.CsEnd Then s &= " + 접시 Ø" & F(h.CsD)
     Return s
 
 End Function
@@ -2156,7 +2231,7 @@ Sub WriteLogs(csvPath As String, txtPath As String, results As List(Of Res), _
               logOk As Boolean, logInfo As Boolean)
 
     Dim csv As New System.Text.StringBuilder
-    csv.AppendLine("번호,판정,종류,내용,구멍 (축 방향 순서) / 부품,부품 경로")
+    csv.AppendLine("번호,판정,종류,문제,설명,구멍 (축 방향 순서),부품 경로")
 
     Dim txt As New System.Text.StringBuilder
     For Each ln As String In head
@@ -2166,9 +2241,24 @@ Sub WriteLogs(csvPath As String, txtPath As String, results As List(Of Res), _
         txt.AppendLine(ln)
     Next
     txt.AppendLine("")
-    txt.AppendLine("판정 기준은 JIS/KS 표준, 렌치볼트 기준입니다. (규칙 안 SpecTable)")
-    txt.AppendLine("'형상' 은 구멍 피처 정보가 없어 지름으로 추정한 구멍입니다.")
-    txt.AppendLine("")
+    txt.AppendLine("보는 법")
+    txt.AppendLine("  탭      : 나사산이 있는 구멍")
+    txt.AppendLine("  구멍    : 볼트가 지나가는 구멍 (판정 대상)")
+    txt.AppendLine("  머리 위 : 볼트 머리 자리보다 바깥 구멍 (공구 구멍 등, 판정 안 함)")
+    txt.AppendLine("  탭 너머 : 탭 뒤쪽 구멍 (판정 안 함)")
+    txt.AppendLine("  ◀       : 문제가 있는 구멍")
+    txt.AppendLine("  기준    : 통과구멍 ISO 273 / JIS B 1001, 카운터보어는 렌치볼트(ISO 4762) 기준")
+
+    ' 줄 맞춤용 폭
+    Dim wRole As Integer = 0
+    Dim wName As Integer = 0
+    For Each rs As Res In results
+        For Each row As String() In rs.Rows
+            wRole = Math.Max(wRole, DispWidth(row(0)))
+            wName = Math.Max(wName, DispWidth(row(1)))
+        Next
+    Next
+    wName = Math.Min(wName, 40)
 
     Dim no As Integer = 0
     Dim lastLv As Integer = -1
@@ -2186,23 +2276,37 @@ Sub WriteLogs(csvPath As String, txtPath As String, results As List(Of Res), _
         Next
 
         csv.AppendLine(no & "," & CsvQ(LvName(rs.Lv)) & "," & CsvQ(rs.Kind) & "," & CsvQ(rs.Msg) & "," & _
-                       CsvQ(rs.Who) & "," & _
+                       CsvQ(String.Join(" ", rs.Advice.ToArray())) & "," & CsvQ(rs.Who) & "," & _
                        CsvQ(String.Join(" | ", paths.ToArray())))
 
-        If rs.Lv <= 2 Then
-            If rs.Lv <> lastLv Then
-                txt.AppendLine("")
-                txt.AppendLine("──── " & LvName(rs.Lv) & " ────")
-                lastLv = rs.Lv
-            End If
-            txt.AppendLine(no & ". [" & rs.Kind & "] " & rs.Msg)
-            txt.AppendLine("     " & rs.Who)
+        If rs.Lv > 2 Then Continue For      ' OK 는 csv 에만
+
+        If rs.Lv <> lastLv Then
+            Dim cntLv As Integer = 0
+            For Each r2 As Res In results
+                If r2.Lv = rs.Lv Then cntLv += 1
+            Next
+            txt.AppendLine("")
+            txt.AppendLine("")
+            txt.AppendLine("════ " & LvName(rs.Lv) & " " & cntLv & "건 ════")
+            lastLv = rs.Lv
         End If
+
+        txt.AppendLine("")
+        txt.AppendLine("[" & no & "] " & rs.Msg)
+        For Each row As String() In rs.Rows
+            txt.AppendLine("    " & DispPad(row(0), wRole) & "  " & DispPad(row(1), wName) & "  " & _
+                           row(2) & If(row(3) <> "", "   " & row(3), ""))
+        Next
+        For Each av As String In rs.Advice
+            txt.AppendLine("    → " & av)
+        Next
     Next
 
     If readFail.Count > 0 Then
         txt.AppendLine("")
-        txt.AppendLine("──── 읽지 못한 부품 ────")
+        txt.AppendLine("")
+        txt.AppendLine("════ 읽지 못한 부품 ════")
         For Each ln As String In readFail
             txt.AppendLine("   " & ln)
         Next
@@ -2213,6 +2317,24 @@ Sub WriteLogs(csvPath As String, txtPath As String, results As List(Of Res), _
     System.IO.File.WriteAllText(txtPath, txt.ToString(), New System.Text.UTF8Encoding(True))
 
 End Sub
+
+
+' 메모장에서 보이는 폭 (한글 등 넓은 글자는 2칸)
+Function DispWidth(s As String) As Integer
+    If s Is Nothing Then Return 0
+    Dim w As Integer = 0
+    For Each ch As Char In s
+        w += If(AscW(ch) >= &H1100, 2, 1)
+    Next
+    Return w
+End Function
+
+
+Function DispPad(s As String, width As Integer) As String
+    Dim w As Integer = DispWidth(s)
+    If w >= width Then Return s
+    Return s & New String(" "c, width - w)
+End Function
 
 
 ' ============================================================================
@@ -2391,4 +2513,6 @@ Class Res
     Public X As Double, Y As Double, Z As Double
     Public Sel As New List(Of Integer)   ' 선택할 구멍 (insts 번호)
     Public Insts As New List(Of Inst)
+    Public Rows As New List(Of String()) ' 로그 줄 : 역할 / 부품 / 구멍 / 표시(◀)
+    Public Advice As New List(Of String) ' 로그의 "→" 설명
 End Class
