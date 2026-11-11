@@ -22,8 +22,12 @@
 '  [원칙] - 확실할 때만 알린다 (오탐을 줄이려고)
 '   · 한 구매품 안의 부품끼리 맞닿은 구멍은 판정하지 않는다 (실린더의 몸체 ↔ 테이블 등).
 '     업체가 만든 것이고, 내부 구멍은 모델링 방식이 제각각이다.
-'     "한 구매품" = 구속이 없고 임포트한 부품뿐인 하위 조립품 (SameProduct 참고).
-'     서로 다른 구매품 사이 (실린더 ↔ 브래킷 등) 는 판정한다.
+'     "한 구매품" = 구매품만 들어 있는 하위 조립도. 업체에서 받은 그대로라
+'     구속이 걸려 있을 수도 있다 (STEP 임포트, 미스미 등의 인벤터 파일).
+'     서로 다른 구매품 사이 (실린더 ↔ 브래킷 등), 구매품 ↔ 가공품은 판정한다.
+'   · 가공품 / 구매품은 도면 유무, 파일 이름(사내 도면번호), 저장 폴더를 같이 보고
+'     가린다 (ClassifyParts 참고). 로그 끝에 "한 구매품으로 본 하위 조립도" 목록이
+'     나오므로 잘못 묶인 것이 없는지 확인할 수 있다.
 '   · 규격이 분명한 구멍만 탭과 비교한다.
 '       - 구멍 피처에 볼트 규격이 지정됨 (틈새 구멍)
 '       - 지름이 표준 통과구멍 (1급 ~ 3급) 범위
@@ -36,7 +40,7 @@
 '     (슬라이드 테이블의 공구 구멍 등).
 '   · 탭이 가운데 있어 볼트가 어느 쪽에서 오는지 모르면, 문제가 없는 쪽에서
 '     온다고 본다.
-'   · 카운터보어 크기는 구멍 피처가 있는 부품(우리 가공품)만 본다.
+'   · 카운터보어 크기는 가공품만 본다.
 '   · 같은 규격 탭끼리 맞닿은 것 (스터드 등), 탭 없는 체결부 (볼트+너트, 핀),
 '     인치 / 관용나사 탭은 판정하지 않는다.
 '
@@ -116,6 +120,13 @@ Sub Main()
     ' (Content Center 부품은 자동으로 볼트 / 너트 / 와셔로 본다)
     ' SCREW / 나사 는 넣지 않았다. 볼스크류 / 볼나사까지 걸린다.
     Dim FASTENER_WORDS As String  = "BOLT,CAP SCREW,SET SCREW,STUD,볼트"
+
+    ' 가공품 / 구매품 구분  (구매품만 든 하위 조립도 = 업체에서 받은 한 구매품. 그 안의 체결은 검사 안 함)
+    '   도면 유무  : 같은 폴더에 같은 이름의 도면(.idw / 인벤터 .dwg)이 있으면 가공품
+    '   파일 이름  : 사내 도면번호 형식이면 가공품  (GMKS-ST2601-ETR01-60)
+    '   저장 폴더  : 폴더 경로에 아래 글자가 있으면 구매품. 회사 구매품 폴더 이름에 맞게 고친다.
+    Dim MIN_HYPHENS    As Integer = 2       ' 사내 도면번호 판별용 최소 하이픈 수 (다른 규칙과 같음)
+    Dim PURCHASE_DIRS  As String  = "구매품,규격품,상용품,PURCHASE,LIBRARY,VENDOR"
     ' ────────────────────────────────────────────────────────────────────────
 
     Dim TTL As String = "체결 검사"
@@ -237,6 +248,15 @@ Sub Main()
         Catch ex As Exception
             readFail.Add(SafeName(lo) & " : " & ex.Message)
         End Try
+    Next
+
+    ' 가공품 / 구매품을 가리고, 가공품이 든 하위 조립도를 표시한다
+    ClassifyParts(cache, nodes, asmPath, PURCHASE_DIRS.Split(","c), MIN_HYPHENS)
+    For Each oc As OccRec In occs
+        If Not oc.Data.IsOwn Then Continue For
+        For Each ak As String In oc.Anc
+            nodes(ak).HasOwn = True
+        Next
     Next
 
     '--- 4) 구멍을 조립도 좌표로 ---------------------------------------------
@@ -542,7 +562,17 @@ Sub Main()
     head.Add("조립도   : " & asmPath)
     head.Add("검사 시각 : " & DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") & _
              "   (걸린 시간 " & CInt(sw.Elapsed.TotalSeconds) & "초)")
-    head.Add("부품     : " & occs.Count & "개 (서로 다른 파일 " & cache.Count & "개)")
+    Dim nOwnFile As Integer = 0
+    Dim nBuyFile As Integer = 0
+    For Each kv As KeyValuePair(Of String, PartData) In cache
+        If kv.Value Is Nothing Then Continue For
+        If kv.Value.IsOwn Then
+            nOwnFile += 1
+        Else
+            nBuyFile += 1
+        End If
+    Next
+    head.Add("부품     : " & occs.Count & "개 (파일 기준 가공품 " & nOwnFile & "개 / 구매품 " & nBuyFile & "개)")
     head.Add("구멍     : " & insts.Count & "개,  판정한 탭 체결부 " & nJoint & "곳")
     head.Add("")
     head.Add("오류 " & cnt(0) & "건 / 경고 " & cnt(1) & "건 / 이상 없음 " & cnt(3) & "건   (같은 내용은 한 건으로 묶음)")
@@ -572,7 +602,7 @@ Sub Main()
         System.IO.Directory.CreateDirectory(logDir)
         csvPath = System.IO.Path.Combine(logDir, "체결검사_" & asmBase & "_" & stamp & ".csv")
         txtPath = System.IO.Path.Combine(logDir, "체결검사_" & asmBase & "_" & stamp & ".txt")
-        WriteLogs(csvPath, txtPath, results, head, notes, readFail, LOG_OK, LOG_INFO)
+        WriteLogs(csvPath, txtPath, results, head, notes, readFail, LOG_OK, LOG_INFO, ProductList(nodes))
     Catch ex As Exception
         saveErr = ex.Message
         csvPath = ""
@@ -590,7 +620,7 @@ Sub Main()
             notes.Add("※ 조립도 폴더에 쓰지 못해 바탕화면에 저장했습니다 (" & ShortText(saveErr, 80) & ")")
             csvPath = System.IO.Path.Combine(dsk, "체결검사_" & asmBase & "_" & stamp & ".csv")
             txtPath = System.IO.Path.Combine(dsk, "체결검사_" & asmBase & "_" & stamp & ".txt")
-            WriteLogs(csvPath, txtPath, results, head, notes, readFail, LOG_OK, LOG_INFO)
+            WriteLogs(csvPath, txtPath, results, head, notes, readFail, LOG_OK, LOG_INFO, ProductList(nodes))
         Catch ex As Exception
             saveErr &= vbCrLf & "바탕화면 저장도 실패 : " & ex.Message
             csvPath = ""
@@ -601,6 +631,7 @@ Sub Main()
         Try
             WriteHoleList(System.IO.Path.Combine(logDir, "체결검사_" & asmBase & "_" & stamp & "_구멍목록.csv"), _
                           insts, occs, par)
+            WritePartList(System.IO.Path.Combine(logDir, "체결검사_" & asmBase & "_" & stamp & "_부품구분.csv"), cache)
         Catch
         End Try
     End If
@@ -761,8 +792,11 @@ Function ExtractPart(pdoc As Inventor.PartDocument, maxD As Double, words() As S
         pd.IsFastener = HasWord(pd.FileName, words) OrElse HasWord(GetDesc(pdoc), words)
     End If
 
-    ' 직접 모델링한 부품인지 : 임포트한 솔리드(기준 피처)만 있으면 구매품으로 본다.
-    ' "한 구매품 조립품" 을 가려낼 때 쓴다 (SameProduct).
+    ' 임포트한 솔리드(기준 피처)만 있는 부품인지 - 가공품 / 구매품 구분의 근거 중 하나 (ClassifyParts)
+    Try
+        pd.FullPath = pdoc.FullFileName
+    Catch
+    End Try
     Try
         Dim nAll As Integer = cd.Features.Count
         Dim nBase As Integer = 0
@@ -771,11 +805,10 @@ Function ExtractPart(pdoc As Inventor.PartDocument, maxD As Double, words() As S
             nBase = CInt(fo.NonParametricBaseFeatures.Count)
         Catch
         End Try
-        pd.IsOwn = (nAll - nBase) > 0
+        pd.Imported = (nAll - nBase) <= 0
     Catch
-        pd.IsOwn = True         ' 모르면 직접 만든 부품으로 본다 (판정에서 빼지 않는 쪽)
+        pd.Imported = False
     End Try
-    If pd.IsFastener Then pd.IsOwn = False
 
     ' 부품 범위 (막힘 검사 때 빨리 걸러내려고)
     Try
@@ -1677,23 +1710,22 @@ Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
     Dim roles As New List(Of String)
     Dim descs As New List(Of String)
     Dim marks As New List(Of Boolean)
-    Dim anyFeat As Boolean = False
+    Dim owns As New List(Of Boolean)        ' 가공품인지
+
+    ' 한 구매품 안의 부품끼리 (실린더의 몸체 ↔ 테이블 등) 는 판정하지 않는다.
+    ' 업체가 만든 것이고, 내부 구멍은 모델링 방식이 제각각이다.
+    ' 서로 다른 구매품 사이, 구매품 ↔ 가공품 사이는 판정한다.
+    If oneProduct Then Return Nothing
 
     For Each m As Integer In mem
         hs.Add(insts(m).H)
         its.Add(insts(m))
-        names.Add(occs(insts(m).O).Name)
+        names.Add(occs(insts(m).O).Name & If(occs(insts(m).O).Data.IsOwn, "", " (구매품)"))
+        owns.Add(occs(insts(m).O).Data.IsOwn)
         roles.Add("구멍")
         descs.Add(HoleDesc(insts(m).H))
         marks.Add(False)
-        If insts(m).H.Info IsNot Nothing Then anyFeat = True
     Next
-
-    ' 구멍 피처 정보가 있는 구멍이 하나도 없는 체결부 = 구매품끼리.
-    '   · 한 구매품 안의 부품끼리 (실린더의 몸체 ↔ 테이블 등) 는 판정하지 않는다.
-    '     업체가 만든 것이고, 내부 구멍은 모델링 방식이 제각각이다.
-    '   · 서로 다른 구매품 사이 (실린더 ↔ 브래킷 등) 는 판정한다.
-    If Not anyFeat AndAlso oneProduct Then Return Nothing
 
     Dim rs As New Res
     rs.Kind = "체결부"
@@ -1753,14 +1785,14 @@ Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
         Next
 
         If low.Count = 0 Then
-            chosen = JudgeSide(high, tapPos, tapN, 0, hs, its, names, ad, spec, checkDepth)
+            chosen = JudgeSide(high, tapPos, tapN, 0, hs, its, names, owns, ad, spec, checkDepth)
         ElseIf high.Count = 0 Then
-            chosen = JudgeSide(low, tapPos, tapN, 0, hs, its, names, ad, spec, checkDepth)
+            chosen = JudgeSide(low, tapPos, tapN, 0, hs, its, names, owns, ad, spec, checkDepth)
         Else
             ' 탭이 가운데 있으면 볼트가 어느 쪽에서 오는지 모른다.
             ' 볼트 머리 자리가 한쪽에만 있으면 그쪽, 아니면 문제가 없는 쪽에서 온다고 본다.
-            Dim srL As SideRes = JudgeSide(low, tapPos, tapN, 0, hs, its, names, ad, spec, checkDepth)
-            Dim srH As SideRes = JudgeSide(high, tapPos, tapN, 0, hs, its, names, ad, spec, checkDepth)
+            Dim srL As SideRes = JudgeSide(low, tapPos, tapN, 0, hs, its, names, owns, ad, spec, checkDepth)
+            Dim srH As SideRes = JudgeSide(high, tapPos, tapN, 0, hs, its, names, owns, ad, spec, checkDepth)
             If srL.HasSeat AndAlso Not srH.HasSeat Then
                 chosen = srL
                 otherSide = high
@@ -1822,7 +1854,7 @@ Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
             Dim okSr As SideRes = Nothing
             Dim okN As Double = 0
             For Each cn As Double In plaus
-                Dim sr As SideRes = JudgeSide(side, p, cn, 1, hs, its, names, ad, spec, checkDepth)
+                Dim sr As SideRes = JudgeSide(side, p, cn, 1, hs, its, names, owns, ad, spec, checkDepth)
                 If sr.Lv = 3 AndAlso sr.Checked > 0 Then
                     okSr = sr
                     okN = cn
@@ -1852,7 +1884,7 @@ Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
             If Not IsBlind(its(p), outerEnd, occs, tg, rayOk) Then Continue For
 
             Dim bn As Double = strong(strong.Count - 1)
-            Dim bad As SideRes = JudgeSide(side, p, bn, 1, hs, its, names, ad, spec, checkDepth)
+            Dim bad As SideRes = JudgeSide(side, p, bn, 1, hs, its, names, owns, ad, spec, checkDepth)
             If bad.Lv < 3 Then
                 tapPos = p
                 tapN = bn
@@ -1920,6 +1952,7 @@ End Function
 ' ============================================================================
 Function JudgeSide(side As List(Of Integer), tapPos As Integer, tapN As Double, lvBad As Integer, _
                    hs As List(Of HoleRec), its As List(Of Inst), names As List(Of String), _
+                   owns As List(Of Boolean), _
                    ad() As Double, spec As List(Of Double()), checkDepth As Boolean) As SideRes
 
     Dim sr As New SideRes
@@ -1984,9 +2017,9 @@ Function JudgeSide(side As List(Of Integer), tapPos As Integer, tapN As Double, 
             isBad = True
         End If
 
-        ' 카운터보어 : 구멍 피처가 있는 부품(우리 가공품)만 본다.
-        ' 구매품의 단차는 볼트 머리 자리가 아닐 수 있다.
-        If prof(1) = 1 AndAlso sp IsNot Nothing AndAlso hp.Info IsNot Nothing Then
+        ' 카운터보어 : 가공품만 본다.
+        ' 구매품의 카운터보어는 업체가 정한 것이고, 단차가 볼트 머리 자리가 아닐 수도 있다.
+        If prof(1) = 1 AndAlso sp IsNot Nothing AndAlso owns(p) Then
             Dim cbStd As String = " M" & F(tapN) & " 표준 카운터보어는 Ø" & F(sp(6)) & " 깊이 " & F(sp(7)) & " 입니다."
             sr.Checked += 1
             If prof(2) < sp(8) + 0.2 Then
@@ -2123,14 +2156,14 @@ End Function
 ' ============================================================================
 '  한 구매품 안의 부품들인지
 '
-'  업체 STEP 조립품을 임포트하면 하위 조립품(iam) 하나에 부품 여러 개가 들어온다.
+'  업체에서 받은 구매품 조립도(STEP 임포트, 또는 미스미 등에서 인벤터 파일로 받은 것)는
+'  하위 조립도(iam) 하나에 부품 여러 개가 들어 있다. 구속이 걸린 채로 오기도 한다.
 '  그 안의 부품끼리 맞닿은 구멍은 업체가 만든 것이라 판정하지 않는다.
-'  서로 다른 구매품 사이의 체결은 판정해야 한다.
+'  서로 다른 구매품 사이, 구매품과 가공품 사이의 체결은 판정한다.
 '
-'  "한 구매품" = 구멍들이 모두 같은 하위 조립품 안에 있고, 그 조립품이
-'     · 직접 모델링한 부품을 하나도 품지 않고  (임포트한 솔리드뿐)
-'     · 구속 / 조인트가 하나도 없다          (임포트한 조립품은 전부 고정 상태)
-'  구매품 여러 개를 직접 구속해 만든 조립품은 구속이 있으므로 "한 구매품" 이 아니다.
+'  "한 구매품" = 구멍들이 모두 같은 하위 조립도 안에 있고, 그 조립도가
+'     · 가공품을 하나도 품지 않고 (전부 구매품)
+'     · 우리가 만든 조립도가 아니다 (도면도 없고 사내 도면번호도 아님)
 ' ============================================================================
 Function SameProduct(mem As List(Of Integer), insts As List(Of Inst), _
                      occs As List(Of OccRec), nodes As Dictionary(Of String, AsmNode)) As Boolean
@@ -2138,7 +2171,7 @@ Function SameProduct(mem As List(Of Integer), insts As List(Of Inst), _
     Dim first As List(Of String) = occs(insts(mem(0)).O).Anc
     Dim depth As Integer = first.Count
 
-    ' 모든 구멍이 공통으로 들어 있는 가장 안쪽 하위 조립품
+    ' 모든 구멍이 공통으로 들어 있는 가장 안쪽 하위 조립도
     For Each m As Integer In mem
         Dim anc As List(Of String) = occs(insts(m).O).Anc
         Dim c As Integer = 0
@@ -2147,16 +2180,21 @@ Function SameProduct(mem As List(Of Integer), insts As List(Of Inst), _
         Loop
         depth = c
     Next
-    If depth = 0 Then Return False          ' 공통 조립품이 최상위 조립도
+    If depth = 0 Then Return False          ' 공통 조립도가 최상위 조립도
 
     Dim nd As AsmNode = Nothing
     If Not nodes.TryGetValue(first(depth - 1), nd) Then Return False
-    Return nd.Free AndAlso Not nd.HasOwn
+    Return IsProduct(nd)
 
 End Function
 
 
-' 부품이 들어 있는 하위 조립품들을 바깥부터 기록한다
+Function IsProduct(nd As AsmNode) As Boolean
+    Return Not nd.OwnAsm AndAlso Not nd.HasOwn
+End Function
+
+
+' 부품이 들어 있는 하위 조립도들을 바깥부터 기록한다
 Sub NoteAncestors(lo As Inventor.ComponentOccurrence, oc As OccRec, nodes As Dictionary(Of String, AsmNode))
 
     Try
@@ -2168,13 +2206,15 @@ Sub NoteAncestors(lo As Inventor.ComponentOccurrence, oc As OccRec, nodes As Dic
             ak = If(ak = "", sub1.Name, ak & " > " & sub1.Name)
             oc.Anc.Add(ak)
 
-            Dim nd As AsmNode = Nothing
-            If Not nodes.TryGetValue(ak, nd) Then
-                nd = New AsmNode
-                nd.Free = IsUnconstrained(sub1)
+            If Not nodes.ContainsKey(ak) Then
+                Dim nd As New AsmNode
+                nd.Name = ak
+                Try
+                    nd.FilePath = CType(sub1.Definition.Document, Inventor.Document).FullFileName
+                Catch
+                End Try
                 nodes(ak) = nd
             End If
-            If oc.Data.IsOwn Then nd.HasOwn = True
         Next
     Catch
     End Try
@@ -2182,25 +2222,249 @@ Sub NoteAncestors(lo As Inventor.ComponentOccurrence, oc As OccRec, nodes As Dic
 End Sub
 
 
-' 하위 조립품에 구속 / 조인트가 하나도 없는지 (임포트한 조립품)
-Function IsUnconstrained(sub1 As Inventor.ComponentOccurrence) As Boolean
-    Try
-        Dim acd As Inventor.AssemblyComponentDefinition = TryCast(sub1.Definition, Inventor.AssemblyComponentDefinition)
-        If acd Is Nothing Then Return False
-        If acd.Constraints.Count > 0 Then Return False
+' ============================================================================
+'  가공품 / 구매품 구분
+'
+'  신호 세 가지를 같이 본다. 파일 이름만으로는 틀릴 수 있다
+'  (사내 번호가 아직 없는 가공품, 사내 번호처럼 생긴 업체 품번).
+'
+'    1) 구매품 폴더에 있다 (PURCHASE_DIRS)             -> 구매품
+'    2) 같은 폴더에 같은 이름의 도면이 있다            -> 가공품
+'    3) 파일 이름이 사내 도면번호 형식이다             -> 가공품
+'         도면이 있는 파일들의 머리글자(GMKS 등)로 시작하고 하이픈이 MIN_HYPHENS 개 이상.
+'         도면이 하나도 없으면 "이름-번호[리비전]" 꼴인지로 본다.
+'    4) 위에 다 해당하지 않으면
+'         임포트한 솔리드뿐이다                        -> 구매품
+'         가공품이 있는 폴더에 같이 있다               -> 가공품
+'         그 밖                                        -> 구매품
+'
+'  하위 조립도는 도면이 있거나 사내 도면번호면 우리가 만든 조립도.
+' ============================================================================
+Sub ClassifyParts(cache As Dictionary(Of String, PartData), nodes As Dictionary(Of String, AsmNode), _
+                  asmPath As String, buyWords() As String, minHy As Integer)
 
-        Dim nj As Integer = 0
-        Try
-            Dim ao As Object = acd
-            nj = CInt(ao.Joints.Count)
-        Catch
-            nj = 0
-        End Try
-        Return nj = 0
+    Dim parts As New List(Of PartData)
+    For Each kv As KeyValuePair(Of String, PartData) In cache
+        If kv.Value IsNot Nothing Then parts.Add(kv.Value)
+    Next
+    Dim subs As New List(Of AsmNode)
+    For Each kv As KeyValuePair(Of String, AsmNode) In nodes
+        subs.Add(kv.Value)
+    Next
+
+    ' 도면 유무, 구매품 폴더
+    For Each pd As PartData In parts
+        pd.HasDraw = HasDrawing(pd.FullPath)
+        pd.InBuyDir = HasWord(DirOf(pd.FullPath), buyWords)
+    Next
+    For Each nd As AsmNode In subs
+        nd.HasDraw = HasDrawing(nd.FilePath)
+        nd.InBuyDir = HasWord(DirOf(nd.FilePath), buyWords)
+    Next
+
+    ' 사내 도면번호의 머리글자 : 도면이 있는 파일 이름의 첫 토막
+    Dim prefixes As New List(Of String)
+    AddPrefix(prefixes, asmPath, minHy)
+    For Each pd As PartData In parts
+        If pd.HasDraw AndAlso Not pd.InBuyDir Then AddPrefix(prefixes, pd.FullPath, minHy)
+    Next
+    For Each nd As AsmNode In subs
+        If nd.HasDraw AndAlso Not nd.InBuyDir Then AddPrefix(prefixes, nd.FilePath, minHy)
+    Next
+
+    ' 파일 이름
+    For Each pd As PartData In parts
+        pd.NameOk = IsCompanyName(pd.FullPath, prefixes, minHy, True)
+    Next
+    For Each nd As AsmNode In subs
+        nd.NameOk = IsCompanyName(nd.FilePath, prefixes, minHy, False)
+    Next
+
+    ' 가공품이 들어 있는 폴더
+    Dim ownDirs As New List(Of String)
+    For Each pd As PartData In parts
+        If pd.InBuyDir OrElse pd.IsFastener Then Continue For
+        If Not (pd.HasDraw OrElse pd.NameOk) Then Continue For
+        Dim dr As String = DirOf(pd.FullPath).ToUpperInvariant()
+        If dr <> "" AndAlso Not ownDirs.Contains(dr) Then ownDirs.Add(dr)
+    Next
+
+    ' 결정
+    For Each pd As PartData In parts
+        If pd.IsFastener Then
+            pd.IsOwn = False
+            pd.Why = "Content Center / 볼트류"
+        ElseIf pd.InBuyDir Then
+            pd.IsOwn = False
+            pd.Why = "구매품 폴더"
+        ElseIf pd.HasDraw Then
+            pd.IsOwn = True
+            pd.Why = "도면 있음"
+        ElseIf pd.NameOk Then
+            pd.IsOwn = True
+            pd.Why = "사내 도면번호"
+        ElseIf pd.Imported Then
+            pd.IsOwn = False
+            pd.Why = "임포트한 솔리드 (도면 / 사내 번호 없음)"
+        ElseIf ownDirs.Contains(DirOf(pd.FullPath).ToUpperInvariant()) Then
+            pd.IsOwn = True
+            pd.Why = "가공품과 같은 폴더 (도면 / 사내 번호 없음)"
+        Else
+            pd.IsOwn = False
+            pd.Why = "도면 / 사내 번호 없음, 가공품 폴더 아님"
+        End If
+    Next
+
+    For Each nd As AsmNode In subs
+        nd.OwnAsm = Not nd.InBuyDir AndAlso (nd.HasDraw OrElse nd.NameOk)
+    Next
+
+End Sub
+
+
+' 파일이 있는 폴더 ("" 이면 모름)
+Function DirOf(fp As String) As String
+    If String.IsNullOrEmpty(fp) Then Return ""
+    Try
+        Dim dr As String = System.IO.Path.GetDirectoryName(fp)
+        If dr Is Nothing Then Return ""
+        Return dr
     Catch
-        Return False            ' 모르면 직접 만든 조립품으로 본다 (판정에서 빼지 않는 쪽)
+        Return ""
     End Try
 End Function
+
+
+' 같은 폴더에 같은 이름의 도면이 있는지 (도면 파일명은 모델과 같다는 사내 규칙)
+' 업체에서 같이 받은 AutoCAD .dwg 는 도면으로 치지 않는다.
+Function HasDrawing(modelPath As String) As Boolean
+
+    If String.IsNullOrEmpty(modelPath) Then Return False
+    Try
+        Dim dr As String = System.IO.Path.GetDirectoryName(modelPath)
+        Dim bs As String = System.IO.Path.GetFileNameWithoutExtension(modelPath)
+
+        If System.IO.File.Exists(System.IO.Path.Combine(dr, bs & ".idw")) Then Return True
+
+        Dim c2 As String = System.IO.Path.Combine(dr, bs & ".dwg")
+        If System.IO.File.Exists(c2) Then
+            Try
+                Dim fm As Object = ThisApplication.FileManager
+                Return CBool(fm.IsInventorDWG(c2))
+            Catch
+                Return True
+            End Try
+        End If
+    Catch
+    End Try
+    Return False
+
+End Function
+
+
+' 파일 이름의 하이픈 수
+Function HyphenCount(bs As String) As Integer
+    Dim n As Integer = 0
+    For Each ch As Char In bs
+        If ch = "-"c Then n += 1
+    Next
+    Return n
+End Function
+
+
+' 사내 도면번호의 머리글자를 모은다  GMKS-ST2601-ETR01-60 -> GMKS
+Sub AddPrefix(prefixes As List(Of String), fp As String, minHy As Integer)
+    If String.IsNullOrEmpty(fp) Then Return
+    Try
+        Dim bs As String = System.IO.Path.GetFileNameWithoutExtension(fp).Trim().ToUpperInvariant()
+        If HyphenCount(bs) < minHy Then Return
+        Dim tok As String = bs.Substring(0, bs.IndexOf("-"c))
+        If tok.Length >= 2 AndAlso Not prefixes.Contains(tok) Then prefixes.Add(tok)
+    Catch
+    End Try
+End Sub
+
+
+' 파일 이름이 사내 도면번호 형식인지
+'   머리글자를 알면 : 그 머리글자로 시작하고 하이픈이 minHy 개 이상
+'   모르면 (도면이 하나도 없을 때) : "이름-번호[리비전]" 꼴 (allowGuess = True 일 때만)
+Function IsCompanyName(fp As String, prefixes As List(Of String), minHy As Integer, allowGuess As Boolean) As Boolean
+
+    If String.IsNullOrEmpty(fp) Then Return False
+    Try
+        Dim bs As String = System.IO.Path.GetFileNameWithoutExtension(fp).Trim().ToUpperInvariant()
+        If HyphenCount(bs) < minHy Then Return False
+
+        If prefixes.Count > 0 Then
+            Return prefixes.Contains(bs.Substring(0, bs.IndexOf("-"c)))
+        End If
+        If Not allowGuess Then Return False
+
+        ' 끝이 "-숫자" 또는 "-숫자+리비전 문자(1~2)" 인지.  업체 품번에 흔한 ( ) _ 공백이 있으면 아님
+        If bs.IndexOf("("c) >= 0 OrElse bs.IndexOf("_"c) >= 0 OrElse bs.IndexOf(" "c) >= 0 Then Return False
+        Dim e As Integer = bs.Length - 1
+        Dim nRev As Integer = 0
+        Do While e >= 0 AndAlso bs.Chars(e) >= "A"c AndAlso bs.Chars(e) <= "Z"c
+            e -= 1
+            nRev += 1
+        Loop
+        If nRev > 2 OrElse e < 0 Then Return False
+        Dim b As Integer = e
+        Do While b >= 0 AndAlso Char.IsDigit(bs.Chars(b))
+            b -= 1
+        Loop
+        If b = e OrElse e - b > 4 Then Return False         ' 숫자가 없거나 너무 김
+        If b < 1 Then Return False
+        Return bs.Chars(b) = "-"c
+    Catch
+        Return False
+    End Try
+
+End Function
+
+
+' 한 구매품으로 본 하위 조립도 이름들 (가장 바깥 것만) - 로그 확인용
+Function ProductList(nodes As Dictionary(Of String, AsmNode)) As List(Of String)
+
+    Dim lst As New List(Of String)
+    For Each kv As KeyValuePair(Of String, AsmNode) In nodes
+        If Not IsProduct(kv.Value) Then Continue For
+
+        ' 바깥 조립도가 이미 한 구매품이면 안쪽 것은 적지 않는다
+        Dim nm As String = kv.Key
+        Dim cut As Integer = nm.LastIndexOf(" > ")
+        Dim inner As Boolean = False
+        Do While cut > 0
+            Dim outerNode As AsmNode = Nothing
+            If nodes.TryGetValue(nm.Substring(0, cut), outerNode) AndAlso IsProduct(outerNode) Then
+                inner = True
+                Exit Do
+            End If
+            cut = nm.LastIndexOf(" > ", cut - 1)
+        Loop
+        If Not inner Then lst.Add(nm)
+    Next
+    lst.Sort()
+    Return lst
+
+End Function
+
+
+' (DEBUG_HOLES) 부품마다 가공품 / 구매품으로 본 근거
+Sub WritePartList(path As String, cache As Dictionary(Of String, PartData))
+
+    Dim sb As New System.Text.StringBuilder
+    sb.AppendLine("파일,구분,근거,도면,사내 번호,구매품 폴더,임포트 솔리드,경로")
+    For Each kv As KeyValuePair(Of String, PartData) In cache
+        Dim pd As PartData = kv.Value
+        If pd Is Nothing Then Continue For
+        sb.AppendLine(CsvQ(pd.FileName) & "," & If(pd.IsOwn, "가공품", "구매품") & "," & CsvQ(pd.Why) & "," & _
+                      If(pd.HasDraw, "O", "") & "," & If(pd.NameOk, "O", "") & "," & _
+                      If(pd.InBuyDir, "O", "") & "," & If(pd.Imported, "O", "") & "," & CsvQ(pd.FullPath))
+    Next
+    System.IO.File.WriteAllText(path, sb.ToString(), New System.Text.UTF8Encoding(True))
+
+End Sub
 
 
 ' 같은 제목은 한 번만
@@ -2242,7 +2506,7 @@ Function EvalMisalign(ia As Inst, ea As Integer, ib As Inst, eb As Integer, rho 
 
     Dim fa As Boolean = ia.H.Info IsNot Nothing
     Dim fb As Boolean = ib.H.Info IsNot Nothing
-    If Not fa AndAlso Not fb AndAlso oneProduct Then Return Nothing     ' 한 구매품 안의 부품끼리
+    If oneProduct Then Return Nothing                   ' 한 구매품 안의 부품끼리
 
     Dim ta As Boolean = fa AndAlso ia.H.Info.IsTap
     Dim tb As Boolean = fb AndAlso ib.H.Info.IsTap
@@ -2312,7 +2576,8 @@ Function EvalMisalign(ia As Inst, ea As Integer, ib As Inst, eb As Integer, rho 
     End If
 
     Dim roles As New List(Of String) From {"탭", "구멍"}
-    Dim names As New List(Of String) From {occs(tapIt.O).Name, occs(holeIt.O).Name}
+    Dim names As New List(Of String) From {occs(tapIt.O).Name & If(occs(tapIt.O).Data.IsOwn, "", " (구매품)"), _
+                                           occs(holeIt.O).Name & If(occs(holeIt.O).Data.IsOwn, "", " (구매품)")}
     Dim descs As New List(Of String) From {HoleDesc(tapIt.H), HoleDesc(holeIt.H)}
     Dim marks As New List(Of Boolean) From {True, True}
     If est Then descs(0) = "M" & F(tapN) & " 탭으로 보임 (Ø" & F(tapIt.H.PassD) & ") *"
@@ -2585,7 +2850,7 @@ End Function
 ' ============================================================================
 Sub WriteLogs(csvPath As String, txtPath As String, results As List(Of Res), _
               head As List(Of String), notes As List(Of String), readFail As List(Of String), _
-              logOk As Boolean, logInfo As Boolean)
+              logOk As Boolean, logInfo As Boolean, products As List(Of String))
 
     Dim csv As New System.Text.StringBuilder
     csv.AppendLine("번호,판정,곳,종류,문제,설명,구멍 (축 방향 순서),부품 경로")
@@ -2603,6 +2868,7 @@ Sub WriteLogs(csvPath As String, txtPath As String, results As List(Of Res), _
     txt.AppendLine("  · 볼트 머리가 카운터보어에 안 들어감")
     txt.AppendLine("  · 탭과 구멍의 중심이 어긋남")
     txt.AppendLine("  규격표에 없는 지름(조정용 큰 구멍 등)과, 한 구매품 안의 부품끼리 맞닿은 구멍은 판정하지 않습니다.")
+    txt.AppendLine("  (구매품) 표시 : 도면 / 사내 도면번호 / 저장 폴더로 구매품이라고 본 부품")
     txt.AppendLine("")
     txt.AppendLine("보는 법")
     txt.AppendLine("  탭      : 나사산이 있는 구멍")
@@ -2671,6 +2937,20 @@ Sub WriteLogs(csvPath As String, txtPath As String, results As List(Of Res), _
         txt.AppendLine("")
         txt.AppendLine("")
         txt.AppendLine("오류 / 경고가 없습니다.  (이상 없는 체결부 목록은 csv 에 있습니다)")
+    End If
+
+    ' 한 구매품으로 본 하위 조립도 - 그 안의 체결은 검사하지 않았다. 잘못 묶였는지 확인용.
+    txt.AppendLine("")
+    txt.AppendLine("")
+    txt.AppendLine("════ 한 구매품으로 본 하위 조립도 " & products.Count & "개 (안쪽 체결은 검사 안 함) ════")
+    If products.Count = 0 Then
+        txt.AppendLine("   없음")
+    Else
+        For i As Integer = 0 To Math.Min(products.Count, 60) - 1
+            txt.AppendLine("   " & products(i))
+        Next
+        If products.Count > 60 Then txt.AppendLine("   ... 외 " & (products.Count - 60) & "개")
+        txt.AppendLine("   ※ 가공품이 든 조립도가 여기 있으면 알려 주세요. 구분 기준을 고쳐야 합니다.")
     End If
 
     If readFail.Count > 0 Then
@@ -2844,7 +3124,13 @@ Class PartData
     Public CompDef As Inventor.PartComponentDefinition = Nothing
     Public FileName As String = ""
     Public IsFastener As Boolean = False
-    Public IsOwn As Boolean = True       ' 직접 모델링한 부품 (False = 임포트한 솔리드뿐 / 볼트류)
+    Public FullPath As String = ""
+    Public Imported As Boolean = False   ' 임포트한 솔리드뿐 (모델링 피처 없음)
+    Public HasDraw As Boolean = False    ' 같은 폴더에 같은 이름의 도면이 있음
+    Public NameOk As Boolean = False     ' 파일 이름이 사내 도면번호 형식
+    Public InBuyDir As Boolean = False   ' 구매품 폴더에 있음
+    Public IsOwn As Boolean = True       ' 가공품 (False = 구매품)
+    Public Why As String = ""            ' 그렇게 본 근거
     Public HasBox As Boolean = False
     Public BMin(2) As Double
     Public BMax(2) As Double
@@ -2892,10 +3178,15 @@ Class Res
 End Class
 
 
-' 하위 조립품 하나
+' 하위 조립도 하나
 Class AsmNode
-    Public Free As Boolean = False       ' 구속 / 조인트가 하나도 없음 (임포트한 조립품)
-    Public HasOwn As Boolean = False     ' 직접 모델링한 부품을 품고 있음
+    Public Name As String = ""           ' 조립도 안에서의 이름 경로
+    Public FilePath As String = ""
+    Public HasDraw As Boolean = False    ' 같은 이름의 도면이 있음
+    Public NameOk As Boolean = False     ' 사내 도면번호 형식
+    Public InBuyDir As Boolean = False   ' 구매품 폴더에 있음
+    Public OwnAsm As Boolean = False     ' 우리가 만든 조립도 (도면 / 사내 번호)
+    Public HasOwn As Boolean = False     ' 가공품을 품고 있음
 End Class
 
 
