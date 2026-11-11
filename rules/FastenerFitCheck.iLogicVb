@@ -55,6 +55,9 @@
 '     (M5 볼트 / M14 탭) 큰 탭은 구멍으로 본다. 못 지나가면 (M5 / M6 탭) 오류.
 '   · 카운터보어 바닥에 앉은 부품 (와셔, 레벨링 볼트 끝, 칼라) 의 구멍은
 '     카운터보어 바닥에서 아래 구멍과 이어진 것으로 본다.
+'   · 탭에 끼운 부품 (볼트 역할을 하는 구매품 등) 자신의 구멍은 통과구멍으로 보지 않는다.
+'     볼트 머리의 렌치 구멍, 속 빈 볼트의 속 구멍을 "그 탭의 볼트가 지나갈 구멍" 으로
+'     보면 안 된다. 그 부품과 한 구매품인 부품의 구멍도 같다.
 '
 '  [구멍 정보를 읽는 방법]
 '   1) 구멍(Hole) 피처 / 나사(Thread) 피처가 있으면 그 정보를 쓴다 (확실)
@@ -521,7 +524,7 @@ Sub Main()
         Dim rs As Res = Nothing
         Try
             rs = EvalJoint(mem, insts, occs, spec, tg, rayOk, CHECK_CB_DEPTH, _
-                           SameProduct(mem, insts, occs, nodes))
+                           SameProduct(mem, insts, occs, nodes), nodes)
         Catch ex As Exception
             rs = Nothing
             evalFail.Add("체결부 판정 : " & ex.Message)
@@ -1749,7 +1752,8 @@ End Function
 Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
                    occs As List(Of OccRec), spec As List(Of Double()), _
                    tg As Inventor.TransientGeometry, ByRef rayOk As Boolean, _
-                   checkDepth As Boolean, oneProduct As Boolean) As Res
+                   checkDepth As Boolean, oneProduct As Boolean, _
+                   nodes As Dictionary(Of String, AsmNode)) As Res
 
     ' 축 방향 순서로 (한쪽 끝부터)
     Dim ad() As Double = insts(mem(0)).D
@@ -1764,6 +1768,7 @@ Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
     Dim descs As New List(Of String)
     Dim marks As New List(Of Boolean)
     Dim owns As New List(Of Boolean)        ' 가공품인지
+    Dim skips As New List(Of Boolean)       ' 탭에 끼운 부품 자신의 구멍인지
 
     ' 한 구매품 안의 부품끼리 (실린더의 몸체 ↔ 테이블 등) 는 판정하지 않는다.
     ' 업체가 만든 것이고, 내부 구멍은 모델링 방식이 제각각이다.
@@ -1775,6 +1780,7 @@ Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
         its.Add(insts(m))
         names.Add(occs(insts(m).O).Name & If(occs(insts(m).O).Data.IsOwn, "", " (구매품)"))
         owns.Add(occs(insts(m).O).Data.IsOwn)
+        skips.Add(False)
         roles.Add("구멍")
         descs.Add(HoleDesc(insts(m).H))
         marks.Add(False)
@@ -1854,6 +1860,24 @@ Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
         tapN = hs(tapPos).Info.TapN
         If tapN <= 0 Then Return Nothing            ' 인치 / 관용나사 등은 판정하지 않는다
 
+        ' 이 탭에 끼운 부품 (볼트 역할을 하는 구매품 등) 자신의 구멍은 통과구멍이 아니다.
+        ' 볼트 머리의 렌치 구멍, 속 빈 볼트의 속 구멍을 "M8 볼트가 지나갈 구멍" 으로 보면 안 된다.
+        ' 그 부품과 한 구매품인 부품의 구멍도 같다.  겉 나사 ↔ 탭은 EvalInsert 가 본다.
+        Dim ins As Integer = FindInsert(its(tapPos), occs, tg, rayOk)
+        If ins >= 0 Then
+            For p As Integer = 0 To n - 1
+                If p = tapPos Then Continue For
+                If its(p).O = ins Then
+                    skips(p) = True
+                Else
+                    Dim two As New List(Of Integer)
+                    two.Add(its(p).O)
+                    two.Add(ins)
+                    If SameProductOccs(two, occs, nodes) Then skips(p) = True
+                End If
+            Next
+        End If
+
         ' 탭 양쪽의 구멍 (탭에서 가까운 순서)
         Dim low As New List(Of Integer)
         Dim high As New List(Of Integer)
@@ -1865,14 +1889,14 @@ Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
         Next
 
         If low.Count = 0 Then
-            chosen = JudgeSide(high, tapPos, tapN, 0, hs, its, names, owns, ad, spec, checkDepth)
+            chosen = JudgeSide(high, tapPos, tapN, 0, hs, its, names, owns, skips, ad, spec, checkDepth)
         ElseIf high.Count = 0 Then
-            chosen = JudgeSide(low, tapPos, tapN, 0, hs, its, names, owns, ad, spec, checkDepth)
+            chosen = JudgeSide(low, tapPos, tapN, 0, hs, its, names, owns, skips, ad, spec, checkDepth)
         Else
             ' 탭이 가운데 있으면 볼트가 어느 쪽에서 오는지 모른다.
             ' 볼트 머리 자리가 한쪽에만 있으면 그쪽, 아니면 문제가 없는 쪽에서 온다고 본다.
-            Dim srL As SideRes = JudgeSide(low, tapPos, tapN, 0, hs, its, names, owns, ad, spec, checkDepth)
-            Dim srH As SideRes = JudgeSide(high, tapPos, tapN, 0, hs, its, names, owns, ad, spec, checkDepth)
+            Dim srL As SideRes = JudgeSide(low, tapPos, tapN, 0, hs, its, names, owns, skips, ad, spec, checkDepth)
+            Dim srH As SideRes = JudgeSide(high, tapPos, tapN, 0, hs, its, names, owns, skips, ad, spec, checkDepth)
             If srL.HasSeat AndAlso Not srH.HasSeat Then
                 chosen = srL
                 otherSide = high
@@ -1882,6 +1906,7 @@ Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
             ElseIf srL.Lv = 3 AndAlso srH.Lv = 3 Then
                 chosen = srL
                 chosen.Above.AddRange(srH.Above)
+                chosen.Skip.AddRange(srH.Skip)
                 chosen.Checked += srH.Checked
             ElseIf srL.Lv >= srH.Lv Then
                 chosen = srL
@@ -1934,7 +1959,7 @@ Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
             Dim okSr As SideRes = Nothing
             Dim okN As Double = 0
             For Each cn As Double In plaus
-                Dim sr As SideRes = JudgeSide(side, p, cn, 1, hs, its, names, owns, ad, spec, checkDepth)
+                Dim sr As SideRes = JudgeSide(side, p, cn, 1, hs, its, names, owns, skips, ad, spec, checkDepth)
                 If sr.Lv = 3 AndAlso sr.Checked > 0 Then
                     okSr = sr
                     okN = cn
@@ -1964,7 +1989,7 @@ Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
             If Not IsBlind(its(p), outerEnd, occs, tg, rayOk) Then Continue For
 
             Dim bn As Double = strong(strong.Count - 1)
-            Dim bad As SideRes = JudgeSide(side, p, bn, 1, hs, its, names, owns, ad, spec, checkDepth)
+            Dim bad As SideRes = JudgeSide(side, p, bn, 1, hs, its, names, owns, skips, ad, spec, checkDepth)
             If bad.Lv < 3 Then
                 tapPos = p
                 tapN = bn
@@ -1989,6 +2014,12 @@ Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
     For Each p As Integer In chosen.Above
         roles(p) = "머리 위"
     Next
+    For Each p As Integer In chosen.Skip
+        roles(p) = "끼운 부품"
+    Next
+
+    ' 끼운 부품의 구멍뿐이면 이 체결부로는 볼 것이 없다 (겉 나사 ↔ 탭은 따로 본다)
+    If chosen.Titles.Count = 0 AndAlso chosen.Checked = 0 AndAlso chosen.Skip.Count > 0 Then Return Nothing
     For Each p As Integer In chosen.Bad
         marks(p) = True
         rs.Sel.Add(mem(p))
@@ -2032,7 +2063,7 @@ End Function
 ' ============================================================================
 Function JudgeSide(side As List(Of Integer), tapPos As Integer, tapN As Double, lvBad As Integer, _
                    hs As List(Of HoleRec), its As List(Of Inst), names As List(Of String), _
-                   owns As List(Of Boolean), _
+                   owns As List(Of Boolean), skips As List(Of Boolean), _
                    ad() As Double, spec As List(Of Double()), checkDepth As Boolean) As SideRes
 
     Dim sr As New SideRes
@@ -2045,6 +2076,12 @@ Function JudgeSide(side As List(Of Integer), tapPos As Integer, tapN As Double, 
         Dim p As Integer = side(idx)
         If ended Then
             sr.Above.Add(p)
+            Continue For
+        End If
+
+        ' 탭에 끼운 부품 자신의 구멍은 건너뛴다
+        If skips(p) Then
+            sr.Skip.Add(p)
             Continue For
         End If
 
@@ -2625,19 +2662,6 @@ Function EvalInsert(it As Inst, occs As List(Of OccRec), nodes As Dictionary(Of 
 
     Dim tapN As Double = h.Info.TapN
 
-    ' 나사산이 있는 곳 = 가장 좁은 원통 중 가장 긴 것
-    Dim s0 As Double = 0
-    Dim s1 As Double = 0
-    For Each sg As Double() In h.Segs
-        If sg(3) <> 0 Then Continue For
-        If sg(2) > h.PassD + 0.05 Then Continue For
-        If sg(1) - sg(0) > s1 - s0 Then
-            s0 = sg(0)
-            s1 = sg(1)
-        End If
-    Next
-    If s1 - s0 < 1.0 Then Return Nothing
-
     ' 축에 수직인 두 방향
     Dim ux As Double, uy As Double, uz As Double
     If Math.Abs(it.D(0)) < 0.9 Then
@@ -2657,25 +2681,11 @@ Function EvalInsert(it As Inst, occs As List(Of OccRec), nodes As Dictionary(Of 
     dirs.Add(New Double() {vx, vy, vz})
     dirs.Add(New Double() {-vx, -vy, -vz})
 
-    ' 탭 안쪽 (반지름의 75% 자리) 에 다른 부품의 재료가 있는지.
-    ' 속이 빈 레벨링 볼트의 살도, 속이 찬 볼트도 이 자리에 걸린다.
+    ' 탭 안에 든 부품
     Dim rT As Double = h.PassD / 2 * 0.75
-    Dim found As Integer = -1
-    Dim ax() As Double = Nothing
-
-    For Each fr As Double In New Double() {0.5, 0.25, 0.75}
-        Dim t As Double = s0 + (s1 - s0) * fr - h.T0
-        Dim c() As Double = {it.E0(0) + it.D(0) * t, it.E0(1) + it.D(1) * t, it.E0(2) + it.D(2) * t}
-        Dim pt() As Double = {c(0) + ux * rT, c(1) + uy * rT, c(2) + uz * rT}
-        Dim k As Integer = InsideAny(pt, SkewDir(it.D, 1.0), occs, it.O, tg, rayOk)
-        If Not rayOk Then Return Nothing
-        If k >= 0 Then
-            found = k
-            ax = c
-            Exit For
-        End If
-    Next
+    Dim found As Integer = FindInsert(it, occs, tg, rayOk)
     If found < 0 Then Return Nothing
+    Dim ax() As Double = it.InsAx
 
     ' 한 구매품 안에서 끼워진 것은 보지 않는다
     Dim two As New List(Of Integer)
@@ -2772,6 +2782,65 @@ Function EvalInsert(it As Inst, occs As List(Of OccRec), nodes As Dictionary(Of 
     Dim marks As New List(Of Boolean) From {bad, bad}
     FinishRows(rs, roles, names, descs, marks)
     Return rs
+
+End Function
+
+
+' ============================================================================
+'  탭 구멍 안에 들어 있는 부품 (occs 번호). 없으면 -1.  한 번 찾으면 기억해 둔다.
+'
+'  나사산이 있는 곳의 안쪽 (반지름의 75% 자리) 에 다른 부품의 재료가 있는지 본다.
+'  속이 찬 볼트도, 속이 빈 레벨링 볼트의 살도 이 자리에 걸린다.
+'  구멍 피처 / 나사 피처로 확실한 미터 탭만 본다.
+' ============================================================================
+Function FindInsert(it As Inst, occs As List(Of OccRec), _
+                    tg As Inventor.TransientGeometry, ByRef rayOk As Boolean) As Integer
+
+    If it.InsOcc > -2 Then Return it.InsOcc
+    it.InsOcc = -1
+
+    Dim h As HoleRec = it.H
+    If h.Info Is Nothing OrElse Not h.Info.IsTap OrElse h.Info.TapN <= 0 Then Return -1
+    If Not rayOk Then Return -1
+
+    ' 나사산이 있는 곳 = 가장 좁은 원통 중 가장 긴 것
+    Dim s0 As Double = 0
+    Dim s1 As Double = 0
+    For Each sg As Double() In h.Segs
+        If sg(3) <> 0 Then Continue For
+        If sg(2) > h.PassD + 0.05 Then Continue For
+        If sg(1) - sg(0) > s1 - s0 Then
+            s0 = sg(0)
+            s1 = sg(1)
+        End If
+    Next
+    If s1 - s0 < 1.0 Then Return -1
+
+    ' 축에 수직인 방향
+    Dim ux As Double, uy As Double, uz As Double
+    If Math.Abs(it.D(0)) < 0.9 Then
+        ux = 0 : uy = it.D(2) : uz = -it.D(1)
+    Else
+        ux = -it.D(2) : uy = 0 : uz = it.D(0)
+    End If
+    Dim ul As Double = Math.Sqrt(ux * ux + uy * uy + uz * uz)
+    ux /= ul : uy /= ul : uz /= ul
+
+    Dim rT As Double = h.PassD / 2 * 0.75
+
+    For Each fr As Double In New Double() {0.5, 0.25, 0.75}
+        Dim t As Double = s0 + (s1 - s0) * fr - h.T0
+        Dim c() As Double = {it.E0(0) + it.D(0) * t, it.E0(1) + it.D(1) * t, it.E0(2) + it.D(2) * t}
+        Dim pt() As Double = {c(0) + ux * rT, c(1) + uy * rT, c(2) + uz * rT}
+        Dim k As Integer = InsideAny(pt, SkewDir(it.D, 1.0), occs, it.O, tg, rayOk)
+        If Not rayOk Then Return -1
+        If k >= 0 Then
+            it.InsOcc = k
+            it.InsAx(0) = c(0) : it.InsAx(1) = c(1) : it.InsAx(2) = c(2)
+            Return k
+        End If
+    Next
+    Return -1
 
 End Function
 
@@ -3528,6 +3597,8 @@ Class Inst
     Public St(1) As Integer              ' 끝 상태 (ST_...)
     Public Blk(1) As Integer             ' 막은 부품 occs 번호
     Public PathText As String = ""
+    Public InsOcc As Integer = -2        ' 이 탭에 끼운 부품 (occs 번호). -2 아직 안 찾음 / -1 없음
+    Public InsAx(2) As Double            ' 끼운 부품을 찾은 축 위의 점
 End Class
 
 
@@ -3577,4 +3648,5 @@ Class SideRes
     Public Above As New List(Of Integer)     ' 볼트가 지나가지 않는 구멍
     Public HasSeat As Boolean = False        ' 볼트 머리 자리를 찾았는지
     Public Checked As Integer = 0            ' 탭과 규격을 비교한 구멍 수
+    Public Skip As New List(Of Integer)      ' 탭에 끼운 부품 자신의 구멍 (판정 안 함)
 End Class
