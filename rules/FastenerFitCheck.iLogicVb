@@ -20,8 +20,10 @@
 '          구멍 여유 밖이면 오류, 안이면 경고
 '
 '  [원칙] - 확실할 때만 알린다 (오탐을 줄이려고)
-'   · 구멍 피처 정보가 있는 구멍(우리 가공품)이 하나도 없는 체결부는 판정하지 않는다.
-'     구매품(STEP) 안의 부품끼리 맞닿은 구멍은 모델링 방식이 제각각이다.
+'   · 한 구매품 안의 부품끼리 맞닿은 구멍은 판정하지 않는다 (실린더의 몸체 ↔ 테이블 등).
+'     업체가 만든 것이고, 내부 구멍은 모델링 방식이 제각각이다.
+'     "한 구매품" = 구속이 없고 임포트한 부품뿐인 하위 조립품 (SameProduct 참고).
+'     서로 다른 구매품 사이 (실린더 ↔ 브래킷 등) 는 판정한다.
 '   · 규격이 분명한 구멍만 탭과 비교한다.
 '       - 구멍 피처에 볼트 규격이 지정됨 (틈새 구멍)
 '       - 지름이 표준 통과구멍 (1급 ~ 3급) 범위
@@ -65,7 +67,8 @@
 '
 '  [못 잡는 것]
 '   - 규격표에 없는 지름의 구멍 (위 원칙대로 판정하지 않는다)
-'   - 구매품끼리의 체결, 돌출 컷으로 만든 구멍끼리의 체결
+'   - 한 구매품 안의 체결. 구매품 ↔ 구매품은 한쪽이 막힌 탭 구멍으로 보이고
+'     다른 쪽이 표준 통과구멍일 때만 판정할 수 있다
 '   - 구매품의 관통 탭 (지름만으로는 통과구멍과 구분할 수 없다)
 '   - 부품 사이 틈이 LINK_GAP(2mm) 보다 큰 체결
 '   - 볼트 길이 / 탭 물림 길이 (대부분 볼트를 넣지 않으므로)
@@ -200,6 +203,7 @@ Sub Main()
     Dim cache As New Dictionary(Of String, PartData)(StringComparer.OrdinalIgnoreCase)
     Dim readFail As New List(Of String)
     Dim occs As New List(Of OccRec)
+    Dim nodes As New Dictionary(Of String, AsmNode)     ' 하위 조립품마다 : 구매품 한 덩어리인지
 
     For oi As Integer = 0 To leafs.Count - 1
 
@@ -226,7 +230,10 @@ Sub Main()
             If pd Is Nothing Then Continue For
 
             Dim oc As OccRec = MakeOccRec(lo, pd, tg)
-            If oc IsNot Nothing Then occs.Add(oc)
+            If oc IsNot Nothing Then
+                NoteAncestors(lo, oc, nodes)
+                occs.Add(oc)
+            End If
         Catch ex As Exception
             readFail.Add(SafeName(lo) & " : " & ex.Message)
         End Try
@@ -447,7 +454,8 @@ Sub Main()
 
         Dim rs As Res = Nothing
         Try
-            rs = EvalJoint(mem, insts, occs, spec, tg, rayOk, CHECK_CB_DEPTH)
+            rs = EvalJoint(mem, insts, occs, spec, tg, rayOk, CHECK_CB_DEPTH, _
+                           SameProduct(mem, insts, occs, nodes))
         Catch ex As Exception
             rs = Nothing
             evalFail.Add("체결부 판정 : " & ex.Message)
@@ -477,7 +485,11 @@ Sub Main()
 
         Dim rs As Res = Nothing
         Try
-            rs = EvalMisalign(ia, ea, ib, eb, misRho(k), occs, spec, tg, rayOk)
+            Dim pair As New List(Of Integer)
+            pair.Add(i)
+            pair.Add(j)
+            rs = EvalMisalign(ia, ea, ib, eb, misRho(k), occs, spec, tg, rayOk, _
+                              SameProduct(pair, insts, occs, nodes))
         Catch ex As Exception
             rs = Nothing
             evalFail.Add("동심 판정 : " & ex.Message)
@@ -748,6 +760,22 @@ Function ExtractPart(pdoc As Inventor.PartDocument, maxD As Double, words() As S
     If Not pd.IsFastener Then
         pd.IsFastener = HasWord(pd.FileName, words) OrElse HasWord(GetDesc(pdoc), words)
     End If
+
+    ' 직접 모델링한 부품인지 : 임포트한 솔리드(기준 피처)만 있으면 구매품으로 본다.
+    ' "한 구매품 조립품" 을 가려낼 때 쓴다 (SameProduct).
+    Try
+        Dim nAll As Integer = cd.Features.Count
+        Dim nBase As Integer = 0
+        Try
+            Dim fo As Object = cd.Features
+            nBase = CInt(fo.NonParametricBaseFeatures.Count)
+        Catch
+        End Try
+        pd.IsOwn = (nAll - nBase) > 0
+    Catch
+        pd.IsOwn = True         ' 모르면 직접 만든 부품으로 본다 (판정에서 빼지 않는 쪽)
+    End Try
+    If pd.IsFastener Then pd.IsOwn = False
 
     ' 부품 범위 (막힘 검사 때 빨리 걸러내려고)
     Try
@@ -1635,7 +1663,7 @@ End Function
 Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
                    occs As List(Of OccRec), spec As List(Of Double()), _
                    tg As Inventor.TransientGeometry, ByRef rayOk As Boolean, _
-                   checkDepth As Boolean) As Res
+                   checkDepth As Boolean, oneProduct As Boolean) As Res
 
     ' 축 방향 순서로 (한쪽 끝부터)
     Dim ad() As Double = insts(mem(0)).D
@@ -1661,10 +1689,11 @@ Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
         If insts(m).H.Info IsNot Nothing Then anyFeat = True
     Next
 
-    ' 구멍 피처 정보가 있는 구멍이 하나도 없으면 판정하지 않는다.
-    ' 구매품(STEP) 안의 부품끼리 맞닿은 구멍은 모델링 방식이 제각각이라
-    ' 지름만으로는 탭인지 통과구멍인지 알 수 없다.
-    If Not anyFeat Then Return Nothing
+    ' 구멍 피처 정보가 있는 구멍이 하나도 없는 체결부 = 구매품끼리.
+    '   · 한 구매품 안의 부품끼리 (실린더의 몸체 ↔ 테이블 등) 는 판정하지 않는다.
+    '     업체가 만든 것이고, 내부 구멍은 모델링 방식이 제각각이다.
+    '   · 서로 다른 구매품 사이 (실린더 ↔ 브래킷 등) 는 판정한다.
+    If Not anyFeat AndAlso oneProduct Then Return Nothing
 
     Dim rs As New Res
     rs.Kind = "체결부"
@@ -1754,6 +1783,7 @@ Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
     Else
 
         '--- 확실한 탭이 없음 : 체결부 끝의 구매품 구멍이 탭으로 보이는지 ---
+        ' (가공품 통과구멍 ↔ 구매품 탭,  구매품 통과구멍 ↔ 다른 구매품 탭)
         ' 피처 정보가 없는 구멍(STEP 등)은 지름으로만 짐작할 수 있다.
         '   · 상대 구멍 규격이 "그 지름으로 볼 수 있는 탭 규격" 중 하나와 맞으면 이상 없음
         '   · 맞는 게 없더라도, 탭 내경 ~ 기초구멍 지름이고 바닥이 막힌 구멍일 때만 알린다
@@ -1781,10 +1811,10 @@ Function EvalJoint(mem As List(Of Integer), insts As List(Of Inst), _
                 Next
             End If
 
-            ' 비교할 규격 구멍 (우리 부품의 통과구멍) 이 있어야 한다
+            ' 비교할 규격 구멍 (통과구멍으로 규격을 알 수 있는 구멍) 이 있어야 한다
             Dim anyK As Boolean = False
             For Each q As Integer In side
-                If hs(q).Info IsNot Nothing AndAlso HoleBolt(hs(q), spec)(0) > 0 Then anyK = True
+                If HoleBolt(hs(q), spec)(0) > 0 Then anyK = True
             Next
             If Not anyK Then Continue For
 
@@ -2077,6 +2107,102 @@ Function IsBlind(it As Inst, e As Integer, occs As List(Of OccRec), _
 End Function
 
 
+' 피처 정보 없는 구멍이 탭으로 보이면 그 호칭, 아니면 0
+'   탭 내경 ~ 기초구멍 지름이고, 볼트 머리 자리가 없고, farEnd 쪽이 막힌 구멍
+Function TapLikeSize(it As Inst, farEnd As Integer, occs As List(Of OccRec), spec As List(Of Double()), _
+                     tg As Inventor.TransientGeometry, ByRef rayOk As Boolean) As Double
+    If it.H.Info IsNot Nothing Then Return 0
+    If HeadEnd(it.H) >= 0 Then Return 0
+    Dim strong As List(Of Double) = GeoTapSizes(it.H.PassD, spec)
+    If strong.Count = 0 Then Return 0
+    If Not IsBlind(it, farEnd, occs, tg, rayOk) Then Return 0
+    Return strong(strong.Count - 1)
+End Function
+
+
+' ============================================================================
+'  한 구매품 안의 부품들인지
+'
+'  업체 STEP 조립품을 임포트하면 하위 조립품(iam) 하나에 부품 여러 개가 들어온다.
+'  그 안의 부품끼리 맞닿은 구멍은 업체가 만든 것이라 판정하지 않는다.
+'  서로 다른 구매품 사이의 체결은 판정해야 한다.
+'
+'  "한 구매품" = 구멍들이 모두 같은 하위 조립품 안에 있고, 그 조립품이
+'     · 직접 모델링한 부품을 하나도 품지 않고  (임포트한 솔리드뿐)
+'     · 구속 / 조인트가 하나도 없다          (임포트한 조립품은 전부 고정 상태)
+'  구매품 여러 개를 직접 구속해 만든 조립품은 구속이 있으므로 "한 구매품" 이 아니다.
+' ============================================================================
+Function SameProduct(mem As List(Of Integer), insts As List(Of Inst), _
+                     occs As List(Of OccRec), nodes As Dictionary(Of String, AsmNode)) As Boolean
+
+    Dim first As List(Of String) = occs(insts(mem(0)).O).Anc
+    Dim depth As Integer = first.Count
+
+    ' 모든 구멍이 공통으로 들어 있는 가장 안쪽 하위 조립품
+    For Each m As Integer In mem
+        Dim anc As List(Of String) = occs(insts(m).O).Anc
+        Dim c As Integer = 0
+        Do While c < depth AndAlso c < anc.Count AndAlso anc(c) = first(c)
+            c += 1
+        Loop
+        depth = c
+    Next
+    If depth = 0 Then Return False          ' 공통 조립품이 최상위 조립도
+
+    Dim nd As AsmNode = Nothing
+    If Not nodes.TryGetValue(first(depth - 1), nd) Then Return False
+    Return nd.Free AndAlso Not nd.HasOwn
+
+End Function
+
+
+' 부품이 들어 있는 하위 조립품들을 바깥부터 기록한다
+Sub NoteAncestors(lo As Inventor.ComponentOccurrence, oc As OccRec, nodes As Dictionary(Of String, AsmNode))
+
+    Try
+        Dim path As Inventor.ComponentOccurrencesEnumerator = lo.OccurrencePath
+        Dim ak As String = ""
+
+        For k As Integer = 1 To path.Count - 1          ' 마지막은 부품 자신
+            Dim sub1 As Inventor.ComponentOccurrence = path.Item(k)
+            ak = If(ak = "", sub1.Name, ak & " > " & sub1.Name)
+            oc.Anc.Add(ak)
+
+            Dim nd As AsmNode = Nothing
+            If Not nodes.TryGetValue(ak, nd) Then
+                nd = New AsmNode
+                nd.Free = IsUnconstrained(sub1)
+                nodes(ak) = nd
+            End If
+            If oc.Data.IsOwn Then nd.HasOwn = True
+        Next
+    Catch
+    End Try
+
+End Sub
+
+
+' 하위 조립품에 구속 / 조인트가 하나도 없는지 (임포트한 조립품)
+Function IsUnconstrained(sub1 As Inventor.ComponentOccurrence) As Boolean
+    Try
+        Dim acd As Inventor.AssemblyComponentDefinition = TryCast(sub1.Definition, Inventor.AssemblyComponentDefinition)
+        If acd Is Nothing Then Return False
+        If acd.Constraints.Count > 0 Then Return False
+
+        Dim nj As Integer = 0
+        Try
+            Dim ao As Object = acd
+            nj = CInt(ao.Joints.Count)
+        Catch
+            nj = 0
+        End Try
+        Return nj = 0
+    Catch
+        Return False            ' 모르면 직접 만든 조립품으로 본다 (판정에서 빼지 않는 쪽)
+    End Try
+End Function
+
+
 ' 같은 제목은 한 번만
 Sub AddTitle(titles As List(Of String), t As String)
     If Not titles.Contains(t) Then titles.Add(t)
@@ -2111,11 +2237,12 @@ End Sub
 ' ============================================================================
 Function EvalMisalign(ia As Inst, ea As Integer, ib As Inst, eb As Integer, rho As Double, _
                       occs As List(Of OccRec), spec As List(Of Double()), _
-                      tg As Inventor.TransientGeometry, ByRef rayOk As Boolean) As Res
+                      tg As Inventor.TransientGeometry, ByRef rayOk As Boolean, _
+                      oneProduct As Boolean) As Res
 
     Dim fa As Boolean = ia.H.Info IsNot Nothing
     Dim fb As Boolean = ib.H.Info IsNot Nothing
-    If Not fa AndAlso Not fb Then Return Nothing        ' 구매품끼리는 판정하지 않는다
+    If Not fa AndAlso Not fb AndAlso oneProduct Then Return Nothing     ' 한 구매품 안의 부품끼리
 
     Dim ta As Boolean = fa AndAlso ia.H.Info.IsTap
     Dim tb As Boolean = fb AndAlso ib.H.Info.IsTap
@@ -2135,26 +2262,24 @@ Function EvalMisalign(ia As Inst, ea As Integer, ib As Inst, eb As Integer, rho 
         holeIt = ia
         tapN = ib.H.Info.TapN
     Else
-        ' 한쪽이 피처 정보 없는 막힌 구멍이고 탭 크기일 때만 탭으로 본다
-        Dim cand As Inst = Nothing
-        Dim candEnd As Integer = 0
-        If Not fa AndAlso fb Then
-            cand = ia
-            candEnd = ea
+        ' 확실한 탭이 없음 : 피처 정보 없는 막힌 구멍이 탭 크기일 때만 탭으로 본다.
+        ' 상대가 가공품 구멍이면 그대로, 상대도 구매품이면 규격 통과구멍일 때만 본다.
+        Dim na As Double = 0
+        Dim nb As Double = 0
+        If Not fa AndAlso (fb OrElse HoleBolt(ib.H, spec)(0) > 0) Then na = TapLikeSize(ia, 1 - ea, occs, spec, tg, rayOk)
+        If na <= 0 AndAlso Not fb AndAlso (fa OrElse HoleBolt(ia.H, spec)(0) > 0) Then nb = TapLikeSize(ib, 1 - eb, occs, spec, tg, rayOk)
+
+        If na > 0 Then
+            tapIt = ia
             holeIt = ib
-        ElseIf Not fb AndAlso fa Then
-            cand = ib
-            candEnd = eb
+            tapN = na
+        ElseIf nb > 0 Then
+            tapIt = ib
             holeIt = ia
+            tapN = nb
         Else
             Return Nothing
         End If
-        If HeadEnd(cand.H) >= 0 Then Return Nothing
-        Dim strong As List(Of Double) = GeoTapSizes(cand.H.PassD, spec)
-        If strong.Count = 0 Then Return Nothing
-        If Not IsBlind(cand, 1 - candEnd, occs, tg, rayOk) Then Return Nothing
-        tapIt = cand
-        tapN = strong(strong.Count - 1)
         est = True
     End If
 
@@ -2477,7 +2602,7 @@ Sub WriteLogs(csvPath As String, txtPath As String, results As List(Of Res), _
     txt.AppendLine("  · 탭 규격과 구멍 규격이 다름   (탭 M4 ↔ M3용 구멍 = 오류,  탭 M4 ↔ M5용 구멍 = 경고)")
     txt.AppendLine("  · 볼트 머리가 카운터보어에 안 들어감")
     txt.AppendLine("  · 탭과 구멍의 중심이 어긋남")
-    txt.AppendLine("  규격표에 없는 지름(조정용 큰 구멍 등)과 구매품끼리의 구멍은 판정하지 않습니다.")
+    txt.AppendLine("  규격표에 없는 지름(조정용 큰 구멍 등)과, 한 구매품 안의 부품끼리 맞닿은 구멍은 판정하지 않습니다.")
     txt.AppendLine("")
     txt.AppendLine("보는 법")
     txt.AppendLine("  탭      : 나사산이 있는 구멍")
@@ -2719,6 +2844,7 @@ Class PartData
     Public CompDef As Inventor.PartComponentDefinition = Nothing
     Public FileName As String = ""
     Public IsFastener As Boolean = False
+    Public IsOwn As Boolean = True       ' 직접 모델링한 부품 (False = 임포트한 솔리드뿐 / 볼트류)
     Public HasBox As Boolean = False
     Public BMin(2) As Double
     Public BMax(2) As Double
@@ -2731,6 +2857,7 @@ Class OccRec
     Public Data As PartData = Nothing
     Public Name As String = ""
     Public Path As String = ""
+    Public Anc As New List(Of String)    ' 들어 있는 하위 조립품들 (바깥부터)
     Public T(2) As Double                ' 이동 (mm)
     Public C(8) As Double                ' 회전 : 부품 X, Y, Z 축의 조립도 방향
     Public HasBox As Boolean = False
@@ -2762,6 +2889,13 @@ Class Res
     Public Rows As New List(Of String()) ' 로그 줄 : 역할 / 부품 / 구멍 / 표시(◀)
     Public Advice As New List(Of String) ' 로그의 "→" 설명
     Public Count As Integer = 1          ' 같은 내용이 나온 횟수
+End Class
+
+
+' 하위 조립품 하나
+Class AsmNode
+    Public Free As Boolean = False       ' 구속 / 조인트가 하나도 없음 (임포트한 조립품)
+    Public HasOwn As Boolean = False     ' 직접 모델링한 부품을 품고 있음
 End Class
 
 
