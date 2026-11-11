@@ -22,12 +22,14 @@
 '  [원칙] - 확실할 때만 알린다 (오탐을 줄이려고)
 '   · 한 구매품 안의 부품끼리 맞닿은 구멍은 판정하지 않는다 (실린더의 몸체 ↔ 테이블 등).
 '     업체가 만든 것이고, 내부 구멍은 모델링 방식이 제각각이다.
-'     "한 구매품" = 구매품만 들어 있는 하위 조립도. 업체에서 받은 그대로라
+'     "한 구매품" = 구매품 폴더에 있는, 구매품만 든 하위 조립도. 업체에서 받은 그대로라
 '     구속이 걸려 있을 수도 있다 (STEP 임포트, 미스미 등의 인벤터 파일).
 '     서로 다른 구매품 사이 (실린더 ↔ 브래킷 등), 구매품 ↔ 가공품은 판정한다.
-'   · 가공품 / 구매품은 도면 유무, 파일 이름(사내 도면번호), 저장 폴더를 같이 보고
-'     가린다 (ClassifyParts 참고). 로그 끝에 "한 구매품으로 본 하위 조립도" 목록이
-'     나오므로 잘못 묶인 것이 없는지 확인할 수 있다.
+'     우리가 구매품 여러 개를 모아 만든 조립도(구매품 폴더 밖)도 그 안을 판정한다.
+'   · 가공품 / 구매품은 저장 폴더(구매품 폴더)를 먼저 보고, 그 밖의 파일은 도면 유무와
+'     파일 이름(사내 도면번호)으로 확인한다 (ClassifyParts 참고).
+'     로그 끝에 "한 구매품으로 본 하위 조립도" 목록이 나오므로 잘못 묶인 것이 없는지
+'     확인할 수 있다.
 '   · 규격이 분명한 구멍만 탭과 비교한다.
 '       - 구멍 피처에 볼트 규격이 지정됨 (틈새 구멍)
 '       - 지름이 표준 통과구멍 (1급 ~ 3급) 범위
@@ -121,10 +123,11 @@ Sub Main()
     ' SCREW / 나사 는 넣지 않았다. 볼스크류 / 볼나사까지 걸린다.
     Dim FASTENER_WORDS As String  = "BOLT,CAP SCREW,SET SCREW,STUD,볼트"
 
-    ' 가공품 / 구매품 구분  (구매품만 든 하위 조립도 = 업체에서 받은 한 구매품. 그 안의 체결은 검사 안 함)
-    '   도면 유무  : 같은 폴더에 같은 이름의 도면(.idw / 인벤터 .dwg)이 있으면 가공품
-    '   파일 이름  : 사내 도면번호 형식이면 가공품  (GMKS-ST2601-ETR01-60)
-    '   저장 폴더  : 폴더 경로에 아래 글자가 있으면 구매품. 회사 구매품 폴더 이름에 맞게 고친다.
+    ' 가공품 / 구매품 구분
+    '   구매품은 구매품 폴더에 따로 저장한다. 폴더 경로에 PURCHASE_DIRS 글자가 있으면 구매품.
+    '   구매품 폴더 안의 하위 조립도 = 업체에서 받은 한 구매품 (그 안의 체결은 검사 안 함).
+    '   구매품 폴더 밖의 파일은 도면 유무 / 사내 도면번호로 확인하고, 그 밖에는 가공품으로 본다.
+    '   회사 구매품 폴더 이름이 "구매품" 이 아니면 그 이름을 넣는다.
     Dim MIN_HYPHENS    As Integer = 2       ' 사내 도면번호 판별용 최소 하이픈 수 (다른 규칙과 같음)
     Dim PURCHASE_DIRS  As String  = "구매품,규격품,상용품,PURCHASE,LIBRARY,VENDOR"
     ' ────────────────────────────────────────────────────────────────────────
@@ -251,7 +254,7 @@ Sub Main()
     Next
 
     ' 가공품 / 구매품을 가리고, 가공품이 든 하위 조립도를 표시한다
-    ClassifyParts(cache, nodes, asmPath, PURCHASE_DIRS.Split(","c), MIN_HYPHENS)
+    Dim buyDirUsed As Boolean = ClassifyParts(cache, nodes, asmPath, PURCHASE_DIRS.Split(","c), MIN_HYPHENS)
     For Each oc As OccRec In occs
         If Not oc.Data.IsOwn Then Continue For
         For Each ak As String In oc.Anc
@@ -583,6 +586,10 @@ Sub Main()
     End If
     If readFail.Count > 0 Then
         notes.Add("※ 읽지 못한 부품 " & readFail.Count & "개 - 맨 아래 참고")
+    End If
+    If Not buyDirUsed AndAlso nBuyFile > 0 Then
+        notes.Add("※ 구매품 폴더(" & PURCHASE_DIRS & ")에 든 부품이 하나도 없어 도면 / 파일 이름으로 가공품과 구매품을 갈랐습니다.")
+        notes.Add("   구매품 폴더 이름이 다르면 규칙 맨 위 PURCHASE_DIRS 에 그 이름을 넣어 주세요.")
     End If
     If evalFail.Count > 0 Then
         notes.Add("※ 판정 중 내부 오류 " & evalFail.Count & "건 - 그 체결부는 판정하지 못했습니다. (" & _
@@ -2225,23 +2232,30 @@ End Sub
 ' ============================================================================
 '  가공품 / 구매품 구분
 '
-'  신호 세 가지를 같이 본다. 파일 이름만으로는 틀릴 수 있다
-'  (사내 번호가 아직 없는 가공품, 사내 번호처럼 생긴 업체 품번).
+'  구매품은 구매품 폴더에 따로 저장한다 (사내 방식). 그래서 폴더가 가장 확실하다.
+'  도면 유무와 파일 이름은 그 밖의 경우를 가리는 데 쓴다.
 '
-'    1) 구매품 폴더에 있다 (PURCHASE_DIRS)             -> 구매품
+'  [구매품 폴더를 쓰는 조립도]  - 폴더 경로에 PURCHASE_DIRS 글자가 든 파일이 하나라도 있음
+'    1) 구매품 폴더에 있다                              -> 구매품
 '    2) 같은 폴더에 같은 이름의 도면이 있다            -> 가공품
 '    3) 파일 이름이 사내 도면번호 형식이다             -> 가공품
-'         도면이 있는 파일들의 머리글자(GMKS 등)로 시작하고 하이픈이 MIN_HYPHENS 개 이상.
-'         도면이 하나도 없으면 "이름-번호[리비전]" 꼴인지로 본다.
-'    4) 위에 다 해당하지 않으면
-'         임포트한 솔리드뿐이다                        -> 구매품
-'         가공품이 있는 폴더에 같이 있다               -> 가공품
-'         그 밖                                        -> 구매품
+'    4) 임포트한 솔리드뿐이다 (구매품 폴더 밖)         -> 구매품 (고객 모델, 잘못 저장한 구매품 등)
+'    5) 그 밖 (구매품 폴더 밖)                         -> 가공품
+'    하위 조립도 : 구매품 폴더에 있으면 업체 조립도, 아니면 우리가 만든 조립도.
+'      우리가 구매품 여러 개를 모아 만든 조립도는 "한 구매품" 이 아니므로 그 안의 체결을 검사한다.
 '
-'  하위 조립도는 도면이 있거나 사내 도면번호면 우리가 만든 조립도.
+'  [구매품 폴더에 든 파일이 하나도 없을 때]  - 폴더 이름이 설정과 다르거나 구매품이 없는 조립도
+'    도면 / 사내 도면번호가 있으면 가공품, 임포트한 솔리드뿐이면 구매품,
+'    가공품이 있는 폴더에 같이 있으면 가공품, 그 밖은 구매품.
+'    하위 조립도는 도면이 있거나 사내 도면번호면 우리가 만든 조립도.
+'
+'  사내 도면번호 형식 : 도면이 있는 파일들의 머리글자(GMKS 등)로 시작하고 하이픈이
+'  MIN_HYPHENS 개 이상. 도면이 하나도 없으면 "이름-번호[리비전]" 꼴인지로 본다.
+'
+'  결과 : 구매품 폴더를 쓰는 조립도인지
 ' ============================================================================
-Sub ClassifyParts(cache As Dictionary(Of String, PartData), nodes As Dictionary(Of String, AsmNode), _
-                  asmPath As String, buyWords() As String, minHy As Integer)
+Function ClassifyParts(cache As Dictionary(Of String, PartData), nodes As Dictionary(Of String, AsmNode), _
+                       asmPath As String, buyWords() As String, minHy As Integer) As Boolean
 
     Dim parts As New List(Of PartData)
     For Each kv As KeyValuePair(Of String, PartData) In cache
@@ -2253,13 +2267,16 @@ Sub ClassifyParts(cache As Dictionary(Of String, PartData), nodes As Dictionary(
     Next
 
     ' 도면 유무, 구매품 폴더
+    Dim dirUsed As Boolean = False
     For Each pd As PartData In parts
         pd.HasDraw = HasDrawing(pd.FullPath)
         pd.InBuyDir = HasWord(DirOf(pd.FullPath), buyWords)
+        If pd.InBuyDir Then dirUsed = True
     Next
     For Each nd As AsmNode In subs
         nd.HasDraw = HasDrawing(nd.FilePath)
         nd.InBuyDir = HasWord(DirOf(nd.FilePath), buyWords)
+        If nd.InBuyDir Then dirUsed = True
     Next
 
     ' 사내 도면번호의 머리글자 : 도면이 있는 파일 이름의 첫 토막
@@ -2280,7 +2297,7 @@ Sub ClassifyParts(cache As Dictionary(Of String, PartData), nodes As Dictionary(
         nd.NameOk = IsCompanyName(nd.FilePath, prefixes, minHy, False)
     Next
 
-    ' 가공품이 들어 있는 폴더
+    ' 가공품이 들어 있는 폴더 (구매품 폴더를 쓰지 않는 조립도에서만 쓴다)
     Dim ownDirs As New List(Of String)
     For Each pd As PartData In parts
         If pd.InBuyDir OrElse pd.IsFastener Then Continue For
@@ -2305,7 +2322,10 @@ Sub ClassifyParts(cache As Dictionary(Of String, PartData), nodes As Dictionary(
             pd.Why = "사내 도면번호"
         ElseIf pd.Imported Then
             pd.IsOwn = False
-            pd.Why = "임포트한 솔리드 (도면 / 사내 번호 없음)"
+            pd.Why = "임포트한 솔리드 (구매품 폴더 밖, 도면 / 사내 번호 없음)"
+        ElseIf dirUsed Then
+            pd.IsOwn = True
+            pd.Why = "구매품 폴더 밖"
         ElseIf ownDirs.Contains(DirOf(pd.FullPath).ToUpperInvariant()) Then
             pd.IsOwn = True
             pd.Why = "가공품과 같은 폴더 (도면 / 사내 번호 없음)"
@@ -2316,10 +2336,16 @@ Sub ClassifyParts(cache As Dictionary(Of String, PartData), nodes As Dictionary(
     Next
 
     For Each nd As AsmNode In subs
-        nd.OwnAsm = Not nd.InBuyDir AndAlso (nd.HasDraw OrElse nd.NameOk)
+        If dirUsed Then
+            nd.OwnAsm = Not nd.InBuyDir
+        Else
+            nd.OwnAsm = nd.HasDraw OrElse nd.NameOk
+        End If
     Next
 
-End Sub
+    Return dirUsed
+
+End Function
 
 
 ' 파일이 있는 폴더 ("" 이면 모름)
